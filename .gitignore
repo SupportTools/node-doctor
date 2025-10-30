@@ -130,3 +130,4 @@ _site/
 *.tfstate
 *.tfstate.*
 .terraform/
+node-doctor
