@@ -1,0 +1,132 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+*.out
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Go build cache
+.cache/
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.env
+secrets/
+*.key
+*.pem
+*.crt
+*.p12
+credentials.json
+serviceaccount.json
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Local development
+/tmp/
+/temp/
+/logs/
+*.log
+*.pid
+
+# Kubernetes local configs
+kubeconfig
+*.kubeconfig
+.kube/
+
+# Helm
+charts/*.tgz
+.helm/
+*.lock
+
+# Docker
+.dockerignore
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+*.zip
+
+# Project-specific (customize for your project)
+# /my-binary
+# /my-tool
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Claude Code local settings (keep .claude/settings.local.json ignored)
+.claude/settings.local.json
+
+# TaskForge database (if using local SQLite)
+taskforge.db
+*.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Node modules (if using Node.js tooling)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python (if using Python tooling)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+ENV/
+
+# Documentation build artifacts
+site/
+_site/
+
+# Testing
+.testcache/
+
+# ArgoCD applications (if storing locally, usually in separate repo)
+# argocd/apps/
+
+# Terraform (if using)
+*.tfstate
+*.tfstate.*
+.terraform/

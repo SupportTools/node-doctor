@@ -1,0 +1,39 @@
+# Writing Project Automation Hooks
+# For blogs, articles, books, etc.
+
+# Optional: Word count tracking
+[[hooks]]
+event = "Stop"
+command = """
+if [ -d "content" ]; then
+    count=$(wc -w content/*.md 2>/dev/null | tail -1 | awk '{print $1}')
+    echo "📝 Total word count: $count words"
+    echo "$(date): $count words" >> .writing-progress.log
+fi
+"""
+
+# Optional: Writing session timer
+[[hooks]]
+event = "UserPromptSubmit"
+[hooks.matcher]
+content_regex = "start writing|begin writing"
+command = "echo '⏰ Writing session started at $(date +%H:%M)' && echo $(date +%s) > .session-start"
+
+[[hooks]]
+event = "Stop"
+command = """
+if [ -f .session-start ]; then
+    start=$(cat .session-start)
+    duration=$(( ($(date +%s) - start) / 60 ))
+    echo "⏱️ Writing session duration: $duration minutes"
+    rm .session-start
+fi
+"""
+
+# Optional: Backup reminder
+[[hooks]]
+event = "Notification"
+[hooks.matcher]
+time = "17:00"
+days = ["monday", "wednesday", "friday"]
+command = "echo '☁️ Remember to backup your writing to cloud storage!'"

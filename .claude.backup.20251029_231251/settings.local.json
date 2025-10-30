@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Read(//home/mmattox/go/src/github.com/supporttools/**)",
+      "Read(//home/mmattox/go/src/github.com/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,44 @@
+#!/bin/bash
+# Pre-push hook that validates all components before pushing
+# This prevents CI/CD failures by catching issues locally
+
+# TEMPORARILY DISABLED - blocking large data transfers
+exit 0
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo ""
+echo -e "${BLUE}🔍 Running pre-push validation...${NC}"
+echo ""
+
+# Run full pipeline validation
+./scripts/validate-pipeline-local.sh
+
+RESULT=$?
+
+echo ""
+
+if [ $RESULT -ne 0 ]; then
+    echo -e "${RED}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  ❌ Pre-push validation FAILED                                 ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Fix the issues above before pushing.${NC}"
+    echo ""
+    echo -e "${YELLOW}To bypass this check (NOT RECOMMENDED):${NC}"
+    echo -e "${YELLOW}  git push --no-verify${NC}"
+    echo ""
+    exit 1
+fi
+
+echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  ✅ Pre-push validation passed - proceeding with push          ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+exit 0

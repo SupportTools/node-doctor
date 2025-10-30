@@ -1,0 +1,149 @@
+{
+  "_comment": "Validation configuration for node-doctor local CI/CD validation",
+  "_info": "Adapted from Nexmonyx repo-template for single-binary Kubernetes DaemonSet project",
+  "validation": {
+    "enabled": true,
+    "parallel_jobs": 2,
+    "fail_fast": false,
+    "quick_mode": {
+      "enabled": true,
+      "skip_tests": true,
+      "skip_gosec": true,
+      "skip_coverage": true
+    }
+  },
+  "components": {
+    "_comment": "node-doctor is a single binary Kubernetes monitoring tool",
+    "node-doctor": {
+      "enabled": true,
+      "path": "cmd/node-doctor",
+      "test_timeout": "10m",
+      "coverage_threshold": 50,
+      "coverage_exclude": [
+        "cmd/node-doctor/main.go"
+      ]
+    }
+  },
+  "tools": {
+    "gofmt": {
+      "enabled": true,
+      "check_only": true,
+      "fix": false
+    },
+    "goimports": {
+      "enabled": false,
+      "local": "github.com/supporttools/node-doctor"
+    },
+    "go_vet": {
+      "enabled": true,
+      "flags": [
+        "-all"
+      ]
+    },
+    "staticcheck": {
+      "enabled": true,
+      "checks": [
+        "all",
+        "-ST1000",
+        "-ST1003"
+      ],
+      "fail_on": [
+        "error",
+        "warning"
+      ]
+    },
+    "gosec": {
+      "enabled": true,
+      "severity": "medium",
+      "confidence": "medium",
+      "exclude_rules": [
+        "G104"
+      ],
+      "scan_tests": false
+    },
+    "golangci_lint": {
+      "enabled": false,
+      "config": ".golangci.yml",
+      "timeout": "5m"
+    },
+    "go_test": {
+      "enabled": true,
+      "flags": [
+        "-v",
+        "-race",
+        "-cover"
+      ],
+      "timeout": "10m",
+      "coverage_mode": "atomic",
+      "coverage_profile": "coverage.txt"
+    }
+  },
+  "repository": {
+    "go_version": "1.21",
+    "go_mod_tidy_check": true,
+    "cleanliness_check": true,
+    "allowed_root_files": [
+      ".gitignore",
+      ".gitattributes",
+      ".validation.json",
+      "README.md",
+      "LICENSE",
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
+      "PROJECT_SETUP_CHECKLIST.md",
+      "makefile",
+      "Makefile",
+      "Dockerfile",
+      "go.mod",
+      "go.sum"
+    ],
+    "forbidden_patterns": [
+      "*.swp",
+      "*.swo",
+      "*~",
+      ".DS_Store",
+      "*.key",
+      "*.pem",
+      "credentials.json",
+      "secrets.yaml",
+      "kubeconfig"
+    ]
+  },
+  "ci_cd": {
+    "mirror_github_actions": true,
+    "cache_enabled": true,
+    "cache_paths": [
+      "~/.cache/go-build",
+      "~/go/pkg/mod"
+    ]
+  },
+  "reporting": {
+    "verbose": true,
+    "show_passed": true,
+    "show_skipped": true,
+    "color_output": true,
+    "summary": true
+  },
+  "pre_commit": {
+    "enabled": true,
+    "auto_fix": false,
+    "checks": [
+      "gofmt",
+      "go_vet"
+    ]
+  },
+  "pre_push": {
+    "enabled": true,
+    "run_full_validation": true,
+    "allow_skip": false,
+    "checks": [
+      "go_version",
+      "cleanliness",
+      "gofmt",
+      "go_vet",
+      "staticcheck",
+      "gosec",
+      "tests"
+    ]
+  }
+}

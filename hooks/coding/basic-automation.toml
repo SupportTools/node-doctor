@@ -1,0 +1,24 @@
+# Basic Coding Project Automation Hooks
+# Customize based on project needs
+
+# Optional: Auto-save reminder
+[[hooks]]
+event = "Notification"
+[hooks.matcher]
+time = "every 30 minutes"
+command = "echo '💾 Auto-save reminder: Your work is being saved automatically'"
+
+# Optional: Simple test reminder (if user mentioned testing)
+[[hooks]]
+event = "UserPromptSubmit"
+[hooks.matcher]
+content_regex = "done|finished|complete"
+command = "echo '🧪 Remember to test your changes!'"
+
+# Optional: Basic formatting (customize per language)
+# [[hooks]]
+# event = "PostToolUse"
+# [hooks.matcher]
+# tool_name = "Write"
+# file_paths = ["*.py"]  # Adjust for project language
+# command = "echo '🎨 Formatting code...' && black $CLAUDE_FILE_PATH 2>/dev/null || true"
