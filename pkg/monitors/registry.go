@@ -226,7 +226,18 @@ func (r *Registry) CreateMonitor(ctx context.Context, config types.MonitorConfig
 	r.mu.RUnlock()
 
 	// info is guaranteed to exist because ValidateConfig succeeded
-	monitor, err := info.Factory(ctx, config)
+	// Call factory with panic recovery to prevent crashes from buggy monitors
+	var monitor types.Monitor
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("monitor factory %q panicked: %v", config.Type, r)
+			}
+		}()
+		monitor, err = info.Factory(ctx, config)
+	}()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create monitor %q: %w", config.Type, err)
 	}

@@ -82,6 +82,10 @@ func contextCancelFactory(ctx context.Context, config types.MonitorConfig) (type
 	}
 }
 
+func panickingFactory(ctx context.Context, config types.MonitorConfig) (types.Monitor, error) {
+	panic("factory panic for testing")
+}
+
 // Test validator functions
 func testValidator1(config types.MonitorConfig) error {
 	if config.Name == "" {
@@ -449,6 +453,10 @@ func TestRegistry_CreateMonitor(t *testing.T) {
 		Type:    "context-monitor",
 		Factory: contextCancelFactory,
 	})
+	registry.Register(MonitorInfo{
+		Type:    "panicking-monitor",
+		Factory: panickingFactory,
+	})
 
 	tests := []struct {
 		name       string
@@ -515,6 +523,17 @@ func TestRegistry_CreateMonitor(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "context canceled",
+		},
+		{
+			name: "factory panic recovery",
+			config: types.MonitorConfig{
+				Name:    "test",
+				Type:    "panicking-monitor",
+				Enabled: true,
+			},
+			setupCtx: func() context.Context { return context.Background() },
+			wantErr:  true,
+			errMsg:   "panicked",
 		},
 	}
 
