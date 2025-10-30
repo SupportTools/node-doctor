@@ -86,55 +86,65 @@ func main() {
 	}
 
 	// Setup signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	sigChan := make(chan os.Signal, 2) // Increased buffer to handle multiple signals
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
-	// Start detector in goroutine
-	errChan := make(chan error, 1)
+	// Start detector in goroutine with panic recovery
+	done := make(chan error, 1)
 	go func() {
-		if err := detector.Run(ctx); err != nil {
-			errChan <- fmt.Errorf("detector failed: %w", err)
-		}
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("detector panicked: %v", r)
+			}
+		}()
+
+		err := detector.Run(ctx)
+		done <- err // Always send result (nil or error)
 	}()
 
 	log.Printf("[INFO] Node Doctor started successfully")
 
-	// Wait for shutdown signal or error
+	// Wait for shutdown signal or detector completion
+	var shutdownReason string
 	select {
 	case sig := <-sigChan:
-		log.Printf("[INFO] Received signal %v, initiating graceful shutdown", sig)
-	case err := <-errChan:
-		log.Printf("[ERROR] Detector error: %v", err)
+		shutdownReason = fmt.Sprintf("signal %v", sig)
+		log.Printf("[INFO] Received %s, initiating graceful shutdown", shutdownReason)
+	case err := <-done:
+		if err != nil {
+			shutdownReason = fmt.Sprintf("detector error: %v", err)
+			log.Printf("[ERROR] %s", shutdownReason)
+		} else {
+			shutdownReason = "clean detector exit"
+			log.Printf("[INFO] Detector exited cleanly")
+		}
 	}
 
 	// Cancel context to signal shutdown
 	cancel()
 
-	// Give detector time to shutdown gracefully
+	// Wait for detector to finish with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	shutdownDone := make(chan struct{})
-	go func() {
-		// Wait for detector to finish
-		<-errChan
-		close(shutdownDone)
-	}()
-
 	select {
-	case <-shutdownDone:
+	case err := <-done:
+		if err != nil && shutdownReason != fmt.Sprintf("detector error: %v", err) {
+			log.Printf("[WARN] Detector shutdown error: %v", err)
+		}
 		log.Printf("[INFO] Graceful shutdown completed")
 	case <-shutdownCtx.Done():
 		log.Printf("[WARN] Shutdown timeout exceeded, forcing exit")
 	}
 
-	log.Printf("[INFO] Node Doctor stopped")
+	log.Printf("[INFO] Node Doctor stopped (%s)", shutdownReason)
 }
 
 // loadConfiguration loads and validates the configuration with proper precedence:
 // 1. Start with file config or defaults if file doesn't exist
 // 2. Apply CLI flag overrides
-// 3. Re-validate the final configuration
+// 3. Add hostname fallback for NodeName if still empty
+// 4. Re-validate the final configuration
 func loadConfiguration() (*types.NodeDoctorConfig, error) {
 	var config *types.NodeDoctorConfig
 	var err error
@@ -142,9 +152,12 @@ func loadConfiguration() (*types.NodeDoctorConfig, error) {
 	// Try to load config from file, fall back to defaults
 	if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
 		log.Printf("[WARN] Config file %s not found, using defaults", *configPath)
+
+		// Try DefaultConfig first, but if it fails due to missing NODE_NAME, create a minimal config
 		config, err = util.DefaultConfig()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create default config: %w", err)
+			log.Printf("[INFO] DefaultConfig failed (%v), creating minimal config", err)
+			config = createMinimalConfig()
 		}
 	} else {
 		config, err = util.LoadConfig(*configPath)
@@ -156,12 +169,63 @@ func loadConfiguration() (*types.NodeDoctorConfig, error) {
 	// Apply CLI flag overrides
 	applyFlagOverrides(config)
 
-	// Re-validate configuration after overrides
+	// If nodeName still empty, try hostname as fallback
+	if config.Settings.NodeName == "" {
+		hostname, err := os.Hostname()
+		if err == nil && hostname != "" {
+			config.Settings.NodeName = hostname
+			log.Printf("[INFO] Using hostname as node name: %s", hostname)
+		}
+	}
+
+	// Apply defaults and validate after all modifications
+	if err := config.ApplyDefaults(); err != nil {
+		return nil, fmt.Errorf("failed to apply defaults: %w", err)
+	}
+
 	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("configuration validation failed after applying overrides: %w", err)
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 
 	return config, nil
+}
+
+// createMinimalConfig creates a minimal configuration when DefaultConfig fails
+func createMinimalConfig() *types.NodeDoctorConfig {
+	return &types.NodeDoctorConfig{
+		APIVersion: "node-doctor.io/v1alpha1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "minimal",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: os.Getenv("NODE_NAME"), // Will be empty if not set, but hostname fallback will handle it
+		},
+		Monitors: []types.MonitorConfig{
+			{
+				Name:    "kubelet-health",
+				Type:    "kubernetes-kubelet-check",
+				Enabled: true,
+				Config: map[string]interface{}{
+					"healthzURL": "http://127.0.0.1:10248/healthz",
+				},
+			},
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: true,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: true,
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: true,
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false, // Disabled by default for safety
+		},
+	}
 }
 
 // applyFlagOverrides applies command-line flag overrides to the configuration
@@ -213,6 +277,8 @@ func setupLogging(settings types.GlobalSettings) {
 		log.SetOutput(os.Stderr)
 	case "file":
 		if settings.LogFile != "" {
+			// Note: Log file handle is intentionally kept open for the lifetime of the application
+			// and will be closed automatically when the process exits.
 			file, err := os.OpenFile(settings.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			if err != nil {
 				log.Fatalf("[ERROR] Failed to open log file %s: %v", settings.LogFile, err)
