@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/detector"
+	httpexporter "github.com/supporttools/node-doctor/pkg/exporters/http"
 	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
@@ -29,341 +31,285 @@ var (
 	BuildTime = "unknown"
 )
 
-// Command-line flags
-var (
-	configPath = flag.String("config", "/etc/node-doctor/config.yaml", "Path to configuration file")
-	nodeName   = flag.String("node-name", "", "Override node name (defaults to config or $NODE_NAME)")
-	logLevel   = flag.String("log-level", "", "Override log level (debug, info, warn, error, fatal)")
-	logFormat  = flag.String("log-format", "", "Override log format (json, text)")
-	kubeconfig = flag.String("kubeconfig", "", "Override kubeconfig path")
-	dryRun     = flag.Bool("dry-run", false, "Enable dry-run mode (disable remediation)")
-	version    = flag.Bool("version", false, "Show version information and exit")
-)
+// noopExporter is a no-op implementation of types.Exporter for when no real exporters are configured
+type noopExporter struct{}
+
+func (e *noopExporter) ExportStatus(ctx context.Context, status *types.Status) error {
+	log.Printf("[DEBUG] NoopExporter: Status from %s with %d events, %d conditions",
+		status.Source, len(status.Events), len(status.Conditions))
+	return nil
+}
+
+func (e *noopExporter) ExportProblem(ctx context.Context, problem *types.Problem) error {
+	log.Printf("[DEBUG] NoopExporter: Problem %s on %s (severity: %s): %s",
+		problem.Type, problem.Resource, problem.Severity, problem.Message)
+	return nil
+}
+
+func (e *noopExporter) Stop() error {
+	// No-op exporter has no resources to clean up
+	return nil
+}
 
 func main() {
+	// Parse command line flags
+	var (
+		configFile      = flag.String("config", "", "Path to configuration file")
+		version         = flag.Bool("version", false, "Show version information")
+		validateConfig  = flag.Bool("validate-config", false, "Validate configuration and exit")
+		dumpConfig      = flag.Bool("dump-config", false, "Dump effective configuration and exit")
+		listMonitors    = flag.Bool("list-monitors", false, "List available monitor types and exit")
+		debug           = flag.Bool("debug", false, "Enable debug logging")
+		dryRun          = flag.Bool("dry-run", false, "Enable dry-run mode (no actual remediation)")
+		logLevel        = flag.String("log-level", "", "Override log level (debug, info, warn, error)")
+		logFormat       = flag.String("log-format", "", "Override log format (json, text)")
+		enableProfiling = flag.Bool("enable-profiling", false, "Enable pprof profiling server")
+		profilingPort   = flag.Int("profiling-port", 6060, "Port for pprof profiling server")
+	)
 	flag.Parse()
 
-	// Handle version flag
 	if *version {
-		printVersion()
-		os.Exit(0)
+		fmt.Printf("Node Doctor %s\n", Version)
+		fmt.Printf("Git Commit: %s\n", GitCommit)
+		fmt.Printf("Build Time: %s\n", BuildTime)
+		fmt.Printf("Go Version: %s\n", runtime.Version())
+		fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		return
 	}
 
-	log.Printf("[INFO] Node Doctor %s starting...", Version)
+	if *listMonitors {
+		fmt.Println("Available monitor types:")
+		for _, monitorType := range monitors.GetRegisteredTypes() {
+			info := monitors.GetMonitorInfo(monitorType)
+			if info != nil {
+				fmt.Printf("  %-20s - %s\n", monitorType, info.Description)
+			} else {
+				fmt.Printf("  %-20s - (no description)\n", monitorType)
+			}
+		}
+		return
+	}
 
-	// Load configuration
-	config, err := loadConfiguration()
+	// Determine config file path
+	if *configFile == "" {
+		// Look for config in standard locations
+		candidates := []string{
+			"/etc/node-doctor/config.yaml",
+			"/etc/node-doctor/config.yml",
+			"./config.yaml",
+			"./config.yml",
+		}
+
+		for _, candidate := range candidates {
+			if _, err := os.Stat(candidate); err == nil {
+				*configFile = candidate
+				break
+			}
+		}
+
+		if *configFile == "" {
+			log.Fatal("No configuration file found. Use -config flag or place config.yaml in current directory or /etc/node-doctor/")
+		}
+	}
+
+	log.Printf("[INFO] Starting Node Doctor %s (commit: %s, built: %s)", Version, GitCommit, BuildTime)
+	log.Printf("[INFO] Loading configuration from: %s", *configFile)
+
+	// Load and validate configuration
+	config, err := util.LoadConfig(*configFile)
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to load configuration: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Setup logging based on configuration
-	setupLogging(config.Settings)
+	// Apply command line overrides
+	if *debug {
+		config.Settings.LogLevel = "debug"
+	}
+	if *logLevel != "" {
+		config.Settings.LogLevel = *logLevel
+	}
+	if *logFormat != "" {
+		config.Settings.LogFormat = *logFormat
+	}
+	if *dryRun {
+		config.Settings.DryRunMode = true
+		config.Remediation.DryRun = true
+	}
+	if *enableProfiling {
+		config.Features.EnableProfiling = true
+		config.Features.ProfilingPort = *profilingPort
+	}
 
-	log.Printf("[INFO] Configuration loaded successfully from %s", *configPath)
-	log.Printf("[INFO] Node: %s, Log Level: %s, Log Format: %s",
-		config.Settings.NodeName, config.Settings.LogLevel, config.Settings.LogFormat)
+	// Apply defaults and validate
+	if err := config.ApplyDefaults(); err != nil {
+		log.Fatalf("Failed to apply configuration defaults: %v", err)
+	}
+
+	if err := config.Validate(); err != nil {
+		log.Fatalf("Configuration validation failed: %v", err)
+	}
+
+	if *validateConfig {
+		log.Printf("[INFO] Configuration validation passed")
+		return
+	}
+
+	if *dumpConfig {
+		dumpConfiguration(config)
+		return
+	}
+
+	// Setup basic logging (detailed logging setup would need more implementation)
+	log.Printf("[INFO] Node Doctor starting on node: %s", config.Settings.NodeName)
+	log.Printf("[INFO] Log level: %s, format: %s", config.Settings.LogLevel, config.Settings.LogFormat)
+	if config.Settings.DryRunMode {
+		log.Printf("[WARN] Running in DRY-RUN mode - no actual remediation will be performed")
+	}
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Create monitors
-	monitors, err := createMonitors(ctx, config)
+	// Set up signal handling for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Create and start monitors
+	log.Printf("[INFO] Creating monitors...")
+	monitorInstances, err := createMonitors(ctx, config.Monitors)
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to create monitors: %v", err)
+		log.Fatalf("Failed to create monitors: %v", err)
 	}
 
-	log.Printf("[INFO] Created %d monitors", len(monitors))
+	if len(monitorInstances) == 0 {
+		log.Fatalf("No valid monitors configured")
+	}
+
+	log.Printf("[INFO] Created %d monitors", len(monitorInstances))
 
 	// Create exporters
-	exporters, err := createExporters(ctx, config)
+	log.Printf("[INFO] Creating exporters...")
+	exporters, exporterInterfaces, err := createExporters(ctx, config)
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to create exporters: %v", err)
+		log.Fatalf("Failed to create exporters: %v", err)
 	}
 
 	log.Printf("[INFO] Created %d exporters", len(exporters))
 
-	// Create problem detector
-	detector, err := detector.NewProblemDetector(config, monitors, exporters)
+	// Create the detector with configured monitors and exporters
+	log.Printf("[INFO] Creating detector...")
+
+	det, err := detector.NewProblemDetector(config, monitorInstances, exporterInterfaces)
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to create problem detector: %v", err)
+		log.Fatalf("Failed to create detector: %v", err)
 	}
 
-	// Setup signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 2) // Increased buffer to handle multiple signals
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-
-	// Start detector in goroutine with panic recovery
-	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				done <- fmt.Errorf("detector panicked: %v", r)
-			}
-		}()
-
-		err := detector.Run(ctx)
-		done <- err // Always send result (nil or error)
-	}()
+	// Start the detector
+	log.Printf("[INFO] Starting detector...")
+	if err := det.Run(ctx); err != nil {
+		log.Fatalf("Failed to start detector: %v", err)
+	}
 
 	log.Printf("[INFO] Node Doctor started successfully")
 
-	// Wait for shutdown signal or detector completion
-	var shutdownReason string
-	select {
-	case sig := <-sigChan:
-		shutdownReason = fmt.Sprintf("signal %v", sig)
-		log.Printf("[INFO] Received %s, initiating graceful shutdown", shutdownReason)
-	case err := <-done:
-		if err != nil {
-			shutdownReason = fmt.Sprintf("detector error: %v", err)
-			log.Printf("[ERROR] %s", shutdownReason)
-		} else {
-			shutdownReason = "clean detector exit"
-			log.Printf("[INFO] Detector exited cleanly")
-		}
-	}
+	// Wait for shutdown signal
+	<-sigCh
+	log.Printf("[INFO] Received shutdown signal, stopping...")
 
-	// Cancel context to signal shutdown
-	cancel()
-
-	// Stop exporters gracefully
-	stopExporters(exporters)
-
-	// Wait for detector to finish with timeout
+	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
+	// Stop detector (the Run method handles its own cleanup)
+	log.Printf("[INFO] Stopping detector...")
+	// Cancel the context to signal shutdown
+	cancel()
+
+	// Stop exporters
+	log.Printf("[INFO] Stopping exporters...")
+	for _, exporter := range exporters {
+		if err := exporter.Stop(); err != nil {
+			log.Printf("[WARN] Error stopping exporter: %v", err)
+		}
+	}
+
+	// Wait for shutdown to complete or timeout
 	select {
-	case err := <-done:
-		if err != nil && shutdownReason != fmt.Sprintf("detector error: %v", err) {
-			log.Printf("[WARN] Detector shutdown error: %v", err)
-		}
-		log.Printf("[INFO] Graceful shutdown completed")
 	case <-shutdownCtx.Done():
-		log.Printf("[WARN] Shutdown timeout exceeded, forcing exit")
-	}
-
-	log.Printf("[INFO] Node Doctor stopped (%s)", shutdownReason)
-}
-
-// loadConfiguration loads and validates the configuration with proper precedence:
-// 1. Start with file config or defaults if file doesn't exist
-// 2. Apply CLI flag overrides
-// 3. Add hostname fallback for NodeName if still empty
-// 4. Re-validate the final configuration
-func loadConfiguration() (*types.NodeDoctorConfig, error) {
-	var config *types.NodeDoctorConfig
-	var err error
-
-	// Try to load config from file, fall back to defaults
-	if _, statErr := os.Stat(*configPath); os.IsNotExist(statErr) {
-		log.Printf("[WARN] Config file %s not found, using defaults", *configPath)
-
-		// Try DefaultConfig first, but if it fails due to missing NODE_NAME, create a minimal config
-		config, err = util.DefaultConfig()
-		if err != nil {
-			log.Printf("[INFO] DefaultConfig failed (%v), creating minimal config", err)
-			config = createMinimalConfig()
-		}
-	} else {
-		config, err = util.LoadConfig(*configPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load config from %s: %w", *configPath, err)
-		}
-	}
-
-	// Apply CLI flag overrides
-	applyFlagOverrides(config)
-
-	// If nodeName still empty, try hostname as fallback
-	if config.Settings.NodeName == "" {
-		hostname, err := os.Hostname()
-		if err == nil && hostname != "" {
-			config.Settings.NodeName = hostname
-			log.Printf("[INFO] Using hostname as node name: %s", hostname)
-		}
-	}
-
-	// Apply defaults and validate after all modifications
-	if err := config.ApplyDefaults(); err != nil {
-		return nil, fmt.Errorf("failed to apply defaults: %w", err)
-	}
-
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("configuration validation failed: %w", err)
-	}
-
-	return config, nil
-}
-
-// createMinimalConfig creates a minimal configuration when DefaultConfig fails
-func createMinimalConfig() *types.NodeDoctorConfig {
-	return &types.NodeDoctorConfig{
-		APIVersion: "node-doctor.io/v1alpha1",
-		Kind:       "NodeDoctorConfig",
-		Metadata: types.ConfigMetadata{
-			Name: "minimal",
-		},
-		Settings: types.GlobalSettings{
-			NodeName: os.Getenv("NODE_NAME"), // Will be empty if not set, but hostname fallback will handle it
-		},
-		Monitors: []types.MonitorConfig{
-			{
-				Name:    "kubelet-health",
-				Type:    "kubernetes-kubelet-check",
-				Enabled: true,
-				Config: map[string]interface{}{
-					"healthzURL": "http://127.0.0.1:10248/healthz",
-				},
-			},
-		},
-		Exporters: types.ExporterConfigs{
-			Kubernetes: &types.KubernetesExporterConfig{
-				Enabled: true,
-			},
-			HTTP: &types.HTTPExporterConfig{
-				Enabled: true,
-			},
-			Prometheus: &types.PrometheusExporterConfig{
-				Enabled: true,
-			},
-		},
-		Remediation: types.RemediationConfig{
-			Enabled: false, // Disabled by default for safety
-		},
-	}
-}
-
-// applyFlagOverrides applies command-line flag overrides to the configuration
-func applyFlagOverrides(config *types.NodeDoctorConfig) {
-	if *nodeName != "" {
-		log.Printf("[INFO] Overriding node name: %s -> %s", config.Settings.NodeName, *nodeName)
-		config.Settings.NodeName = *nodeName
-	}
-
-	if *logLevel != "" {
-		log.Printf("[INFO] Overriding log level: %s -> %s", config.Settings.LogLevel, *logLevel)
-		config.Settings.LogLevel = *logLevel
-	}
-
-	if *logFormat != "" {
-		log.Printf("[INFO] Overriding log format: %s -> %s", config.Settings.LogFormat, *logFormat)
-		config.Settings.LogFormat = *logFormat
-	}
-
-	if *kubeconfig != "" {
-		log.Printf("[INFO] Overriding kubeconfig: %s -> %s", config.Settings.Kubeconfig, *kubeconfig)
-		config.Settings.Kubeconfig = *kubeconfig
-	}
-
-	if *dryRun {
-		log.Printf("[INFO] Enabling dry-run mode (remediation disabled)")
-		config.Settings.DryRunMode = true
-		config.Remediation.DryRun = true
-	}
-}
-
-// setupLogging configures the logging subsystem based on the configuration
-func setupLogging(settings types.GlobalSettings) {
-	// Configure log flags based on format
-	switch settings.LogFormat {
-	case "json":
-		log.SetFlags(0) // JSON format handles timestamps internally
-	case "text":
-		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+		log.Printf("[WARN] Shutdown timeout exceeded")
 	default:
-		log.SetFlags(log.LstdFlags)
+		log.Printf("[INFO] Node Doctor stopped successfully")
 	}
-
-	// Configure output destination
-	switch settings.LogOutput {
-	case "stdout":
-		log.SetOutput(os.Stdout)
-	case "stderr":
-		log.SetOutput(os.Stderr)
-	case "file":
-		if settings.LogFile != "" {
-			// Note: Log file handle is intentionally kept open for the lifetime of the application
-			// and will be closed automatically when the process exits.
-			file, err := os.OpenFile(settings.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				log.Fatalf("[ERROR] Failed to open log file %s: %v", settings.LogFile, err)
-			}
-			log.SetOutput(file)
-			log.Printf("[INFO] Logging to file: %s", settings.LogFile)
-		} else {
-			log.Printf("[WARN] Log output set to 'file' but no log file specified, using stderr")
-			log.SetOutput(os.Stderr)
-		}
-	default:
-		log.SetOutput(os.Stderr)
-	}
-
-	log.Printf("[INFO] Logging configured: level=%s, format=%s, output=%s",
-		settings.LogLevel, settings.LogFormat, settings.LogOutput)
 }
 
-// createMonitors creates and initializes all enabled monitors from the configuration
-func createMonitors(ctx context.Context, config *types.NodeDoctorConfig) ([]types.Monitor, error) {
-	monitors, err := monitors.CreateMonitorsFromConfigs(ctx, config.Monitors)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create monitors: %w", err)
-	}
+// createMonitors creates and configures all monitors from the configuration
+func createMonitors(ctx context.Context, monitorConfigs []types.MonitorConfig) ([]types.Monitor, error) {
+	var monitorInstances []types.Monitor
 
-	if len(monitors) == 0 {
-		return nil, fmt.Errorf("no monitors were created (all disabled or invalid)")
-	}
-
-	// Log monitor status
-	enabledCount := 0
-	disabledCount := 0
-	for _, monitorConfig := range config.Monitors {
-		if monitorConfig.Enabled {
-			enabledCount++
-			log.Printf("[INFO] Monitor enabled: %s (%s)", monitorConfig.Name, monitorConfig.Type)
-		} else {
-			disabledCount++
-			log.Printf("[INFO] Monitor disabled: %s (%s)", monitorConfig.Name, monitorConfig.Type)
+	for _, config := range monitorConfigs {
+		if !config.Enabled {
+			log.Printf("[INFO] Monitor %s is disabled, skipping", config.Name)
+			continue
 		}
+
+		log.Printf("[INFO] Creating monitor: %s (type: %s)", config.Name, config.Type)
+
+		monitor, err := monitors.CreateMonitor(ctx, config)
+		if err != nil {
+			log.Printf("[ERROR] Failed to create monitor %s: %v", config.Name, err)
+			continue
+		}
+
+		monitorInstances = append(monitorInstances, monitor)
+		log.Printf("[INFO] Created monitor: %s", config.Name)
 	}
 
-	log.Printf("[INFO] Monitor summary: %d enabled, %d disabled, %d created",
-		enabledCount, disabledCount, len(monitors))
-
-	return monitors, nil
+	return monitorInstances, nil
 }
 
-// createExporters creates exporter instances based on configuration
-func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]types.Exporter, error) {
-	var exporters []types.Exporter
-	var exporterInterfaces []ExporterInterface // For graceful shutdown
+// createExporters creates and configures all exporters from the configuration
+func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]ExporterLifecycle, []types.Exporter, error) {
+	var exporters []ExporterLifecycle
+	var exporterInterfaces []types.Exporter
 
 	// Create Kubernetes exporter if enabled
 	if config.Exporters.Kubernetes != nil && config.Exporters.Kubernetes.Enabled {
 		log.Printf("[INFO] Creating Kubernetes exporter...")
-		kubernetesExporter, err := kubernetesexporter.NewKubernetesExporter(
+		k8sExporter, err := kubernetesexporter.NewKubernetesExporter(
 			config.Exporters.Kubernetes,
 			&config.Settings,
 		)
 		if err != nil {
 			log.Printf("[WARN] Failed to create Kubernetes exporter: %v", err)
 		} else {
-			// Start the exporter
-			if err := kubernetesExporter.Start(ctx); err != nil {
+			if err := k8sExporter.Start(ctx); err != nil {
 				log.Printf("[WARN] Failed to start Kubernetes exporter: %v", err)
 			} else {
-				exporters = append(exporters, kubernetesExporter)
-				exporterInterfaces = append(exporterInterfaces, kubernetesExporter)
+				exporters = append(exporters, k8sExporter)
+				exporterInterfaces = append(exporterInterfaces, k8sExporter)
 				log.Printf("[INFO] Kubernetes exporter created and started")
 			}
 		}
 	}
 
-	// Create HTTP exporter if enabled (not implemented yet)
+	// Create HTTP exporter if enabled
 	if config.Exporters.HTTP != nil && config.Exporters.HTTP.Enabled {
-		log.Printf("[INFO] HTTP exporter would be enabled (Task #3059 not implemented)")
+		log.Printf("[INFO] Creating HTTP exporter...")
+		httpExporter, err := httpexporter.NewHTTPExporter(
+			config.Exporters.HTTP,
+			&config.Settings,
+		)
+		if err != nil {
+			log.Printf("[WARN] Failed to create HTTP exporter: %v", err)
+		} else {
+			if err := httpExporter.Start(ctx); err != nil {
+				log.Printf("[WARN] Failed to start HTTP exporter: %v", err)
+			} else {
+				exporters = append(exporters, httpExporter)
+				exporterInterfaces = append(exporterInterfaces, httpExporter)
+				log.Printf("[INFO] HTTP exporter created and started")
+			}
+		}
 	}
 
 	// Create Prometheus exporter if enabled (not implemented yet)
@@ -372,68 +318,26 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]typ
 	}
 
 	// If no exporters were created, use a no-op exporter to satisfy the detector requirements
-	if len(exporters) == 0 {
+	if len(exporterInterfaces) == 0 {
 		log.Printf("[INFO] No exporters enabled, using no-op exporter")
-		exporters = append(exporters, &noopExporter{})
+		noopExp := &noopExporter{}
+		exporters = append(exporters, noopExp)
+		exporterInterfaces = append(exporterInterfaces, noopExp)
 	}
 
-	// Store exporter interfaces for shutdown
-	setExporterInterfaces(exporterInterfaces)
-
-	return exporters, nil
+	return exporters, exporterInterfaces, nil
 }
 
-// ExporterInterface defines the interface for exporters that support lifecycle management
-type ExporterInterface interface {
+// dumpConfiguration prints the effective configuration as JSON
+func dumpConfiguration(config *types.NodeDoctorConfig) {
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		log.Fatalf("Failed to marshal configuration: %v", err)
+	}
+	fmt.Println(string(data))
+}
+
+// ExporterLifecycle interface for exporters that need lifecycle management
+type ExporterLifecycle interface {
 	Stop() error
-}
-
-// Global variable to store exporter interfaces for shutdown
-var globalExporterInterfaces []ExporterInterface
-
-// setExporterInterfaces stores exporter interfaces for graceful shutdown
-func setExporterInterfaces(exporters []ExporterInterface) {
-	globalExporterInterfaces = exporters
-}
-
-// stopExporters gracefully stops all exporters
-func stopExporters(exporters []types.Exporter) {
-	log.Printf("[INFO] Stopping %d exporters...", len(globalExporterInterfaces))
-
-	for i, exporterInterface := range globalExporterInterfaces {
-		if err := exporterInterface.Stop(); err != nil {
-			log.Printf("[WARN] Error stopping exporter %d: %v", i, err)
-		} else {
-			log.Printf("[DEBUG] Exporter %d stopped successfully", i)
-		}
-	}
-
-	log.Printf("[INFO] All exporters stopped")
-}
-
-// printVersion prints version information to stdout
-func printVersion() {
-	fmt.Printf("node-doctor %s\n", Version)
-	fmt.Printf("  Git Commit: %s\n", GitCommit)
-	fmt.Printf("  Built: %s\n", BuildTime)
-	fmt.Printf("  Go Version: %s\n", runtime.Version())
-	fmt.Printf("  OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
-}
-
-// noopExporter is a stub exporter implementation that logs received data
-// This will be replaced by real exporters in Tasks #3059-3060
-type noopExporter struct{}
-
-// ExportStatus implements the types.Exporter interface
-func (e *noopExporter) ExportStatus(ctx context.Context, status *types.Status) error {
-	log.Printf("[DEBUG] NoOp exporter: received status from %s with %d events, %d conditions",
-		status.Source, len(status.Events), len(status.Conditions))
-	return nil
-}
-
-// ExportProblem implements the types.Exporter interface
-func (e *noopExporter) ExportProblem(ctx context.Context, problem *types.Problem) error {
-	log.Printf("[DEBUG] NoOp exporter: received problem %s/%s (severity: %s): %s",
-		problem.Type, problem.Resource, problem.Severity, problem.Message)
-	return nil
 }

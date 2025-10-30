@@ -262,26 +262,62 @@ type EventConfig struct {
 	DeduplicationWindow       time.Duration `json:"-" yaml:"-"`
 }
 
-// HTTPExporterConfig configures the HTTP exporter.
+// HTTPExporterConfig configures the HTTP webhook exporter.
 type HTTPExporterConfig struct {
-	Enabled     bool   `json:"enabled" yaml:"enabled"`
-	BindAddress string `json:"bindAddress,omitempty" yaml:"bindAddress,omitempty"`
-	HostPort    int    `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
+	Enabled   bool              `json:"enabled" yaml:"enabled"`
+	Webhooks  []WebhookEndpoint `json:"webhooks,omitempty" yaml:"webhooks,omitempty"`
+	Workers   int               `json:"workers,omitempty" yaml:"workers,omitempty"`
+	QueueSize int               `json:"queueSize,omitempty" yaml:"queueSize,omitempty"`
 
-	// TLS configuration
-	TLSEnabled  bool   `json:"tlsEnabled,omitempty" yaml:"tlsEnabled,omitempty"`
-	TLSCertFile string `json:"tlsCertFile,omitempty" yaml:"tlsCertFile,omitempty"`
-	TLSKeyFile  string `json:"tlsKeyFile,omitempty" yaml:"tlsKeyFile,omitempty"`
+	// Default timeout for all webhooks (can be overridden per webhook)
+	TimeoutString string        `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Timeout       time.Duration `json:"-" yaml:"-"`
 
-	// Endpoints to expose
-	Endpoints []HTTPEndpointConfig `json:"endpoints,omitempty" yaml:"endpoints,omitempty"`
+	// Default retry configuration for all webhooks (can be overridden per webhook)
+	Retry   RetryConfig       `json:"retry,omitempty" yaml:"retry,omitempty"`
+	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
-// HTTPEndpointConfig defines an HTTP endpoint.
-type HTTPEndpointConfig struct {
-	Path        string `json:"path" yaml:"path"`
-	Handler     string `json:"handler" yaml:"handler"`
-	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+// WebhookEndpoint defines a webhook destination for HTTP exports.
+type WebhookEndpoint struct {
+	Name string `json:"name" yaml:"name"`
+	URL  string `json:"url" yaml:"url"`
+	Auth AuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+
+	// Per-webhook timeout (overrides default)
+	TimeoutString string        `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Timeout       time.Duration `json:"-" yaml:"-"`
+
+	// Per-webhook retry config (overrides default)
+	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
+
+	// Per-webhook headers (merged with default headers)
+	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+
+	// Control what gets sent to this webhook
+	SendStatus   bool `json:"sendStatus,omitempty" yaml:"sendStatus,omitempty"`
+	SendProblems bool `json:"sendProblems,omitempty" yaml:"sendProblems,omitempty"`
+}
+
+// AuthConfig defines authentication configuration for webhooks.
+type AuthConfig struct {
+	Type     string `json:"type" yaml:"type"`           // "none", "bearer", "basic"
+	Token    string `json:"token,omitempty" yaml:"token,omitempty"`       // Bearer token
+	Username string `json:"username,omitempty" yaml:"username,omitempty"` // Basic auth username
+	Password string `json:"password,omitempty" yaml:"password,omitempty"` // Basic auth password
+}
+
+// RetryConfig defines retry behavior for webhook calls.
+type RetryConfig struct {
+	MaxAttempts int `json:"maxAttempts,omitempty" yaml:"maxAttempts,omitempty"`
+
+	// Base delay between retries (stored as string)
+	BaseDelayString string        `json:"baseDelay,omitempty" yaml:"baseDelay,omitempty"`
+	BaseDelay       time.Duration `json:"-" yaml:"-"`
+
+	// Maximum delay between retries (stored as string)
+	MaxDelayString string        `json:"maxDelay,omitempty" yaml:"maxDelay,omitempty"`
+	MaxDelay       time.Duration `json:"-" yaml:"-"`
 }
 
 // PrometheusExporterConfig configures the Prometheus exporter.
@@ -578,12 +614,116 @@ func (k *KubernetesExporterConfig) ApplyDefaults() error {
 
 // ApplyDefaults applies default values to HTTPExporterConfig.
 func (h *HTTPExporterConfig) ApplyDefaults() error {
-	if h.BindAddress == "" {
-		h.BindAddress = DefaultHTTPBindAddress
+	// Set worker pool defaults
+	if h.Workers == 0 {
+		h.Workers = 5 // default worker count
 	}
-	if h.HostPort == 0 {
-		h.HostPort = DefaultHTTPPort
+	if h.QueueSize == 0 {
+		h.QueueSize = 100 // default queue size
 	}
+
+	// Set default timeout
+	if h.TimeoutString == "" {
+		h.TimeoutString = "30s"
+	}
+	var err error
+	h.Timeout, err = time.ParseDuration(h.TimeoutString)
+	if err != nil {
+		return fmt.Errorf("invalid timeout %q: %w", h.TimeoutString, err)
+	}
+
+	// Set retry defaults
+	if h.Retry.MaxAttempts == 0 {
+		h.Retry.MaxAttempts = 3
+	}
+	if h.Retry.BaseDelayString == "" {
+		h.Retry.BaseDelayString = "1s"
+	}
+	if h.Retry.MaxDelayString == "" {
+		h.Retry.MaxDelayString = "30s"
+	}
+
+	// Parse retry durations
+	h.Retry.BaseDelay, err = time.ParseDuration(h.Retry.BaseDelayString)
+	if err != nil {
+		return fmt.Errorf("invalid retry baseDelay %q: %w", h.Retry.BaseDelayString, err)
+	}
+	h.Retry.MaxDelay, err = time.ParseDuration(h.Retry.MaxDelayString)
+	if err != nil {
+		return fmt.Errorf("invalid retry maxDelay %q: %w", h.Retry.MaxDelayString, err)
+	}
+
+	// Apply defaults to each webhook
+	for i := range h.Webhooks {
+		if err := h.Webhooks[i].ApplyDefaults(h); err != nil {
+			return fmt.Errorf("failed to apply defaults to webhook %q: %w", h.Webhooks[i].Name, err)
+		}
+	}
+
+	return nil
+}
+
+// ApplyDefaults applies default values to WebhookEndpoint.
+func (w *WebhookEndpoint) ApplyDefaults(parent *HTTPExporterConfig) error {
+	// Use parent timeout if not specified
+	if w.TimeoutString == "" {
+		w.TimeoutString = parent.TimeoutString
+		w.Timeout = parent.Timeout
+	} else {
+		var err error
+		w.Timeout, err = time.ParseDuration(w.TimeoutString)
+		if err != nil {
+			return fmt.Errorf("invalid timeout %q: %w", w.TimeoutString, err)
+		}
+	}
+
+	// Use parent retry config if not specified
+	if w.Retry == nil {
+		w.Retry = &RetryConfig{
+			MaxAttempts:     parent.Retry.MaxAttempts,
+			BaseDelayString: parent.Retry.BaseDelayString,
+			BaseDelay:       parent.Retry.BaseDelay,
+			MaxDelayString:  parent.Retry.MaxDelayString,
+			MaxDelay:        parent.Retry.MaxDelay,
+		}
+	} else {
+		// Fill in missing fields from parent
+		if w.Retry.MaxAttempts == 0 {
+			w.Retry.MaxAttempts = parent.Retry.MaxAttempts
+		}
+		if w.Retry.BaseDelayString == "" {
+			w.Retry.BaseDelayString = parent.Retry.BaseDelayString
+			w.Retry.BaseDelay = parent.Retry.BaseDelay
+		} else {
+			var err error
+			w.Retry.BaseDelay, err = time.ParseDuration(w.Retry.BaseDelayString)
+			if err != nil {
+				return fmt.Errorf("invalid retry baseDelay %q: %w", w.Retry.BaseDelayString, err)
+			}
+		}
+		if w.Retry.MaxDelayString == "" {
+			w.Retry.MaxDelayString = parent.Retry.MaxDelayString
+			w.Retry.MaxDelay = parent.Retry.MaxDelay
+		} else {
+			var err error
+			w.Retry.MaxDelay, err = time.ParseDuration(w.Retry.MaxDelayString)
+			if err != nil {
+				return fmt.Errorf("invalid retry maxDelay %q: %w", w.Retry.MaxDelayString, err)
+			}
+		}
+	}
+
+	// Default to sending both status and problems
+	if !w.SendStatus && !w.SendProblems {
+		w.SendStatus = true
+		w.SendProblems = true
+	}
+
+	// Default auth type
+	if w.Auth.Type == "" {
+		w.Auth.Type = "none"
+	}
+
 	return nil
 }
 
@@ -932,42 +1072,120 @@ func (h *HTTPExporterConfig) Validate() error {
 		return nil // No validation needed if disabled
 	}
 
-	// Validate port range
-	if h.HostPort <= 0 || h.HostPort > 65535 {
-		return fmt.Errorf("hostPort must be in range 1-65535, got %d", h.HostPort)
+	// Validate worker pool settings
+	if h.Workers <= 0 {
+		return fmt.Errorf("workers must be positive, got %d", h.Workers)
+	}
+	if h.QueueSize <= 0 {
+		return fmt.Errorf("queueSize must be positive, got %d", h.QueueSize)
 	}
 
-	// Validate TLS configuration
-	if h.TLSEnabled {
-		if h.TLSCertFile == "" {
-			return fmt.Errorf("tlsCertFile is required when TLS is enabled")
-		}
-		if h.TLSKeyFile == "" {
-			return fmt.Errorf("tlsKeyFile is required when TLS is enabled")
-		}
-
-		// Note: TLS file existence checks skipped to support containerized deployments
-		// where certificates may be mounted at runtime via secrets
+	// Validate timeout
+	if h.Timeout <= 0 {
+		return fmt.Errorf("timeout must be positive, got %v", h.Timeout)
 	}
 
-	// Validate endpoints
-	paths := make(map[string]bool)
-	for i, endpoint := range h.Endpoints {
-		if endpoint.Path == "" {
-			return fmt.Errorf("endpoint %d: path is required", i)
-		}
-		if endpoint.Handler == "" {
-			return fmt.Errorf("endpoint %d: handler is required", i)
-		}
-		if !strings.HasPrefix(endpoint.Path, "/") {
-			return fmt.Errorf("endpoint %d: path must start with '/', got %q", i, endpoint.Path)
-		}
-		if paths[endpoint.Path] {
-			return fmt.Errorf("duplicate endpoint path %q found", endpoint.Path)
-		}
-		paths[endpoint.Path] = true
+	// Validate retry configuration
+	if err := h.Retry.Validate(); err != nil {
+		return fmt.Errorf("retry configuration validation failed: %w", err)
 	}
 
+	// Validate webhooks
+	if len(h.Webhooks) == 0 {
+		return fmt.Errorf("at least one webhook must be configured when HTTP exporter is enabled")
+	}
+
+	webhookNames := make(map[string]bool)
+	for i, webhook := range h.Webhooks {
+		if err := webhook.Validate(); err != nil {
+			return fmt.Errorf("webhook %d validation failed: %w", i, err)
+		}
+
+		// Check for duplicate names
+		if webhook.Name != "" {
+			if webhookNames[webhook.Name] {
+				return fmt.Errorf("duplicate webhook name %q found", webhook.Name)
+			}
+			webhookNames[webhook.Name] = true
+		}
+	}
+
+	return nil
+}
+
+// Validate validates the WebhookEndpoint configuration.
+func (w *WebhookEndpoint) Validate() error {
+	// Validate required fields
+	if w.URL == "" {
+		return fmt.Errorf("url is required")
+	}
+
+	// Basic URL format validation
+	if !strings.HasPrefix(w.URL, "http://") && !strings.HasPrefix(w.URL, "https://") {
+		return fmt.Errorf("url must start with http:// or https://, got %q", w.URL)
+	}
+
+	// Validate timeout
+	if w.Timeout <= 0 {
+		return fmt.Errorf("timeout must be positive, got %v", w.Timeout)
+	}
+
+	// Validate retry configuration if specified
+	if w.Retry != nil {
+		if err := w.Retry.Validate(); err != nil {
+			return fmt.Errorf("retry configuration validation failed: %w", err)
+		}
+	}
+
+	// Validate authentication
+	if err := w.Auth.Validate(); err != nil {
+		return fmt.Errorf("auth configuration validation failed: %w", err)
+	}
+
+	// Validate that at least one export type is enabled
+	if !w.SendStatus && !w.SendProblems {
+		return fmt.Errorf("at least one of sendStatus or sendProblems must be true")
+	}
+
+	return nil
+}
+
+// Validate validates the AuthConfig configuration.
+func (a *AuthConfig) Validate() error {
+	switch a.Type {
+	case "none":
+		// No additional validation needed
+	case "bearer":
+		if a.Token == "" {
+			return fmt.Errorf("token is required for bearer auth")
+		}
+	case "basic":
+		if a.Username == "" {
+			return fmt.Errorf("username is required for basic auth")
+		}
+		if a.Password == "" {
+			return fmt.Errorf("password is required for basic auth")
+		}
+	default:
+		return fmt.Errorf("invalid auth type %q, must be one of: none, bearer, basic", a.Type)
+	}
+	return nil
+}
+
+// Validate validates the RetryConfig configuration.
+func (r *RetryConfig) Validate() error {
+	if r.MaxAttempts < 0 {
+		return fmt.Errorf("maxAttempts must be non-negative, got %d", r.MaxAttempts)
+	}
+	if r.BaseDelay <= 0 {
+		return fmt.Errorf("baseDelay must be positive, got %v", r.BaseDelay)
+	}
+	if r.MaxDelay <= 0 {
+		return fmt.Errorf("maxDelay must be positive, got %v", r.MaxDelay)
+	}
+	if r.BaseDelay > r.MaxDelay {
+		return fmt.Errorf("baseDelay (%v) must not exceed maxDelay (%v)", r.BaseDelay, r.MaxDelay)
+	}
 	return nil
 }
 
@@ -1140,8 +1358,28 @@ func (k *KubernetesExporterConfig) SubstituteEnvVars() {
 
 // SubstituteEnvVars performs environment variable substitution on HTTPExporterConfig.
 func (h *HTTPExporterConfig) SubstituteEnvVars() {
-	h.TLSCertFile = os.ExpandEnv(h.TLSCertFile)
-	h.TLSKeyFile = os.ExpandEnv(h.TLSKeyFile)
+	// Substitute in headers
+	for key, value := range h.Headers {
+		h.Headers[key] = os.ExpandEnv(value)
+	}
+
+	// Substitute in each webhook
+	for i := range h.Webhooks {
+		h.Webhooks[i].SubstituteEnvVars()
+	}
+}
+
+// SubstituteEnvVars performs environment variable substitution on WebhookEndpoint.
+func (w *WebhookEndpoint) SubstituteEnvVars() {
+	w.URL = os.ExpandEnv(w.URL)
+	w.Auth.Token = os.ExpandEnv(w.Auth.Token)
+	w.Auth.Username = os.ExpandEnv(w.Auth.Username)
+	w.Auth.Password = os.ExpandEnv(w.Auth.Password)
+
+	// Substitute in headers
+	for key, value := range w.Headers {
+		w.Headers[key] = os.ExpandEnv(value)
+	}
 }
 
 // SubstituteEnvVars performs environment variable substitution on PrometheusExporterConfig.
