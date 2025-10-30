@@ -334,7 +334,11 @@ func (s *Status) ClearConditions() *Status {
 
 // WithMetadata adds a metadata key-value pair to the Problem.
 // Returns the Problem pointer for method chaining.
+// If the Problem pointer is nil, this is a no-op and returns nil.
 func (p *Problem) WithMetadata(key, value string) *Problem {
+	if p == nil {
+		return nil
+	}
 	if p.Metadata == nil {
 		p.Metadata = make(map[string]string)
 	}
@@ -344,8 +348,9 @@ func (p *Problem) WithMetadata(key, value string) *Problem {
 
 // GetMetadata retrieves a metadata value by key from the Problem.
 // Returns the value and true if found, empty string and false otherwise.
+// If the Problem pointer is nil, returns empty string and false.
 func (p *Problem) GetMetadata(key string) (string, bool) {
-	if p.Metadata == nil {
+	if p == nil || p.Metadata == nil {
 		return "", false
 	}
 	val, ok := p.Metadata[key]
