@@ -64,6 +64,7 @@ type BaseMonitor struct {
 	wg         sync.WaitGroup
 	mu         sync.RWMutex
 	running    bool
+	stopped    bool // Track if monitor was stopped (for restart handling)
 
 	// Check function and logger
 	checkFunc CheckFunc
@@ -118,18 +119,34 @@ func NewBaseMonitor(name string, interval, timeout time.Duration) (*BaseMonitor,
 //
 // The function receives a context that will be cancelled if the check exceeds
 // the monitor's timeout. Implementations should respect this context.
-func (b *BaseMonitor) SetCheckFunc(checkFunc CheckFunc) {
+//
+// Returns an error if the monitor is currently running.
+func (b *BaseMonitor) SetCheckFunc(checkFunc CheckFunc) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.running {
+		return fmt.Errorf("cannot change check function while monitor %q is running", b.name)
+	}
+
 	b.checkFunc = checkFunc
+	return nil
 }
 
 // SetLogger sets an optional logger for the monitor.
 // If no logger is set, logging operations are silently ignored.
-func (b *BaseMonitor) SetLogger(logger Logger) {
+//
+// Returns an error if the monitor is currently running.
+func (b *BaseMonitor) SetLogger(logger Logger) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.running {
+		return fmt.Errorf("cannot change logger while monitor %q is running", b.name)
+	}
+
 	b.logger = logger
+	return nil
 }
 
 // GetName returns the monitor's name.
@@ -168,8 +185,8 @@ func (b *BaseMonitor) IsRunning() bool {
 // The monitor runs asynchronously and sends Status updates through the channel
 // until Stop() is called.
 //
-// Start can only be called once per monitor instance. Subsequent calls will
-// return an error.
+// Start can be called multiple times to restart a stopped monitor. If the monitor
+// was previously stopped, new channels are created to ensure safe restart.
 //
 // Returns an error if:
 //   - The monitor is already running
@@ -187,6 +204,13 @@ func (b *BaseMonitor) Start() (<-chan *types.Status, error) {
 	if b.checkFunc == nil {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("check function must be set before starting monitor %q", b.name)
+	}
+
+	// If monitor was previously stopped, recreate channels for safe restart
+	if b.stopped {
+		b.statusChan = make(chan *types.Status, 10)
+		b.stopChan = make(chan struct{})
+		b.stopped = false
 	}
 
 	b.running = true
@@ -211,15 +235,19 @@ func (b *BaseMonitor) Start() (<-chan *types.Status, error) {
 
 // Stop gracefully stops the monitor.
 // This method blocks until the monitoring goroutine has completely stopped
-// and all resources have been cleaned up.
+// and all resources have been cleaned up, or until a timeout occurs.
 //
 // Stop is safe to call multiple times. If the monitor is not running,
 // this method returns immediately.
 //
+// Stop has a built-in timeout of 30 seconds to prevent indefinite hangs.
+// If the monitor doesn't stop within this time, a warning is logged but
+// Stop returns to allow the application to continue.
+//
 // After Stop returns:
 //   - The status channel will be closed
 //   - No more status updates will be sent
-//   - The monitor can be safely discarded
+//   - The monitor can be restarted with Start()
 //   - IsRunning() will return false
 func (b *BaseMonitor) Stop() {
 	b.mu.Lock()
@@ -235,14 +263,33 @@ func (b *BaseMonitor) Stop() {
 	// Signal the monitoring goroutine to stop
 	close(b.stopChan)
 
-	// Wait for the goroutine to complete
-	b.wg.Wait()
+	// Wait for the goroutine to complete with timeout
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
 
-	b.mu.Lock()
-	b.running = false
-	b.mu.Unlock()
+	// Wait for completion or timeout (30 seconds)
+	timeout := time.NewTimer(30 * time.Second)
+	defer timeout.Stop()
 
-	b.logInfof("Monitor %q stopped", name)
+	select {
+	case <-done:
+		// Normal completion
+		b.mu.Lock()
+		b.running = false
+		b.stopped = true
+		b.mu.Unlock()
+		b.logInfof("Monitor %q stopped", name)
+	case <-timeout.C:
+		// Timeout - force state update and log warning
+		b.mu.Lock()
+		b.running = false
+		b.stopped = true
+		b.mu.Unlock()
+		b.logWarnf("Monitor %q stop timeout after 30 seconds - forcing shutdown", name)
+	}
 }
 
 // run contains the main monitoring loop.

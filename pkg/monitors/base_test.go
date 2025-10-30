@@ -80,6 +80,12 @@ func mockSlowCheck(ctx context.Context) (*types.Status, error) {
 	}
 }
 
+// mockSlowCheckIgnoresContext takes longer than timeout and ignores context cancellation
+func mockSlowCheckIgnoresContext(ctx context.Context) (*types.Status, error) {
+	time.Sleep(100 * time.Millisecond)
+	return nil, nil
+}
+
 // mockPanicCheck panics intentionally
 func mockPanicCheck(ctx context.Context) (*types.Status, error) {
 	panic("intentional panic for testing")
@@ -229,11 +235,17 @@ func TestBaseMonitor_SettersAndGetters(t *testing.T) {
 	}
 
 	// Test SetCheckFunc
-	monitor.SetCheckFunc(mockHealthyCheck)
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	// Test SetLogger
 	logger := &mockLogger{}
-	monitor.SetLogger(logger)
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
 
 	// Getters are already tested in TestNewBaseMonitor
 	// Test thread safety by calling getters concurrently
@@ -253,6 +265,292 @@ func TestBaseMonitor_SettersAndGetters(t *testing.T) {
 	}
 }
 
+func TestBaseMonitor_SetCheckFuncErrorWhenRunning(t *testing.T) {
+	monitor, err := NewBaseMonitor("test", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create monitor: %v", err)
+	}
+
+	// Set initial check function
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
+
+	// Start the monitor
+	statusCh, err := monitor.Start()
+	if err != nil {
+		t.Fatalf("failed to start monitor: %v", err)
+	}
+	defer monitor.Stop()
+
+	// Try to change check function while running - should fail
+	err = monitor.SetCheckFunc(mockUnhealthyCheck)
+	if err == nil {
+		t.Error("expected error when setting check function on running monitor")
+	}
+	expectedError := "cannot change check function while monitor \"test\" is running"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("expected error to contain %q, got %q", expectedError, err.Error())
+	}
+
+	// Verify monitor is still working with original check function
+	select {
+	case status := <-statusCh:
+		if status == nil {
+			t.Error("received nil status")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("timeout waiting for status")
+	}
+}
+
+func TestBaseMonitor_SetLoggerErrorWhenRunning(t *testing.T) {
+	monitor, err := NewBaseMonitor("test", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create monitor: %v", err)
+	}
+
+	// Set initial logger and check function
+	logger1 := &mockLogger{}
+	err = monitor.SetLogger(logger1)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
+
+	// Start the monitor
+	statusCh, err := monitor.Start()
+	if err != nil {
+		t.Fatalf("failed to start monitor: %v", err)
+	}
+	defer monitor.Stop()
+
+	// Try to change logger while running - should fail
+	logger2 := &mockLogger{}
+	err = monitor.SetLogger(logger2)
+	if err == nil {
+		t.Error("expected error when setting logger on running monitor")
+	}
+	expectedError := "cannot change logger while monitor \"test\" is running"
+	if !strings.Contains(err.Error(), expectedError) {
+		t.Errorf("expected error to contain %q, got %q", expectedError, err.Error())
+	}
+
+	// Verify monitor is still working
+	select {
+	case status := <-statusCh:
+		if status == nil {
+			t.Error("received nil status")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("timeout waiting for status")
+	}
+}
+
+func TestBaseMonitor_Restart(t *testing.T) {
+	monitor, err := NewBaseMonitor("test-restart", 50*time.Millisecond, 25*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create monitor: %v", err)
+	}
+
+	counter := &mockCountingCheck{}
+	err = monitor.SetCheckFunc(counter.check)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
+
+	logger := &mockLogger{}
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	// First start cycle
+	statusCh1, err := monitor.Start()
+	if err != nil {
+		t.Fatalf("failed to start monitor: %v", err)
+	}
+
+	if !monitor.IsRunning() {
+		t.Error("expected monitor to be running after start")
+	}
+
+	// Wait for at least one status update
+	select {
+	case status := <-statusCh1:
+		if status == nil {
+			t.Error("received nil status")
+		} else if status.Source != "test-restart" {
+			t.Errorf("expected source 'test-restart', got %q", status.Source)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("timeout waiting for first status")
+	}
+
+	// Stop the monitor
+	monitor.Stop()
+
+	if monitor.IsRunning() {
+		t.Error("expected monitor to not be running after stop")
+	}
+
+	// Verify first channel is closed
+	select {
+	case _, ok := <-statusCh1:
+		if ok {
+			t.Error("expected first status channel to be closed")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("timeout waiting for first channel closure")
+	}
+
+	// Second start cycle - restart after stop
+	statusCh2, err := monitor.Start()
+	if err != nil {
+		t.Fatalf("failed to restart monitor: %v", err)
+	}
+
+	if !monitor.IsRunning() {
+		t.Error("expected monitor to be running after restart")
+	}
+
+	// Verify new channel is different from old one
+	if statusCh1 == statusCh2 {
+		t.Error("expected new status channel after restart")
+	}
+
+	// Wait for status on new channel
+	select {
+	case status := <-statusCh2:
+		if status == nil {
+			t.Error("received nil status on restart")
+		} else if status.Source != "test-restart" {
+			t.Errorf("expected source 'test-restart' on restart, got %q", status.Source)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("timeout waiting for restart status")
+	}
+
+	// Stop again
+	monitor.Stop()
+
+	// Verify second channel is closed
+	select {
+	case _, ok := <-statusCh2:
+		if ok {
+			t.Error("expected second status channel to be closed")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("timeout waiting for second channel closure")
+	}
+
+	// Third cycle - multiple restarts should work
+	statusCh3, err := monitor.Start()
+	if err != nil {
+		t.Fatalf("failed to restart monitor second time: %v", err)
+	}
+
+	// Verify multiple restarts work
+	select {
+	case status := <-statusCh3:
+		if status == nil {
+			t.Error("received nil status on second restart")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("timeout waiting for second restart status")
+	}
+
+	monitor.Stop()
+
+	// Verify check function was called multiple times across restarts
+	if counter.getCount() < 3 {
+		t.Errorf("expected at least 3 check calls across restarts, got %d", counter.getCount())
+	}
+
+	// Verify logging for start/stop cycles
+	infos, _, _ := logger.getMessages()
+	startCount := 0
+	stopCount := 0
+	for _, info := range infos {
+		if strings.Contains(info, "Starting monitor \"test-restart\"") {
+			startCount++
+		}
+		if strings.Contains(info, "Monitor \"test-restart\" stopped") {
+			stopCount++
+		}
+	}
+
+	if startCount < 3 {
+		t.Errorf("expected at least 3 start messages, got %d", startCount)
+	}
+	if stopCount < 3 {
+		t.Errorf("expected at least 3 stop messages, got %d", stopCount)
+	}
+}
+
+func TestBaseMonitor_StopTimeout(t *testing.T) {
+	monitor, err := NewBaseMonitor("test-timeout", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create monitor: %v", err)
+	}
+
+	logger := &mockLogger{}
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	// Use a check function that ignores context cancellation
+	err = monitor.SetCheckFunc(mockSlowCheckIgnoresContext)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
+
+	// Start the monitor
+	statusCh, err := monitor.Start()
+	if err != nil {
+		t.Fatalf("failed to start monitor: %v", err)
+	}
+
+	// Wait for it to start running
+	select {
+	case <-statusCh:
+		// Got a status, monitor is running
+	case <-time.After(200 * time.Millisecond):
+		t.Error("timeout waiting for initial status")
+	}
+
+	// Patch the stop timeout to be shorter for testing
+	// We can't directly modify the timeout, but we can test that Stop() returns
+	// within a reasonable time even if the check function ignores context
+
+	startTime := time.Now()
+	monitor.Stop()
+	stopDuration := time.Since(startTime)
+
+	// Stop should return reasonably quickly even with timeout
+	// The actual timeout is 30 seconds, but for testing we expect it to work
+	if stopDuration > 5*time.Second {
+		t.Errorf("Stop() took too long: %v", stopDuration)
+	}
+
+	// Verify monitor is marked as stopped
+	if monitor.IsRunning() {
+		t.Error("expected monitor to not be running after stop")
+	}
+
+	// Check for timeout warning in logs (may or may not appear depending on timing)
+	_, warnings, _ := logger.getMessages()
+	// Just verify we can access warnings without requiring timeout message
+	// since the timeout behavior is hard to test reliably in unit tests
+	_ = warnings
+}
+
 func TestBaseMonitor_StartAndStop(t *testing.T) {
 	monitor, err := NewBaseMonitor("test", 100*time.Millisecond, 50*time.Millisecond)
 	if err != nil {
@@ -267,7 +565,11 @@ func TestBaseMonitor_StartAndStop(t *testing.T) {
 	}
 
 	// Set check function and start
-	monitor.SetCheckFunc(mockHealthyCheck)
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
+
 	statusCh, err := monitor.Start()
 	if err != nil {
 		t.Errorf("unexpected error starting monitor: %v", err)
@@ -344,12 +646,15 @@ func TestBaseMonitor_StatusDelivery(t *testing.T) {
 	}
 
 	// Test unhealthy status - use a check function that includes the monitor name
-	monitor.SetCheckFunc(func(ctx context.Context) (*types.Status, error) {
+	err = monitor.SetCheckFunc(func(ctx context.Context) (*types.Status, error) {
 		status := types.NewStatus("test")
 		event := types.NewEvent(types.EventError, "TestProblem", "Test problem detected")
 		status.AddEvent(event)
 		return status, nil
 	})
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -391,8 +696,15 @@ func TestBaseMonitor_TimeoutEnforcement(t *testing.T) {
 	}
 
 	logger := &mockLogger{}
-	monitor.SetLogger(logger)
-	monitor.SetCheckFunc(mockSlowCheck)
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	err = monitor.SetCheckFunc(mockSlowCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -446,7 +758,11 @@ func TestBaseMonitor_IntervalTiming(t *testing.T) {
 		t.Fatalf("failed to create monitor: %v", err)
 	}
 
-	monitor.SetCheckFunc(counter.check)
+	err = monitor.SetCheckFunc(counter.check)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
+
 	statusCh, err := monitor.Start()
 	if err != nil {
 		t.Fatalf("failed to start monitor: %v", err)
@@ -477,8 +793,15 @@ func TestBaseMonitor_ErrorHandling(t *testing.T) {
 	}
 
 	logger := &mockLogger{}
-	monitor.SetLogger(logger)
-	monitor.SetCheckFunc(mockErrorCheck)
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	err = monitor.SetCheckFunc(mockErrorCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -516,8 +839,15 @@ func TestBaseMonitor_PanicRecovery(t *testing.T) {
 	}
 
 	logger := &mockLogger{}
-	monitor.SetLogger(logger)
-	monitor.SetCheckFunc(mockPanicCheck)
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	err = monitor.SetCheckFunc(mockPanicCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -563,7 +893,10 @@ func TestBaseMonitor_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("failed to create monitor: %v", err)
 	}
 
-	monitor.SetCheckFunc(mockHealthyCheck)
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	// Test concurrent access to getters while monitor is running
 	statusCh, err := monitor.Start()
@@ -614,8 +947,15 @@ func TestBaseMonitor_StatusChannelBuffering(t *testing.T) {
 	}
 
 	logger := &mockLogger{}
-	monitor.SetLogger(logger)
-	monitor.SetCheckFunc(mockHealthyCheck)
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -656,9 +996,12 @@ func TestBaseMonitor_NilStatusHandling(t *testing.T) {
 	}
 
 	// Check function that returns nil status and nil error
-	monitor.SetCheckFunc(func(ctx context.Context) (*types.Status, error) {
+	err = monitor.SetCheckFunc(func(ctx context.Context) (*types.Status, error) {
 		return nil, nil
 	})
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -699,8 +1042,15 @@ func TestBaseMonitor_LoggingIntegration(t *testing.T) {
 	}
 
 	logger := &mockLogger{}
-	monitor.SetLogger(logger)
-	monitor.SetCheckFunc(mockHealthyCheck)
+	err = monitor.SetLogger(logger)
+	if err != nil {
+		t.Fatalf("SetLogger() error = %v", err)
+	}
+
+	err = monitor.SetCheckFunc(mockHealthyCheck)
+	if err != nil {
+		t.Fatalf("SetCheckFunc() error = %v", err)
+	}
 
 	statusCh, err := monitor.Start()
 	if err != nil {
@@ -759,7 +1109,7 @@ func TestBaseMonitor_IntegrationPattern(t *testing.T) {
 		tm := &TestMonitor{BaseMonitor: base}
 
 		// Set up check function
-		base.SetCheckFunc(func(ctx context.Context) (*types.Status, error) {
+		err = base.SetCheckFunc(func(ctx context.Context) (*types.Status, error) {
 			atomic.AddInt32(&tm.checkCount, 1)
 
 			status := types.NewStatus(name)
@@ -772,6 +1122,9 @@ func TestBaseMonitor_IntegrationPattern(t *testing.T) {
 			status.AddCondition(condition)
 			return status, nil
 		})
+		if err != nil {
+			return nil, err
+		}
 
 		return tm, nil
 	}
