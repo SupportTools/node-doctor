@@ -4,6 +4,7 @@ package types
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -33,10 +34,24 @@ type Status struct {
 	Timestamp time.Time
 }
 
+// EventSeverity represents the severity level of an event.
+type EventSeverity string
+
+const (
+	// EventInfo indicates an informational event with no action required.
+	EventInfo EventSeverity = "Info"
+
+	// EventWarning indicates a warning that may require attention.
+	EventWarning EventSeverity = "Warning"
+
+	// EventError indicates an error condition that requires immediate attention.
+	EventError EventSeverity = "Error"
+)
+
 // Event represents a discrete occurrence detected by a monitor.
 type Event struct {
 	// Severity indicates the importance of the event (Info, Warning, Error).
-	Severity string
+	Severity EventSeverity
 
 	// Timestamp when the event occurred.
 	Timestamp time.Time
@@ -80,6 +95,20 @@ const (
 	ConditionUnknown ConditionStatus = "Unknown"
 )
 
+// ProblemSeverity represents the severity level of a problem.
+type ProblemSeverity string
+
+const (
+	// ProblemInfo indicates an informational problem with no immediate impact.
+	ProblemInfo ProblemSeverity = "Info"
+
+	// ProblemWarning indicates a problem that may impact node health if not addressed.
+	ProblemWarning ProblemSeverity = "Warning"
+
+	// ProblemCritical indicates a critical problem requiring immediate remediation.
+	ProblemCritical ProblemSeverity = "Critical"
+)
+
 // Problem represents an issue detected that may require remediation.
 type Problem struct {
 	// Type categorizes the problem (e.g., "systemd-service-failed").
@@ -89,7 +118,7 @@ type Problem struct {
 	Resource string
 
 	// Severity indicates how critical the problem is.
-	Severity string
+	Severity ProblemSeverity
 
 	// Message describes the problem in detail.
 	Message string
@@ -122,4 +151,229 @@ type Exporter interface {
 
 	// ExportProblem publishes a problem report.
 	ExportProblem(ctx context.Context, problem *Problem) error
+}
+
+// Constructor functions
+
+// NewEvent creates a new Event with the specified parameters.
+// Timestamp is automatically set to the current time.
+func NewEvent(severity EventSeverity, reason, message string) Event {
+	return Event{
+		Severity:  severity,
+		Timestamp: time.Now(),
+		Reason:    reason,
+		Message:   message,
+	}
+}
+
+// NewCondition creates a new Condition with the specified parameters.
+// Transition time is automatically set to the current time.
+func NewCondition(conditionType string, status ConditionStatus, reason, message string) Condition {
+	return Condition{
+		Type:       conditionType,
+		Status:     status,
+		Transition: time.Now(),
+		Reason:     reason,
+		Message:    message,
+	}
+}
+
+// NewStatus creates a new Status with the specified source.
+// Timestamp is automatically set to the current time.
+// Events and Conditions slices are initialized as empty.
+func NewStatus(source string) *Status {
+	return &Status{
+		Source:     source,
+		Timestamp:  time.Now(),
+		Events:     []Event{},
+		Conditions: []Condition{},
+	}
+}
+
+// NewProblem creates a new Problem with the specified parameters.
+// DetectedAt time is automatically set to the current time.
+// Metadata map is initialized as empty.
+func NewProblem(problemType, resource string, severity ProblemSeverity, message string) *Problem {
+	return &Problem{
+		Type:       problemType,
+		Resource:   resource,
+		Severity:   severity,
+		Message:    message,
+		DetectedAt: time.Now(),
+		Metadata:   make(map[string]string),
+	}
+}
+
+// Validation methods
+
+// Validate checks if the Event has all required fields populated.
+// Returns an error if any required field is missing or invalid.
+func (e *Event) Validate() error {
+	if e.Severity == "" {
+		return fmt.Errorf("event severity is required")
+	}
+	if e.Severity != EventInfo && e.Severity != EventWarning && e.Severity != EventError {
+		return fmt.Errorf("invalid event severity: %s", e.Severity)
+	}
+	if e.Reason == "" {
+		return fmt.Errorf("event reason is required")
+	}
+	if e.Message == "" {
+		return fmt.Errorf("event message is required")
+	}
+	if e.Timestamp.IsZero() {
+		return fmt.Errorf("event timestamp is required")
+	}
+	return nil
+}
+
+// Validate checks if the Condition has all required fields populated.
+// Returns an error if any required field is missing or invalid.
+func (c *Condition) Validate() error {
+	if c.Type == "" {
+		return fmt.Errorf("condition type is required")
+	}
+	if c.Status == "" {
+		return fmt.Errorf("condition status is required")
+	}
+	if c.Status != ConditionTrue && c.Status != ConditionFalse && c.Status != ConditionUnknown {
+		return fmt.Errorf("invalid condition status: %s", c.Status)
+	}
+	if c.Reason == "" {
+		return fmt.Errorf("condition reason is required")
+	}
+	if c.Message == "" {
+		return fmt.Errorf("condition message is required")
+	}
+	if c.Transition.IsZero() {
+		return fmt.Errorf("condition transition time is required")
+	}
+	return nil
+}
+
+// Validate checks if the Status has all required fields populated.
+// Returns an error if any required field is missing or invalid.
+func (s *Status) Validate() error {
+	if s.Source == "" {
+		return fmt.Errorf("status source is required")
+	}
+	if s.Timestamp.IsZero() {
+		return fmt.Errorf("status timestamp is required")
+	}
+
+	// Validate all events
+	for i, event := range s.Events {
+		if err := event.Validate(); err != nil {
+			return fmt.Errorf("event[%d] validation failed: %w", i, err)
+		}
+	}
+
+	// Validate all conditions
+	for i, condition := range s.Conditions {
+		if err := condition.Validate(); err != nil {
+			return fmt.Errorf("condition[%d] validation failed: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+// Validate checks if the Problem has all required fields populated.
+// Returns an error if any required field is missing or invalid.
+func (p *Problem) Validate() error {
+	if p.Type == "" {
+		return fmt.Errorf("problem type is required")
+	}
+	if p.Resource == "" {
+		return fmt.Errorf("problem resource is required")
+	}
+	if p.Severity == "" {
+		return fmt.Errorf("problem severity is required")
+	}
+	if p.Severity != ProblemInfo && p.Severity != ProblemWarning && p.Severity != ProblemCritical {
+		return fmt.Errorf("invalid problem severity: %s", p.Severity)
+	}
+	if p.Message == "" {
+		return fmt.Errorf("problem message is required")
+	}
+	if p.DetectedAt.IsZero() {
+		return fmt.Errorf("problem detected time is required")
+	}
+	return nil
+}
+
+// Builder and helper methods
+
+// AddEvent adds an event to the Status.
+// Returns the Status pointer for method chaining.
+func (s *Status) AddEvent(event Event) *Status {
+	s.Events = append(s.Events, event)
+	return s
+}
+
+// AddCondition adds a condition to the Status.
+// Returns the Status pointer for method chaining.
+func (s *Status) AddCondition(condition Condition) *Status {
+	s.Conditions = append(s.Conditions, condition)
+	return s
+}
+
+// ClearEvents removes all events from the Status.
+// Returns the Status pointer for method chaining.
+func (s *Status) ClearEvents() *Status {
+	s.Events = []Event{}
+	return s
+}
+
+// ClearConditions removes all conditions from the Status.
+// Returns the Status pointer for method chaining.
+func (s *Status) ClearConditions() *Status {
+	s.Conditions = []Condition{}
+	return s
+}
+
+// WithMetadata adds a metadata key-value pair to the Problem.
+// Returns the Problem pointer for method chaining.
+func (p *Problem) WithMetadata(key, value string) *Problem {
+	if p.Metadata == nil {
+		p.Metadata = make(map[string]string)
+	}
+	p.Metadata[key] = value
+	return p
+}
+
+// GetMetadata retrieves a metadata value by key from the Problem.
+// Returns the value and true if found, empty string and false otherwise.
+func (p *Problem) GetMetadata(key string) (string, bool) {
+	if p.Metadata == nil {
+		return "", false
+	}
+	val, ok := p.Metadata[key]
+	return val, ok
+}
+
+// String formatting methods
+
+// String returns a human-readable string representation of the Event.
+func (e *Event) String() string {
+	return fmt.Sprintf("[%s] %s at %s: %s",
+		e.Severity, e.Reason, e.Timestamp.Format(time.RFC3339), e.Message)
+}
+
+// String returns a human-readable string representation of the Condition.
+func (c *Condition) String() string {
+	return fmt.Sprintf("%s=%s (since %s): %s",
+		c.Type, c.Status, c.Transition.Format(time.RFC3339), c.Message)
+}
+
+// String returns a human-readable string representation of the Status.
+func (s *Status) String() string {
+	return fmt.Sprintf("Status from %s at %s: %d events, %d conditions",
+		s.Source, s.Timestamp.Format(time.RFC3339), len(s.Events), len(s.Conditions))
+}
+
+// String returns a human-readable string representation of the Problem.
+func (p *Problem) String() string {
+	return fmt.Sprintf("[%s] %s on %s: %s (detected at %s)",
+		p.Severity, p.Type, p.Resource, p.Message, p.DetectedAt.Format(time.RFC3339))
 }
