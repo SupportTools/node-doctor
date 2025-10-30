@@ -1,0 +1,167 @@
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+metadata:
+  name: default-config
+  namespace: kube-system
+  labels:
+    app: node-doctor
+    version: v1alpha1
+
+settings:
+  nodeName: "${NODE_NAME}"
+  logLevel: info
+  logFormat: json
+  logOutput: stdout
+  updateInterval: 10s
+  resyncInterval: 60s
+  heartbeatInterval: 5m
+  enableRemediation: true
+  dryRunMode: false
+  qps: 50
+  burst: 100
+
+monitors:
+  - name: kubelet-health
+    type: kubernetes-kubelet-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      healthzURL: http://127.0.0.1:10248/healthz
+      checkSystemdStatus: true
+    remediation:
+      enabled: true
+      strategy: systemd-restart
+      service: kubelet
+      cooldown: 5m
+      maxAttempts: 3
+      gracefulStop: true
+      waitTimeout: 30s
+
+  - name: disk-health
+    type: system-disk-check
+    enabled: true
+    interval: 5m
+    timeout: 30s
+    config:
+      paths:
+        - path: "/"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/docker"
+          warningThreshold: 80
+          criticalThreshold: 90
+        - path: "/var/lib/kubelet"
+          warningThreshold: 80
+          criticalThreshold: 90
+    remediation:
+      enabled: true
+      strategy: custom-script
+      scriptPath: /usr/local/bin/cleanup-docker-logs.sh
+      cooldown: 1h
+      maxAttempts: 1
+
+  - name: containerd-health
+    type: runtime-containerd-check
+    enabled: true
+    interval: 1m
+    timeout: 15s
+    config:
+      socketPath: /run/containerd/containerd.sock
+      checkPods: true
+    remediation:
+      enabled: true
+      strategy: systemd-restart
+      service: containerd
+      cooldown: 10m
+      maxAttempts: 2
+
+exporters:
+  kubernetes:
+    enabled: true
+    updateInterval: 10s
+    resyncInterval: 60s
+    heartbeatInterval: 5m
+    namespace: default
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor is running and monitoring the node"
+      - type: KubeletHealthy
+        defaultStatus: "Unknown"
+        defaultReason: "NotYetChecked"
+        defaultMessage: "Kubelet health not yet verified"
+    annotations:
+      - key: node-doctor.io/status
+        value: "healthy"
+      - key: node-doctor.io/version
+        value: "${VERSION}"
+      - key: node-doctor.io/last-check
+        value: "${TIMESTAMP}"
+    events:
+      maxEventsPerMinute: 10
+      eventTTL: 1h
+      deduplicationWindow: 5m
+
+  http:
+    enabled: true
+    bindAddress: "0.0.0.0"
+    hostPort: 8080
+    tlsEnabled: false
+    endpoints:
+      - path: /health
+        handler: overall-health
+        description: "Overall node health status"
+      - path: /healthz
+        handler: overall-health
+        description: "Kubernetes-style health endpoint"
+      - path: /ready
+        handler: readiness
+        description: "Readiness check"
+      - path: /metrics
+        handler: prometheus-metrics
+        description: "Prometheus metrics endpoint"
+      - path: /status
+        handler: detailed-status
+        description: "Detailed node and monitor status"
+
+  prometheus:
+    enabled: true
+    port: 9100
+    path: /metrics
+    namespace: node_doctor
+    subsystem: monitor
+    labels:
+      environment: production
+      cluster: main
+
+remediation:
+  enabled: true
+  dryRun: false
+  maxRemediationsPerHour: 10
+  maxRemediationsPerMinute: 2
+  cooldownPeriod: 5m
+  maxAttemptsGlobal: 3
+  circuitBreaker:
+    enabled: true
+    threshold: 5
+    timeout: 30m
+    successThreshold: 2
+  historySize: 100
+  overrides:
+    - problem: kubelet-unhealthy
+      cooldown: 3m
+      maxAttempts: 5
+      circuitBreakerThreshold: 10
+    - problem: disk-pressure
+      cooldown: 30m
+      maxAttempts: 2
+      circuitBreakerThreshold: 3
+
+features:
+  enableMetrics: true
+  enableProfiling: false
+  profilingPort: 6060
+  enableTracing: false
+  tracingEndpoint: ""
