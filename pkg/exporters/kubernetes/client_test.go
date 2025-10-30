@@ -422,9 +422,18 @@ func TestJsonMarshal(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "unsupported data type",
+			name: "arbitrary data type",
 			input: map[string]interface{}{
-				"unsupported": "data",
+				"arbitrary": "data",
+				"number":    42,
+				"boolean":   true,
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid data type (function)",
+			input: map[string]interface{}{
+				"function": func() {},
 			},
 			expectError: true,
 		},

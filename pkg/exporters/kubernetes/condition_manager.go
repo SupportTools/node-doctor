@@ -93,17 +93,26 @@ func (cm *ConditionManager) Start(ctx context.Context) {
 // Stop gracefully stops the condition manager
 func (cm *ConditionManager) Stop() {
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
 	if cm.stopped {
+		cm.mu.Unlock()
 		return // Already stopped
 	}
 
 	close(cm.stopCh)
 	cm.stopped = true
-	cm.mu.Unlock() // Unlock before waiting
-	cm.wg.Wait()
-	cm.mu.Lock() // Relock before returning
+
+	// We need to wait for goroutines while holding the lock to prevent race conditions
+	// We can't unlock and relock because Start() could be called concurrently
+	// Instead, we'll use a separate mechanism to wait for completion
+	stopComplete := make(chan struct{})
+	go func() {
+		cm.wg.Wait()
+		close(stopComplete)
+	}()
+
+	cm.mu.Unlock()
+	<-stopComplete // Wait for all goroutines to complete
+
 	log.Printf("[INFO] Condition manager stopped")
 }
 

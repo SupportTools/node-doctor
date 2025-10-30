@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -303,47 +304,7 @@ func (c *K8sClient) GetNodeUID() string {
 	return c.nodeUID
 }
 
-// jsonMarshal is a helper function to marshal data to JSON
-// This would typically use encoding/json, but here we keep it simple
+// jsonMarshal is a helper function to marshal data to JSON using the standard library
 func jsonMarshal(v interface{}) ([]byte, error) {
-	// For this implementation, we'll use a simple JSON marshaling approach
-	// In a real implementation, you'd import "encoding/json" and use json.Marshal(v)
-
-	// For now, let's create a simple string representation for the patch
-	switch data := v.(type) {
-	case map[string]interface{}:
-		if status, ok := data["status"].(map[string]interface{}); ok {
-			if conditions, ok := status["conditions"].([]corev1.NodeCondition); ok {
-				// This is a simplified approach - in practice you'd use proper JSON marshaling
-				result := `{"status":{"conditions":[`
-				for i, condition := range conditions {
-					if i > 0 {
-						result += ","
-					}
-					result += fmt.Sprintf(`{"type":"%s","status":"%s","lastTransitionTime":"%s","reason":"%s","message":"%s"}`,
-						condition.Type, condition.Status, condition.LastTransitionTime.Format(time.RFC3339),
-						condition.Reason, condition.Message)
-				}
-				result += "]}}"
-				return []byte(result), nil
-			}
-		}
-		if metadata, ok := data["metadata"].(map[string]interface{}); ok {
-			if annotations, ok := metadata["annotations"].(map[string]string); ok {
-				result := `{"metadata":{"annotations":{`
-				first := true
-				for key, value := range annotations {
-					if !first {
-						result += ","
-					}
-					result += fmt.Sprintf(`"%s":"%s"`, key, value)
-					first = false
-				}
-				result += "}}}"
-				return []byte(result), nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("unsupported data type for JSON marshaling")
+	return json.Marshal(v)
 }
