@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/detector"
+	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
 	"github.com/supporttools/node-doctor/pkg/util"
@@ -75,8 +76,12 @@ func main() {
 
 	log.Printf("[INFO] Created %d monitors", len(monitors))
 
-	// Create exporters (stub implementation)
-	exporters := createExporters(config)
+	// Create exporters
+	exporters, err := createExporters(ctx, config)
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to create exporters: %v", err)
+	}
+
 	log.Printf("[INFO] Created %d exporters", len(exporters))
 
 	// Create problem detector
@@ -122,6 +127,9 @@ func main() {
 
 	// Cancel context to signal shutdown
 	cancel()
+
+	// Stop exporters gracefully
+	stopExporters(exporters)
 
 	// Wait for detector to finish with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -327,28 +335,80 @@ func createMonitors(ctx context.Context, config *types.NodeDoctorConfig) ([]type
 	return monitors, nil
 }
 
-// createExporters creates exporter instances (stub implementation for now)
-// TODO: Task #3058 - Implement Kubernetes exporter
-// TODO: Task #3059 - Implement HTTP exporter
-// TODO: Task #3060 - Implement Prometheus exporter
-func createExporters(config *types.NodeDoctorConfig) []types.Exporter {
+// createExporters creates exporter instances based on configuration
+func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]types.Exporter, error) {
 	var exporters []types.Exporter
+	var exporterInterfaces []ExporterInterface // For graceful shutdown
 
-	// Log what would be created
+	// Create Kubernetes exporter if enabled
 	if config.Exporters.Kubernetes != nil && config.Exporters.Kubernetes.Enabled {
-		log.Printf("[INFO] Kubernetes exporter would be enabled (Task #3058 not implemented)")
+		log.Printf("[INFO] Creating Kubernetes exporter...")
+		kubernetesExporter, err := kubernetesexporter.NewKubernetesExporter(
+			config.Exporters.Kubernetes,
+			&config.Settings,
+		)
+		if err != nil {
+			log.Printf("[WARN] Failed to create Kubernetes exporter: %v", err)
+		} else {
+			// Start the exporter
+			if err := kubernetesExporter.Start(ctx); err != nil {
+				log.Printf("[WARN] Failed to start Kubernetes exporter: %v", err)
+			} else {
+				exporters = append(exporters, kubernetesExporter)
+				exporterInterfaces = append(exporterInterfaces, kubernetesExporter)
+				log.Printf("[INFO] Kubernetes exporter created and started")
+			}
+		}
 	}
+
+	// Create HTTP exporter if enabled (not implemented yet)
 	if config.Exporters.HTTP != nil && config.Exporters.HTTP.Enabled {
 		log.Printf("[INFO] HTTP exporter would be enabled (Task #3059 not implemented)")
 	}
+
+	// Create Prometheus exporter if enabled (not implemented yet)
 	if config.Exporters.Prometheus != nil && config.Exporters.Prometheus.Enabled {
 		log.Printf("[INFO] Prometheus exporter would be enabled (Task #3060 not implemented)")
 	}
 
-	// For now, use a no-op exporter to satisfy the detector requirements
-	exporters = append(exporters, &noopExporter{})
+	// If no exporters were created, use a no-op exporter to satisfy the detector requirements
+	if len(exporters) == 0 {
+		log.Printf("[INFO] No exporters enabled, using no-op exporter")
+		exporters = append(exporters, &noopExporter{})
+	}
 
-	return exporters
+	// Store exporter interfaces for shutdown
+	setExporterInterfaces(exporterInterfaces)
+
+	return exporters, nil
+}
+
+// ExporterInterface defines the interface for exporters that support lifecycle management
+type ExporterInterface interface {
+	Stop() error
+}
+
+// Global variable to store exporter interfaces for shutdown
+var globalExporterInterfaces []ExporterInterface
+
+// setExporterInterfaces stores exporter interfaces for graceful shutdown
+func setExporterInterfaces(exporters []ExporterInterface) {
+	globalExporterInterfaces = exporters
+}
+
+// stopExporters gracefully stops all exporters
+func stopExporters(exporters []types.Exporter) {
+	log.Printf("[INFO] Stopping %d exporters...", len(globalExporterInterfaces))
+
+	for i, exporterInterface := range globalExporterInterfaces {
+		if err := exporterInterface.Stop(); err != nil {
+			log.Printf("[WARN] Error stopping exporter %d: %v", i, err)
+		} else {
+			log.Printf("[DEBUG] Exporter %d stopped successfully", i)
+		}
+	}
+
+	log.Printf("[INFO] All exporters stopped")
 }
 
 // printVersion prints version information to stdout
@@ -361,7 +421,7 @@ func printVersion() {
 }
 
 // noopExporter is a stub exporter implementation that logs received data
-// This will be replaced by real exporters in Tasks #3058-3060
+// This will be replaced by real exporters in Tasks #3059-3060
 type noopExporter struct{}
 
 // ExportStatus implements the types.Exporter interface
