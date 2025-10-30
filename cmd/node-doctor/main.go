@@ -16,6 +16,7 @@ import (
 	"github.com/supporttools/node-doctor/pkg/detector"
 	httpexporter "github.com/supporttools/node-doctor/pkg/exporters/http"
 	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
+	prometheusexporter "github.com/supporttools/node-doctor/pkg/exporters/prometheus"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
 	"github.com/supporttools/node-doctor/pkg/util"
@@ -312,9 +313,24 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]Exp
 		}
 	}
 
-	// Create Prometheus exporter if enabled (not implemented yet)
+	// Create Prometheus exporter if enabled
 	if config.Exporters.Prometheus != nil && config.Exporters.Prometheus.Enabled {
-		log.Printf("[INFO] Prometheus exporter would be enabled (Task #3060 not implemented)")
+		log.Printf("[INFO] Creating Prometheus exporter...")
+		promExporter, err := prometheusexporter.NewPrometheusExporter(
+			config.Exporters.Prometheus,
+			&config.Settings,
+		)
+		if err != nil {
+			log.Printf("[WARN] Failed to create Prometheus exporter: %v", err)
+		} else {
+			if err := promExporter.Start(ctx); err != nil {
+				log.Printf("[WARN] Failed to start Prometheus exporter: %v", err)
+			} else {
+				exporters = append(exporters, promExporter)
+				exporterInterfaces = append(exporterInterfaces, promExporter)
+				log.Printf("[INFO] Prometheus exporter created and started on port %d", config.Exporters.Prometheus.Port)
+			}
+		}
 	}
 
 	// If no exporters were created, use a no-op exporter to satisfy the detector requirements
