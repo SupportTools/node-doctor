@@ -1,0 +1,137 @@
+# RBAC manifests for Node Doctor
+# This file contains all Role-Based Access Control (RBAC) resources required for Node Doctor
+# to function properly within a Kubernetes cluster.
+#
+# Deployment order: This file MUST be applied before daemonset.yaml
+# Usage: kubectl apply -f deployment/rbac.yaml
+
+---
+# ServiceAccount for Node Doctor
+# Creates a dedicated service account for Node Doctor pods to authenticate with the Kubernetes API
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-doctor
+  namespace: kube-system
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+    version: v0.1.0
+  annotations:
+    description: "Service account for Node Doctor monitoring pods"
+    docs: "https://github.com/supporttools/node-doctor"
+# Explicitly enable service account token mounting
+# This allows Node Doctor pods to authenticate with the Kubernetes API
+automountServiceAccountToken: true
+
+---
+# ClusterRole for Node Doctor
+# Defines the permissions required for Node Doctor to monitor and manage node health
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-doctor
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+    version: v0.1.0
+  annotations:
+    description: "Cluster-level permissions for Node Doctor monitoring"
+    docs: "https://github.com/supporttools/node-doctor"
+rules:
+# Node Management Permissions
+# These permissions allow Node Doctor to monitor node health and update node conditions
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+  # get: Read individual node information and specifications
+  # list: Retrieve all nodes in the cluster for comprehensive monitoring
+  # watch: Monitor node changes in real-time for immediate issue detection
+  # patch: Update node labels and annotations for status tracking
+  # update: Modify node specifications if needed for remediation
+
+- apiGroups: [""]
+  resources: ["nodes/status"]
+  verbs: ["get", "patch", "update"]
+  # get: Read current node status and conditions
+  # patch: Update node conditions (e.g., NodeDoctorHealthy status)
+  # update: Modify node status for health reporting
+
+# Pod Monitoring Permissions
+# These permissions enable monitoring of pod resource usage and health status
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+  # get: Read individual pod information and specifications
+  # list: Retrieve all pods for resource usage analysis
+  # watch: Monitor pod lifecycle events for real-time health tracking
+
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get"]
+  # get: Read pod status information for health assessment
+  # Note: No write permissions - pod status is managed by kubelet
+
+# Event Management Permissions
+# These permissions allow Node Doctor to create and manage Kubernetes events
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+  # create: Generate new events for detected issues and status changes
+  # patch: Update existing events for better deduplication
+  # update: Modify event details for improved monitoring integration
+
+# Configuration Access Permissions
+# These permissions enable dynamic configuration updates via ConfigMaps
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+  # get: Read specific ConfigMaps for configuration data
+  # list: Discover available configuration resources
+  # watch: Monitor configuration changes for dynamic updates
+
+# Service Discovery Permissions (Optional Enhancement)
+# These permissions support service health monitoring features
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+  # get: Read service endpoints and configuration
+  # list: Discover available services for health monitoring
+  # watch: Monitor service changes for connectivity issues
+
+# Metrics API Access Permissions
+# These permissions enable integration with Kubernetes metrics server
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+  # get: Read individual node and pod metrics for enhanced monitoring
+  # list: Retrieve comprehensive metrics data for cluster-wide analysis
+  # Note: Metrics API provides CPU, memory, and other resource usage data
+
+---
+# ClusterRoleBinding for Node Doctor
+# Binds the Node Doctor service account to the cluster role, granting necessary permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-doctor
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+    version: v0.1.0
+  annotations:
+    description: "Binds Node Doctor service account to required cluster permissions"
+    docs: "https://github.com/supporttools/node-doctor"
+# Reference to the ClusterRole defined above
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-doctor
+# Service account that will receive these permissions
+subjects:
+- kind: ServiceAccount
+  name: node-doctor
+  namespace: kube-system

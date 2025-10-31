@@ -62,7 +62,7 @@ spec:
       # DNS policy for host network mode
       dnsPolicy: ClusterFirstWithHostNet
 
-      # Service account for Kubernetes API access
+      # Service account for Kubernetes API access (defined in rbac.yaml)
       serviceAccountName: node-doctor
 
       # Security context for the pod
@@ -415,84 +415,6 @@ spec:
 
       # Termination grace period
       terminationGracePeriodSeconds: 30
-
----
-# ServiceAccount for Node Doctor
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: node-doctor
-  namespace: kube-system
-  labels:
-    app: node-doctor
-    component: monitoring
-    tier: system
-
----
-# ClusterRole for Node Doctor
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: node-doctor
-  labels:
-    app: node-doctor
-    component: monitoring
-    tier: system
-rules:
-# Node management
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get", "list", "watch", "patch", "update"]
-- apiGroups: [""]
-  resources: ["nodes/status"]
-  verbs: ["get", "patch", "update"]
-
-# Pod management
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["pods/status"]
-  verbs: ["get"]
-
-# Event creation
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "patch", "update"]
-
-# ConfigMap access
-- apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "list", "watch"]
-
-# Service access
-- apiGroups: [""]
-  resources: ["services"]
-  verbs: ["get", "list", "watch"]
-
-# Metrics access
-- apiGroups: ["metrics.k8s.io"]
-  resources: ["nodes", "pods"]
-  verbs: ["get", "list"]
-
----
-# ClusterRoleBinding for Node Doctor
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: node-doctor
-  labels:
-    app: node-doctor
-    component: monitoring
-    tier: system
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: node-doctor
-subjects:
-- kind: ServiceAccount
-  name: node-doctor
-  namespace: kube-system
 
 ---
 # ConfigMap for Node Doctor configuration

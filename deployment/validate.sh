@@ -41,6 +41,20 @@ if ! command -v kubectl &> /dev/null; then
 fi
 print_status 0 "kubectl is available"
 
+echo
+print_info "Checking deployment files..."
+if [ -f "deployment/rbac.yaml" ]; then
+    print_status 0 "RBAC manifest (rbac.yaml) exists"
+else
+    print_status 1 "RBAC manifest (rbac.yaml) not found"
+fi
+
+if [ -f "deployment/daemonset.yaml" ]; then
+    print_status 0 "DaemonSet manifest (daemonset.yaml) exists"
+else
+    print_status 1 "DaemonSet manifest (daemonset.yaml) not found"
+fi
+
 # Check if we can connect to cluster
 if ! kubectl cluster-info &> /dev/null; then
     echo -e "${RED}❌ Cannot connect to Kubernetes cluster${NC}"

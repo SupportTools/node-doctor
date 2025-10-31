@@ -10,16 +10,52 @@ Deploy Node Doctor to your cluster:
 kubectl apply -f deployment/daemonset.yaml
 ```
 
+## Deployment Order
+
+⚠️ **IMPORTANT**: RBAC resources must be deployed before the DaemonSet.
+
+### Recommended Deployment
+
+```bash
+# Apply RBAC resources first
+kubectl apply -f deployment/rbac.yaml
+
+# Verify RBAC resources
+kubectl get serviceaccount -n kube-system node-doctor
+kubectl get clusterrole node-doctor
+kubectl get clusterrolebinding node-doctor
+
+# Deploy Node Doctor DaemonSet
+kubectl apply -f deployment/daemonset.yaml
+```
+
+### Quick Deployment (Both Files)
+
+```bash
+# Apply both in correct order
+kubectl apply -f deployment/rbac.yaml -f deployment/daemonset.yaml
+```
+
+### Single Command Deployment
+
+```bash
+# Apply all resources (kubectl applies files in alphabetical order)
+kubectl apply -f deployment/
+```
+
 ## What's Included
 
-The `daemonset.yaml` file contains all necessary Kubernetes resources:
+### deployment/rbac.yaml
+1. **ServiceAccount** - Service account for Kubernetes API access
+2. **ClusterRole** - RBAC permissions for node monitoring
+3. **ClusterRoleBinding** - Binds service account to cluster role
 
+### deployment/daemonset.yaml
 1. **DaemonSet** - Main Node Doctor deployment
-2. **ServiceAccount** - Service account for API access
-3. **ClusterRole** - RBAC permissions for node monitoring
-4. **ClusterRoleBinding** - Binds service account to cluster role
-5. **ConfigMap** - Node Doctor configuration
-6. **Service** - Headless service for metrics scraping
+2. **ConfigMap** - Node Doctor configuration
+3. **Service** - Headless service for metrics scraping
+
+**Note**: RBAC resources are in a separate file following Kubernetes best practices.
 
 ## Security Requirements
 
@@ -54,6 +90,41 @@ Node Doctor runs on **ALL** nodes with comprehensive tolerations:
 - Control plane nodes (`master`, `control-plane`)
 - Unhealthy nodes (`not-ready`, `unreachable`)
 - Resource pressure (`disk-pressure`, `memory-pressure`, `pid-pressure`)
+
+## RBAC Permissions
+
+Node Doctor requires the following cluster-level permissions:
+
+### Node Management
+- **nodes**: get, list, watch, patch, update
+  - Monitor node information and health
+  - Update node conditions (NodeDoctorHealthy status)
+- **nodes/status**: get, patch, update
+  - Read and update node status conditions
+
+### Pod Monitoring
+- **pods**: get, list, watch
+  - Monitor pod resource usage and health
+- **pods/status**: get
+  - Read pod status information
+
+### Event Management
+- **events**: create, patch, update
+  - Create events for detected issues
+  - Update events for deduplication
+
+### Configuration
+- **configmaps**: get, list, watch
+  - Read configuration from ConfigMaps
+  - Support dynamic configuration updates
+
+### Service & Metrics (Optional Enhancements)
+- **services**: get, list, watch
+  - Service health monitoring (future feature)
+- **metrics.k8s.io**: get, list
+  - Integration with Kubernetes metrics server
+
+All permissions follow the principle of least privilege and are required for Node Doctor's monitoring functionality.
 
 ## Ports
 
