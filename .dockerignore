@@ -1,0 +1,57 @@
+# .dockerignore for Node Doctor
+# Excludes unnecessary files from Docker build context
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+bin/
+*.test
+*.out
+*.prof
+coverage.out
+cpu_coverage.out
+memory_coverage.out
+disk_coverage.out
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Test data
+testdata/
+test-results/
+
+# Deployment files (not needed in container)
+deployment/
+deploy/
+
+# Development files
+Makefile
+Makefile.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Log files
+*.log
+
+# OS files
+Thumbs.db
