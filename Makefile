@@ -29,14 +29,18 @@
 # Project Configuration
 PROJECT_NAME := node-doctor
 
-# Container registry (ghcr.io for GitHub Container Registry)
-REGISTRY := ghcr.io/supporttools
+# Container registry (Harbor for production releases)
+REGISTRY := harbor.support.tools/node-doctor
 
 # Version and build information
 VERSION := $(shell date +%s)
 GIT_COMMIT := $(shell git rev-parse HEAD)
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 GO_VERSION := 1.21
+
+# RC Version - for release candidate builds
+RC_VERSION_FILE := .version-rc
+RC_VERSION := $(shell [ -f $(RC_VERSION_FILE) ] && cat $(RC_VERSION_FILE) || echo "v0.1.0-rc.1")
 
 export VERSION
 export GIT_COMMIT
@@ -50,7 +54,10 @@ export GO_VERSION
 # CUSTOMIZE: Update these paths for your kubeconfig locations
 KUBECONFIG_DEV := $(HOME)/.kube/dev-cluster
 KUBECONFIG_STG := $(HOME)/.kube/staging-cluster
-KUBECONFIG_PRD := $(HOME)/.kube/production-cluster
+KUBECONFIG_PRD := $(HOME)/.kube/config
+
+# Kubernetes context for production deployment
+KUBECTL_CONTEXT_PRD := a1-ops-prd
 
 export KUBECONFIG_DEV
 export KUBECONFIG_STG
@@ -59,7 +66,7 @@ export KUBECONFIG_PRD
 # Kubernetes namespaces (node-doctor runs in kube-system typically)
 NAMESPACE_DEV := kube-system
 NAMESPACE_STG := kube-system
-NAMESPACE_PRD := kube-system
+NAMESPACE_PRD := node-doctor
 
 # Helm Chart settings
 # CUSTOMIZE: Update Helm repository URL
@@ -303,6 +310,76 @@ bump-with-monitoring: bump
 	@$(call print_status,"Monitoring GitHub Actions workflow...")
 	@$(MAKE) gh-watch
 
+# Increment RC version (e.g., v0.1.0-rc.1 -> v0.1.0-rc.2)
+increment-rc-version:
+	@$(call print_status,"Incrementing RC version...")
+	@CURRENT_RC=$$(cat $(RC_VERSION_FILE)); \
+	BASE_VERSION=$$(echo $$CURRENT_RC | sed 's/-rc\.[0-9]*$$//'); \
+	RC_NUM=$$(echo $$CURRENT_RC | sed 's/.*-rc\.//'); \
+	NEW_RC_NUM=$$((RC_NUM + 1)); \
+	NEW_RC_VERSION="$$BASE_VERSION-rc.$$NEW_RC_NUM"; \
+	echo $$NEW_RC_VERSION > $(RC_VERSION_FILE); \
+	echo "$(GREEN)✅ RC version updated: $$CURRENT_RC -> $$NEW_RC_VERSION$(NC)"
+
+# Deploy to production cluster using kubectl
+deploy-prd-kubectl: check-kubectl
+	@$(call print_status,"Deploying to production cluster $(KUBECTL_CONTEXT_PRD)...")
+	@$(call print_status,"Checking namespace $(NAMESPACE_PRD)...")
+	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl config use-context $(KUBECTL_CONTEXT_PRD)
+	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl get namespace $(NAMESPACE_PRD) > /dev/null 2>&1 || \
+		($(call print_status,"Creating namespace $(NAMESPACE_PRD)...") && \
+		KUBECONFIG=$(KUBECONFIG_PRD) kubectl create namespace $(NAMESPACE_PRD))
+	@$(call print_status,"Applying RBAC resources...")
+	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl apply -f deployment/rbac.yaml -n $(NAMESPACE_PRD)
+	@$(call print_status,"Applying DaemonSet...")
+	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl apply -f deployment/daemonset.yaml -n $(NAMESPACE_PRD)
+	@$(call print_status,"Waiting for rollout to complete...")
+	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl rollout status daemonset/node-doctor -n $(NAMESPACE_PRD) --timeout=5m
+	@$(call print_success,"Deployed to production cluster $(KUBECTL_CONTEXT_PRD)")
+
+# Build and push RC release to Harbor and deploy to a1-ops-prd cluster
+bump-rc: validate-pipeline-local increment-rc-version
+	@$(call print_status,"Building RC release: $(RC_VERSION)")
+	@$(call print_status,"Registry: $(REGISTRY)/$(PROJECT_NAME)")
+	@$(call print_status,"Cluster: $(KUBECTL_CONTEXT_PRD), Namespace: $(NAMESPACE_PRD)")
+	@echo ""
+	@$(call print_status,"Building Docker image...")
+	@docker build \
+		--build-arg VERSION=$(RC_VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION) \
+		-t $(REGISTRY)/$(PROJECT_NAME):latest \
+		-f Dockerfile .
+	@$(call print_success,"Docker image built: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)")
+	@echo ""
+	@$(call print_status,"Pushing image to Harbor...")
+	@docker push $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)
+	@docker push $(REGISTRY)/$(PROJECT_NAME):latest
+	@$(call print_success,"Image pushed to Harbor")
+	@echo ""
+	@$(call print_status,"Updating DaemonSet image tag...")
+	@sed -i.bak 's|image: harbor.support.tools/node-doctor/node-doctor:.*|image: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)|' deployment/daemonset.yaml
+	@rm -f deployment/daemonset.yaml.bak
+	@echo ""
+	@$(MAKE) deploy-prd-kubectl
+	@echo ""
+	@$(call print_status,"Committing RC release...")
+	@git add $(RC_VERSION_FILE) deployment/daemonset.yaml
+	@git commit -m "bump-rc: Release candidate $(RC_VERSION) deployed to $(KUBECTL_CONTEXT_PRD)" || true
+	@git tag -a $(RC_VERSION) -m "Release candidate $(RC_VERSION)" || true
+	@git push origin main --tags || true
+	@echo ""
+	@$(call print_success,"🎉 RC Release $(RC_VERSION) complete!")
+	@$(call print_success,"   - Built and pushed to Harbor")
+	@$(call print_success,"   - Deployed to $(KUBECTL_CONTEXT_PRD) cluster")
+	@$(call print_success,"   - Tagged as $(RC_VERSION)")
+	@echo ""
+	@$(call print_status,"Next steps:")
+	@echo "  - Verify deployment: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor"
+	@echo "  - Check logs: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) logs -l app=node-doctor"
+	@echo "  - Monitor health: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor -w"
+
 # ================================================================================================
 # Quality Workflow Targets
 # ================================================================================================
@@ -392,10 +469,12 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@echo "  make bump                  Bump version and trigger CI/CD"
+	@echo "  make bump-rc               Build RC, push to Harbor, deploy to a1-ops-prd"
 	@echo "  make bump-with-monitoring  Bump and watch deployment"
 	@echo "  make deploy-dev            Deploy to development"
 	@echo "  make deploy-stg            Deploy to staging"
 	@echo "  make deploy-prd            Deploy to production (requires approval)"
+	@echo "  make deploy-prd-kubectl    Deploy to a1-ops-prd using kubectl"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "QUALITY WORKFLOW COMMANDS"

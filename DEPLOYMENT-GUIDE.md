@@ -9,6 +9,45 @@ This guide walks through deploying Node Doctor to a real Kubernetes cluster.
 - Access to Harbor registry: `harbor.support.tools`
 - Cluster admin privileges (for RBAC and DaemonSet deployment)
 
+## Quick Start: Automated RC Deployment
+
+For rapid deployment of release candidates to the `a1-ops-prd` cluster:
+
+```bash
+# One command to build, push, and deploy
+make bump-rc
+```
+
+This single command will:
+1. ✅ Validate the pipeline (run all tests)
+2. ✅ Increment the RC version (e.g., v0.1.0-rc.1 → v0.1.0-rc.2)
+3. ✅ Build Docker image with RC tag
+4. ✅ Push to Harbor registry: `harbor.support.tools/node-doctor/node-doctor`
+5. ✅ Deploy to `a1-ops-prd` cluster in `node-doctor` namespace
+6. ✅ Commit and tag the release
+
+**Configuration:**
+- Cluster: `a1-ops-prd` (from `~/.kube/config`)
+- Namespace: `node-doctor` (auto-created if needed)
+- Registry: `harbor.support.tools/node-doctor/node-doctor`
+- Version tracking: `.version-rc` file
+
+**Verify Deployment:**
+```bash
+# Check pod status
+kubectl --context=a1-ops-prd -n node-doctor get pods -l app=node-doctor
+
+# View logs
+kubectl --context=a1-ops-prd -n node-doctor logs -l app=node-doctor
+
+# Monitor health
+kubectl --context=a1-ops-prd -n node-doctor get pods -l app=node-doctor -w
+```
+
+## Manual Deployment (Alternative)
+
+If you prefer manual control over each step, follow the detailed instructions below.
+
 ## Step 1: Build and Push Container Image
 
 ```bash
