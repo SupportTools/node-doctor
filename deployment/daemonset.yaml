@@ -1,0 +1,678 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-doctor
+  namespace: kube-system
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+    version: v0.1.0
+    k8s-app: node-doctor
+  annotations:
+    description: "Node Doctor - Kubernetes node monitoring and auto-remediation DaemonSet"
+    docs: "https://github.com/supporttools/node-doctor"
+spec:
+  # Rolling update strategy - update one node at a time for safety
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1  # Only update one pod at a time to maintain cluster stability
+
+  selector:
+    matchLabels:
+      app: node-doctor
+      component: monitoring
+      tier: system
+
+  template:
+    metadata:
+      labels:
+        app: node-doctor
+        component: monitoring
+        tier: system
+        version: v0.1.0
+        k8s-app: node-doctor
+      annotations:
+        # Prometheus scraping annotations
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+        # Security annotations
+        container.apparmor.security.beta.kubernetes.io/node-doctor: "unconfined"
+        # Container runtime annotations
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+    spec:
+      # Priority class ensures this DaemonSet gets highest priority scheduling
+      # system-node-critical is reserved for critical system components
+      priorityClassName: system-node-critical
+
+      # Host network access is REQUIRED for:
+      # - Network monitoring and health checks
+      # - Access to host-level network interfaces
+      # - Communication with kubelet on host ports
+      hostNetwork: true
+
+      # Host PID access is REQUIRED for:
+      # - Process monitoring and health checks
+      # - Monitoring system processes and services
+      # - Detecting process-related issues
+      hostPID: true
+
+      # DNS policy for host network mode
+      dnsPolicy: ClusterFirstWithHostNet
+
+      # Service account for Kubernetes API access
+      serviceAccountName: node-doctor
+
+      # Security context for the pod
+      securityContext:
+        # Run as root (required for node-level monitoring)
+        runAsUser: 0
+        runAsGroup: 0
+        fsGroup: 0
+        # Supplemental groups for container runtime socket access
+        supplementalGroups: [0, 997, 998, 999]  # docker, containerd groups
+
+      # Tolerations - CRITICAL: Must run on ALL nodes regardless of taints
+      tolerations:
+        # Tolerate all taints - ensures deployment on every node
+        - operator: Exists
+        # Specific tolerations for common node taints
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300  # Allow 5 minutes for node recovery
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300  # Allow 5 minutes for node recovery
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/memory-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/pid-pressure
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/network-unavailable
+          operator: Exists
+          effect: NoSchedule
+        # Tolerate CriticalAddonsOnly taint
+        - key: CriticalAddonsOnly
+          operator: Exists
+
+      # Node selector - run on all nodes (no restrictions)
+      nodeSelector:
+        kubernetes.io/os: linux
+
+      # Init container for setup (optional - uncomment if needed)
+      # initContainers:
+      # - name: setup
+      #   image: busybox:1.35
+      #   command: ['sh', '-c', 'echo "Node Doctor init complete"']
+      #   securityContext:
+      #     privileged: true
+
+      containers:
+      - name: node-doctor
+        image: ghcr.io/supporttools/node-doctor:v0.1.0
+        imagePullPolicy: IfNotPresent
+
+        # Command and arguments
+        command: ["/node-doctor"]
+        args:
+          - "--config=/etc/node-doctor/config.yaml"
+          - "--log-level=info"
+          - "--log-format=json"
+
+        # Environment variables
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: VERSION
+          value: "v0.1.0"
+        - name: GOMAXPROCS
+          value: "2"  # Limit Go runtime to 2 cores max
+
+        # Security context - PRIVILEGED ACCESS REQUIRED
+        securityContext:
+          # Privileged mode is REQUIRED for:
+          # - Accessing /proc filesystem for system monitoring
+          # - Reading /dev/kmsg for kernel messages and OOM detection
+          # - Performing disk operations via syscall.Statfs
+          # - Accessing host network interfaces
+          # - Potential future remediation actions (restart services, etc.)
+          privileged: true
+          # Additional capabilities (redundant with privileged but explicit)
+          capabilities:
+            add:
+              - SYS_ADMIN      # Required for filesystem operations
+              - SYS_PTRACE     # Required for process monitoring
+              - NET_ADMIN      # Required for network monitoring
+              - SYS_TIME       # Required for time-based monitoring
+              - SETUID         # Required for user operations
+              - SETGID         # Required for group operations
+          # Allow privilege escalation (required for privileged mode)
+          allowPrivilegeEscalation: true
+          # Run as root (required for system-level monitoring)
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          # Read-only root filesystem disabled (need write access for logs/temp)
+          readOnlyRootFilesystem: false
+
+        # Resource limits and requests - balanced for monitoring workload
+        resources:
+          requests:
+            # CPU: 50m (0.05 cores) - monitoring should be lightweight
+            cpu: 50m
+            # Memory: 128Mi - sufficient for monitoring data structures
+            memory: 128Mi
+          limits:
+            # CPU: 200m (0.2 cores) - prevent runaway CPU usage
+            cpu: 200m
+            # Memory: 256Mi - prevent memory leaks from affecting node
+            memory: 256Mi
+
+        # Container ports
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+          # Health/status endpoint
+        - name: metrics
+          containerPort: 9100
+          protocol: TCP
+          # Prometheus metrics endpoint
+
+        # Liveness probe - determines if container should be restarted
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Readiness probe - determines if container should receive traffic
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Startup probe - gives more time for initial startup
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 20  # Allow up to 100 seconds for startup
+          successThreshold: 1
+
+        # Volume mounts - CRITICAL for node monitoring capabilities
+        volumeMounts:
+
+        # Configuration mount
+        - name: config
+          mountPath: /etc/node-doctor
+          readOnly: true
+
+        # Host filesystem mounts - READ-ONLY where possible for security
+
+        # Host root filesystem - for disk space monitoring
+        - name: host-root
+          mountPath: /host
+          readOnly: true
+          mountPropagation: HostToContainer
+
+        # System logs - for log analysis and error detection
+        - name: host-var-log
+          mountPath: /var/log
+          readOnly: true
+
+        # Kernel messages - REQUIRED for OOM detection and kernel events
+        - name: host-kmsg
+          mountPath: /dev/kmsg
+          readOnly: true
+
+        # Proc filesystem - for process and system monitoring
+        - name: host-proc
+          mountPath: /host/proc
+          readOnly: true
+
+        # Sys filesystem - for system information
+        - name: host-sys
+          mountPath: /host/sys
+          readOnly: true
+
+        # Kubernetes configuration - for kubeconfig access
+        - name: host-etc-kubernetes
+          mountPath: /etc/kubernetes
+          readOnly: true
+
+        # Container runtime sockets - for container monitoring
+
+        # Docker socket (if present)
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+          readOnly: true
+
+        # Containerd socket (if present)
+        - name: containerd-sock
+          mountPath: /run/containerd/containerd.sock
+          readOnly: true
+
+        # CRI-O socket (if present)
+        - name: crio-sock
+          mountPath: /var/run/crio/crio.sock
+          readOnly: true
+
+        # Additional mounts for comprehensive monitoring
+
+        # SystemD journal - for systemd service monitoring
+        - name: host-journal
+          mountPath: /var/log/journal
+          readOnly: true
+
+        # Machine ID - for consistent node identification
+        - name: host-machine-id
+          mountPath: /etc/machine-id
+          readOnly: true
+
+        # OS release info - for OS version detection
+        - name: host-os-release
+          mountPath: /host/etc/os-release
+          readOnly: true
+
+      # Volume definitions
+      volumes:
+
+      # Configuration volume from ConfigMap
+      - name: config
+        configMap:
+          name: node-doctor-config
+          defaultMode: 0644
+          items:
+          - key: config.yaml
+            path: config.yaml
+
+      # Host path volumes for system monitoring
+
+      # Host root filesystem
+      - name: host-root
+        hostPath:
+          path: /
+          type: Directory
+
+      # System logs
+      - name: host-var-log
+        hostPath:
+          path: /var/log
+          type: Directory
+
+      # Kernel message device
+      - name: host-kmsg
+        hostPath:
+          path: /dev/kmsg
+          type: CharDevice
+
+      # Proc filesystem
+      - name: host-proc
+        hostPath:
+          path: /proc
+          type: Directory
+
+      # Sys filesystem
+      - name: host-sys
+        hostPath:
+          path: /sys
+          type: Directory
+
+      # Kubernetes configuration
+      - name: host-etc-kubernetes
+        hostPath:
+          path: /etc/kubernetes
+          type: DirectoryOrCreate
+
+      # Container runtime sockets
+
+      # Docker socket
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+          type: SocketOrCreate
+
+      # Containerd socket
+      - name: containerd-sock
+        hostPath:
+          path: /run/containerd/containerd.sock
+          type: SocketOrCreate
+
+      # CRI-O socket
+      - name: crio-sock
+        hostPath:
+          path: /var/run/crio/crio.sock
+          type: SocketOrCreate
+
+      # SystemD journal
+      - name: host-journal
+        hostPath:
+          path: /var/log/journal
+          type: DirectoryOrCreate
+
+      # Machine ID
+      - name: host-machine-id
+        hostPath:
+          path: /etc/machine-id
+          type: File
+
+      # OS release information
+      - name: host-os-release
+        hostPath:
+          path: /etc/os-release
+          type: File
+
+      # Restart policy
+      restartPolicy: Always
+
+      # Termination grace period
+      terminationGracePeriodSeconds: 30
+
+---
+# ServiceAccount for Node Doctor
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-doctor
+  namespace: kube-system
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+
+---
+# ClusterRole for Node Doctor
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-doctor
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+rules:
+# Node management
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: [""]
+  resources: ["nodes/status"]
+  verbs: ["get", "patch", "update"]
+
+# Pod management
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get"]
+
+# Event creation
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+
+# ConfigMap access
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+
+# Service access
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+
+# Metrics access
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding for Node Doctor
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-doctor
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-doctor
+subjects:
+- kind: ServiceAccount
+  name: node-doctor
+  namespace: kube-system
+
+---
+# ConfigMap for Node Doctor configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-doctor-config
+  namespace: kube-system
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+data:
+  config.yaml: |
+    settings:
+      nodeName: "${NODE_NAME}"
+      logLevel: info
+      logFormat: json
+      logOutput: stdout
+      updateInterval: 30s
+      resyncInterval: 5m
+      heartbeatInterval: 1m
+      enableRemediation: true
+      dryRunMode: false
+      qps: 50
+      burst: 100
+
+    monitors:
+      # CPU Monitor - Load average and thermal monitoring
+      - name: cpu-health
+        type: system-cpu
+        enabled: true
+        interval: 30s
+        timeout: 10s
+        config:
+          loadAverageThresholds:
+            warning: 80
+            critical: 95
+          thermalThresholds:
+            warning: 85
+            critical: 95
+          cpuUsageThresholds:
+            warning: 85
+            critical: 95
+
+      # Memory Monitor - Memory and swap usage monitoring
+      - name: memory-health
+        type: system-memory
+        enabled: true
+        interval: 30s
+        timeout: 10s
+        config:
+          memoryThresholds:
+            warning: 85
+            critical: 95
+          swapThresholds:
+            warning: 50
+            critical: 80
+          oomDetection: true
+          kmsgPath: /dev/kmsg
+
+      # Disk Monitor - Disk space and I/O health
+      - name: disk-health
+        type: system-disk
+        enabled: true
+        interval: 1m
+        timeout: 30s
+        config:
+          paths:
+            - path: "/"
+              warningThreshold: 85
+              criticalThreshold: 95
+            - path: "/var/lib/kubelet"
+              warningThreshold: 85
+              criticalThreshold: 95
+            - path: "/var/lib/docker"
+              warningThreshold: 80
+              criticalThreshold: 90
+            - path: "/var/lib/containerd"
+              warningThreshold: 80
+              criticalThreshold: 90
+          inodeThresholds:
+            warning: 85
+            critical: 95
+          readOnlyDetection: true
+          ioHealthCheck: true
+
+      # Kubelet health monitoring - DISABLED (monitor not yet implemented)
+      # - name: kubelet-health
+      #   type: kubernetes-kubelet-check
+      #   enabled: false
+      #   interval: 30s
+      #   timeout: 10s
+      #   config:
+      #     healthzURL: http://127.0.0.1:10248/healthz
+      #     checkSystemdStatus: true
+
+    exporters:
+      kubernetes:
+        enabled: true
+        updateInterval: 30s
+        resyncInterval: 5m
+        heartbeatInterval: 1m
+        namespace: kube-system
+        conditions:
+          - type: NodeDoctorHealthy
+            defaultStatus: "True"
+            defaultReason: "NodeDoctorRunning"
+            defaultMessage: "Node Doctor is running and monitoring the node"
+        events:
+          maxEventsPerMinute: 10
+          eventTTL: 1h
+          deduplicationWindow: 5m
+
+      http:
+        enabled: true
+        bindAddress: "0.0.0.0"
+        hostPort: 8080
+        tlsEnabled: false
+        endpoints:
+          - path: /healthz
+            handler: overall-health
+            description: "Kubernetes-style health endpoint"
+          - path: /ready
+            handler: readiness
+            description: "Readiness check"
+          - path: /status
+            handler: detailed-status
+            description: "Detailed node and monitor status"
+
+      prometheus:
+        enabled: true
+        port: 9100
+        path: /metrics
+        namespace: node_doctor
+        subsystem: monitor
+        labels:
+          cluster: kubernetes
+
+    remediation:
+      enabled: true
+      dryRun: false
+      maxRemediationsPerHour: 5
+      maxRemediationsPerMinute: 1
+      cooldownPeriod: 10m
+      maxAttemptsGlobal: 2
+
+    features:
+      enableMetrics: true
+      enableProfiling: false
+      enableTracing: false
+
+---
+# Service for Node Doctor metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-doctor-metrics
+  namespace: kube-system
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9100"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service for DaemonSet
+  selector:
+    app: node-doctor
+    component: monitoring
+    tier: system
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: metrics
+    port: 9100
+    targetPort: 9100
+    protocol: TCP
