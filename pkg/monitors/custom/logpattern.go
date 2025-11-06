@@ -25,6 +25,22 @@ const (
 
 	// Regex safety limits to prevent ReDoS attacks
 	maxRegexLength = 1000 // Maximum allowed regex pattern length
+
+	// Resource limits to prevent unbounded memory usage and DoS attacks
+	maxConfiguredPatterns   = 50                  // Maximum number of patterns (user + defaults)
+	maxJournalUnits        = 20                  // Maximum number of journal units to monitor
+	minMaxEventsPerPattern = 1                   // Minimum events per pattern per window
+	maxMaxEventsPerPattern = 1000                // Maximum events per pattern per window
+	minDedupWindow         = 1 * time.Second     // Minimum deduplication window
+	maxDedupWindow         = 1 * time.Hour       // Maximum deduplication window
+
+	// Memory estimation constants (approximate per-item memory usage in bytes)
+	memoryPerPattern       = 512  // bytes: regex + compiled state + name + desc
+	memoryPerJournalUnit   = 256  // bytes: unit name + timestamp tracking
+	memoryPerEventRecord   = 128  // bytes: map entry overhead + timestamp
+
+	// Overall memory limit per check (conservative estimate)
+	maxMemoryPerCheck = 10 * 1024 * 1024 // 10MB total limit
 )
 
 // FileReader interface abstracts file system operations for testability
@@ -636,9 +652,45 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 		c.DedupWindow = defaultDedupWindow
 	}
 
+	// Validate MaxEventsPerPattern bounds
+	if c.MaxEventsPerPattern < minMaxEventsPerPattern || c.MaxEventsPerPattern > maxMaxEventsPerPattern {
+		return fmt.Errorf("maxEventsPerPattern must be between %d and %d, got %d",
+			minMaxEventsPerPattern, maxMaxEventsPerPattern, c.MaxEventsPerPattern)
+	}
+
+	// Validate DedupWindow bounds
+	if c.DedupWindow < minDedupWindow || c.DedupWindow > maxDedupWindow {
+		return fmt.Errorf("dedupWindow must be between %v and %v, got %v",
+			minDedupWindow, maxDedupWindow, c.DedupWindow)
+	}
+
 	// Merge with default patterns if requested
 	if c.UseDefaults {
 		c.Patterns = MergeWithDefaults(c.Patterns, true)
+	}
+
+	// Validate pattern count limit
+	if len(c.Patterns) > maxConfiguredPatterns {
+		return fmt.Errorf("number of configured patterns (%d) exceeds maximum limit of %d. "+
+			"Consider consolidating patterns or disabling default patterns with useDefaults: false",
+			len(c.Patterns), maxConfiguredPatterns)
+	}
+
+	// Validate journal units limit
+	if len(c.JournalUnits) > maxJournalUnits {
+		return fmt.Errorf("number of journal units (%d) exceeds maximum limit of %d. "+
+			"Monitor fewer units or use pattern matching to reduce unit count",
+			len(c.JournalUnits), maxJournalUnits)
+	}
+
+	// Estimate total memory usage for this configuration
+	estimatedMemory := c.estimateMemoryUsage()
+	if estimatedMemory > maxMemoryPerCheck {
+		return fmt.Errorf("estimated memory usage (%.2f MB) exceeds limit (%.2f MB). "+
+			"Reduce pattern count (%d), journal units (%d), or maxEventsPerPattern (%d)",
+			float64(estimatedMemory)/(1024*1024),
+			float64(maxMemoryPerCheck)/(1024*1024),
+			len(c.Patterns), len(c.JournalUnits), c.MaxEventsPerPattern)
 	}
 
 	// Validate and compile regex patterns
@@ -662,6 +714,30 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 	}
 
 	return nil
+}
+
+// estimateMemoryUsage calculates approximate memory usage for this configuration
+// This is a conservative estimate used for early validation to prevent OOM scenarios
+func (c *LogPatternMonitorConfig) estimateMemoryUsage() int {
+	memory := 0
+
+	// Pattern storage (struct + compiled regex)
+	memory += len(c.Patterns) * memoryPerPattern
+
+	// Journal unit tracking (unit name + lastCheck timestamp)
+	memory += len(c.JournalUnits) * memoryPerJournalUnit
+
+	// Event tracking maps (worst case: all patterns firing at max rate)
+	// Each pattern tracks: count (int) + lastEvent (time.Time)
+	memory += len(c.Patterns) * c.MaxEventsPerPattern * memoryPerEventRecord
+
+	// Journal check tracking (one timestamp per unit)
+	memory += len(c.JournalUnits) * 32 // time.Time size
+
+	// Kmsg buffer allocation
+	memory += maxKmsgBufferSize
+
+	return memory
 }
 
 // ValidateLogPatternConfig validates the log pattern monitor configuration
