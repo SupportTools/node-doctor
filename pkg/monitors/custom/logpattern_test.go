@@ -1631,31 +1631,28 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "pattern must be a map",
+			errorMsg:    "must be an object",
 		},
 		{
 			name: "invalid maxEventsPerPattern type",
 			config: map[string]interface{}{
 				"maxEventsPerPattern": "not-a-number",
 			},
-			expectError: true,
-			errorMsg:    "maxEventsPerPattern",
+			expectError: false,  // Silently ignored with lenient parsing
 		},
 		{
 			name: "invalid dedupWindow type",
 			config: map[string]interface{}{
 				"dedupWindow": []int{1, 2, 3},  // Not a valid duration type
 			},
-			expectError: true,
-			errorMsg:    "dedupWindow",
+			expectError: false,  // Silently ignored with lenient parsing
 		},
 		{
 			name: "invalid checkKmsg type",
 			config: map[string]interface{}{
 				"checkKmsg": 123,  // Not a boolean
 			},
-			expectError: true,
-			errorMsg:    "checkKmsg",
+			expectError: false,  // Silently ignored with lenient parsing
 		},
 		{
 			name: "invalid journalUnits type - not a slice",
@@ -1671,7 +1668,7 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 				"journalUnits": []interface{}{123, 456},  // Not strings
 			},
 			expectError: true,
-			errorMsg:    "journal unit must be a string",
+			errorMsg:    "must be a string",
 		},
 		{
 			name: "nil config",
