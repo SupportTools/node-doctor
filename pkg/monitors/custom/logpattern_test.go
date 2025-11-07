@@ -254,10 +254,10 @@ func TestApplyDefaults(t *testing.T) {
 // TestPatternMatching tests log pattern matching
 func TestPatternMatching(t *testing.T) {
 	tests := []struct {
-		name          string
-		logLine       string
-		pattern       LogPatternConfig
-		shouldMatch   bool
+		name        string
+		logLine     string
+		pattern     LogPatternConfig
+		shouldMatch bool
 	}{
 		{
 			name:    "OOM killer match",
@@ -345,34 +345,37 @@ func TestRateLimiting(t *testing.T) {
 
 	// First 3 events should be allowed
 	for i := 0; i < 3; i++ {
-		if !monitor.shouldReportEvent(patternName) {
-			t.Errorf("event %d should be allowed", i+1)
+		reported, suppressed := monitor.shouldReportEvent(patternName)
+		if !reported || suppressed {
+			t.Errorf("event %d should be allowed (reported=%v, suppressed=%v)", i+1, reported, suppressed)
 		}
 	}
 
-	// 4th event should be blocked
-	if monitor.shouldReportEvent(patternName) {
-		t.Error("4th event should be blocked by rate limit")
+	// 4th event should be blocked (suppressed)
+	reported, suppressed := monitor.shouldReportEvent(patternName)
+	if reported || !suppressed {
+		t.Errorf("4th event should be blocked by rate limit (reported=%v, suppressed=%v)", reported, suppressed)
 	}
 
 	// Wait for dedup window to expire
 	time.Sleep(1100 * time.Millisecond)
 
 	// After window expires, should allow events again
-	if !monitor.shouldReportEvent(patternName) {
-		t.Error("event should be allowed after dedup window expires")
+	reported, suppressed = monitor.shouldReportEvent(patternName)
+	if !reported || suppressed {
+		t.Errorf("event should be allowed after dedup window expires (reported=%v, suppressed=%v)", reported, suppressed)
 	}
 }
 
 // TestKmsgCheck tests kernel message checking
 func TestKmsgCheck(t *testing.T) {
 	tests := []struct {
-		name            string
-		kmsgContent     string
-		kmsgError       error
-		patterns        []LogPatternConfig
-		expectEvents    int
-		expectWarnings  bool
+		name           string
+		kmsgContent    string
+		kmsgError      error
+		patterns       []LogPatternConfig
+		expectEvents   int
+		expectWarnings bool
 	}{
 		{
 			name:        "successful OOM detection",
@@ -443,6 +446,11 @@ func TestKmsgCheck(t *testing.T) {
 				fileReader:        mockReader,
 				patternEventCount: make(map[string]int),
 				patternLastEvent:  make(map[string]time.Time),
+				metrics: LogPatternMetrics{
+					PatternsMatched:        make(map[string]int),
+					PatternsSuppressed:     make(map[string]int),
+					JournalCheckDurationMs: make(map[string]float64),
+				},
 			}
 
 			// Run check
@@ -470,12 +478,12 @@ func TestKmsgCheck(t *testing.T) {
 // TestJournalCheck tests systemd journal checking
 func TestJournalCheck(t *testing.T) {
 	tests := []struct {
-		name           string
-		unit           string
-		journalOutput  string
-		journalError   error
-		patterns       []LogPatternConfig
-		expectEvents   int
+		name          string
+		unit          string
+		journalOutput string
+		journalError  error
+		patterns      []LogPatternConfig
+		expectEvents  int
 	}{
 		{
 			name:          "kubelet error detection",
@@ -540,6 +548,11 @@ func TestJournalCheck(t *testing.T) {
 				patternEventCount: make(map[string]int),
 				patternLastEvent:  make(map[string]time.Time),
 				lastJournalCheck:  make(map[string]time.Time),
+				metrics: LogPatternMetrics{
+					PatternsMatched:        make(map[string]int),
+					PatternsSuppressed:     make(map[string]int),
+					JournalCheckDurationMs: make(map[string]float64),
+				},
 			}
 
 			// Run check
@@ -583,7 +596,7 @@ func TestLogPatternMonitorIntegration(t *testing.T) {
 		Interval: 100 * time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 		Config: map[string]interface{}{
-			"checkKmsg":   true,
+			"checkKmsg":    true,
 			"checkJournal": true,
 			"journalUnits": []interface{}{"kubelet"},
 			"patterns": []interface{}{
@@ -682,7 +695,7 @@ func TestValidateLogPatternConfig(t *testing.T) {
 				Interval: 30 * time.Second,
 				Timeout:  10 * time.Second,
 				Config: map[string]interface{}{
-					"checkKmsg":   true,
+					"checkKmsg":    true,
 					"checkJournal": true,
 					"journalUnits": []interface{}{"kubelet"},
 					"patterns": []interface{}{
@@ -717,7 +730,7 @@ func TestValidateLogPatternConfig(t *testing.T) {
 				Interval: 30 * time.Second,
 				Timeout:  10 * time.Second,
 				Config: map[string]interface{}{
-					"checkKmsg":   false,
+					"checkKmsg":    false,
 					"checkJournal": false,
 					"patterns": []interface{}{
 						map[string]interface{}{
@@ -1161,6 +1174,528 @@ func TestResourceLimits_WithDefaults(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestNewLogPatternMonitor tests the factory function for creating monitors
+func TestNewLogPatternMonitor(t *testing.T) {
+	tests := []struct {
+		name        string
+		monitorName string
+		config      *LogPatternMonitorConfig
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "valid basic config",
+			monitorName: "test-monitor",
+			config: &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       `ERROR:`,
+						Severity:    "error",
+						Source:      "kmsg",
+						Description: "Error found",
+					},
+				},
+				CheckKmsg:    true,
+				CheckJournal: false,
+			},
+			expectError: false,
+		},
+		{
+			name:        "valid with defaults enabled",
+			monitorName: "test-defaults",
+			config: &LogPatternMonitorConfig{
+				UseDefaults:  true,
+				CheckKmsg:    true,
+				CheckJournal: false,
+			},
+			expectError: false,
+		},
+		{
+			name:        "invalid pattern - nested quantifiers",
+			monitorName: "test-invalid",
+			config: &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       `(a+)+`,  // Nested quantifiers - should fail
+						Severity:    "error",
+						Source:      "kmsg",
+						Description: "Test",
+					},
+				},
+				CheckKmsg: true,
+			},
+			expectError: true,
+			errorMsg:    "nested",
+		},
+		{
+			name:        "invalid pattern - quantified adjacency",
+			monitorName: "test-adjacency",
+			config: &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       `.*.*`,  // Quantified adjacency - should fail
+						Severity:    "warning",
+						Source:      "kmsg",
+						Description: "Test",
+					},
+				},
+				CheckKmsg: true,
+			},
+			expectError: true,
+			errorMsg:    "quantified adjacencies",
+		},
+		{
+			name:        "pattern too long",
+			monitorName: "test-toolong",
+			config: &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       strings.Repeat("a", 1001),  // Over 1000 char limit
+						Severity:    "error",
+						Source:      "kmsg",
+						Description: "Test",
+					},
+				},
+				CheckKmsg: true,
+			},
+			expectError: true,
+			errorMsg:    "exceeds maximum length",
+		},
+		{
+			name:        "empty config with neither kmsg nor journal",
+			monitorName: "test-empty",
+			config: &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       `test`,
+						Severity:    "info",
+						Source:      "kmsg",
+						Description: "Test",
+					},
+				},
+				CheckKmsg:    false,
+				CheckJournal: false,
+			},
+			expectError: false,  // Should succeed, just won't check anything
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			mockReader := newMockFileReader()
+			mockExecutor := &mockCommandExecutor{}
+
+			monitorConfig := types.MonitorConfig{
+				Name:     tt.monitorName,
+				Type:     "log-pattern",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Config:   map[string]interface{}{},
+			}
+
+			err := tt.config.applyDefaults()
+			if tt.expectError {
+				// If we expect an error, check if applyDefaults or monitor creation fails
+				if err != nil {
+					// applyDefaults failed as expected
+					if !strings.Contains(err.Error(), tt.errorMsg) {
+						t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+					}
+					return
+				}
+				// applyDefaults succeeded, monitor creation should fail
+			} else if err != nil {
+				t.Fatalf("failed to apply defaults: %v", err)
+			}
+
+			monitor, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, tt.config, mockReader, mockExecutor)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+				if monitor != nil {
+					t.Error("expected nil monitor on error")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if monitor == nil {
+					t.Fatal("expected non-nil monitor")
+				}
+			}
+		})
+	}
+}
+
+// TestShouldCheckPattern tests the pattern source filtering logic
+func TestShouldCheckPattern(t *testing.T) {
+	tests := []struct {
+		name           string
+		patternSource  string
+		checkSource    string
+		expectedResult bool
+	}{
+		{
+			name:           "kmsg pattern for kmsg source",
+			patternSource:  "kmsg",
+			checkSource:    "kmsg",
+			expectedResult: true,
+		},
+		{
+			name:           "kmsg pattern for journal source",
+			patternSource:  "kmsg",
+			checkSource:    "journal",
+			expectedResult: false,
+		},
+		{
+			name:           "journal pattern for journal source",
+			patternSource:  "journal",
+			checkSource:    "journal",
+			expectedResult: true,
+		},
+		{
+			name:           "journal pattern for kmsg source",
+			patternSource:  "journal",
+			checkSource:    "kmsg",
+			expectedResult: false,
+		},
+		{
+			name:           "both pattern for kmsg source",
+			patternSource:  "both",
+			checkSource:    "kmsg",
+			expectedResult: true,
+		},
+		{
+			name:           "both pattern for journal source",
+			patternSource:  "both",
+			checkSource:    "journal",
+			expectedResult: true,
+		},
+		{
+			name:           "default (empty) pattern for kmsg source",
+			patternSource:  "",
+			checkSource:    "kmsg",
+			expectedResult: true,  // Default is to check all sources
+		},
+		{
+			name:           "default (empty) pattern for journal source",
+			patternSource:  "",
+			checkSource:    "journal",
+			expectedResult: true,  // Default is to check all sources
+		},
+		{
+			name:           "custom pattern for kmsg source",
+			patternSource:  "custom",
+			checkSource:    "kmsg",
+			expectedResult: true,  // Unknown sources default to checking all
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// For edge cases with invalid sources, test shouldCheckPattern directly
+			// without going through validation
+			if tt.patternSource == "" || tt.patternSource == "custom" {
+				// Create pattern directly
+				pattern := &LogPatternConfig{
+					Regex:       `test`,
+					Severity:    "info",
+					Source:      tt.patternSource,
+					Description: "Test",
+				}
+
+				// Create a minimal monitor just to call shouldCheckPattern
+				monitor := &LogPatternMonitor{
+					config: &LogPatternMonitorConfig{
+						Patterns: []LogPatternConfig{*pattern},
+					},
+				}
+
+				result := monitor.shouldCheckPattern(pattern, tt.checkSource)
+				if result != tt.expectedResult {
+					t.Errorf("shouldCheckPattern(%q, %q) = %v, want %v",
+						tt.patternSource, tt.checkSource, result, tt.expectedResult)
+				}
+				return
+			}
+
+			ctx := context.Background()
+			mockReader := newMockFileReader()
+			mockExecutor := &mockCommandExecutor{}
+
+			// Create a minimal monitor
+			logConfig := &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       `test`,
+						Severity:    "info",
+						Description: "Test",
+						Source:      tt.patternSource,
+					},
+				},
+				CheckKmsg:    true,
+				CheckJournal: false,
+			}
+
+			err := logConfig.applyDefaults()
+			if err != nil {
+				t.Fatalf("failed to apply defaults: %v", err)
+			}
+
+			monitorConfig := types.MonitorConfig{
+				Name:     "test",
+				Type:     "log-pattern",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Config:   map[string]interface{}{},
+			}
+
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockReader, mockExecutor)
+			if err != nil {
+				t.Fatalf("failed to create monitor: %v", err)
+			}
+
+			monitor := mon.(*LogPatternMonitor)
+			pattern := &monitor.config.Patterns[0]
+			result := monitor.shouldCheckPattern(pattern, tt.checkSource)
+
+			if result != tt.expectedResult {
+				t.Errorf("shouldCheckPattern(%q, %q) = %v, want %v",
+					tt.patternSource, tt.checkSource, result, tt.expectedResult)
+			}
+		})
+	}
+}
+
+// TestCleanupExpiredEntries tests the map cleanup logic
+func TestCleanupExpiredEntries(t *testing.T) {
+	tests := []struct {
+		name           string
+		dedupWindow    time.Duration
+		setupTime      time.Duration
+		waitTime       time.Duration
+		expectCleanup  bool
+	}{
+		{
+			name:          "cleanup not triggered - too soon",
+			dedupWindow:   5 * time.Minute,
+			setupTime:     0,
+			waitTime:      1 * time.Minute,
+			expectCleanup: false,  // Less than 10 minutes
+		},
+		{
+			name:          "cleanup triggered - after 10 minutes",
+			dedupWindow:   1 * time.Second,  // Short for testing
+			setupTime:     0,
+			waitTime:      11 * time.Minute,  // Simulated time
+			expectCleanup: true,
+		},
+		{
+			name:          "entries not expired - within 2x dedup window",
+			dedupWindow:   10 * time.Minute,
+			setupTime:     0,
+			waitTime:      15 * time.Minute,  // Less than 2x dedup window
+			expectCleanup: false,  // Entries not old enough
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			mockFS := newMockFileReader()
+			mockFS.setFile("/dev/kmsg", "ERROR: test\n")
+			mockExecutor := &mockCommandExecutor{}
+
+			logConfig := &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{
+						Regex:       `ERROR:`,
+						Severity:    "error",
+						Source:      "kmsg",
+						Description: "Error",
+					},
+				},
+				KmsgPath:           "/dev/kmsg",
+				CheckKmsg:          true,
+				CheckJournal:       false,
+				MaxEventsPerPattern: 10,
+				DedupWindow:        tt.dedupWindow,
+			}
+
+			err := logConfig.applyDefaults()
+			if err != nil {
+				t.Fatalf("failed to apply defaults: %v", err)
+			}
+
+			monitorConfig := types.MonitorConfig{
+				Name:     "test-cleanup",
+				Type:     "log-pattern",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Config:   map[string]interface{}{},
+			}
+
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, mockExecutor)
+			if err != nil {
+				t.Fatalf("failed to create monitor: %v", err)
+			}
+
+			monitor := mon.(*LogPatternMonitor)
+
+			// Run initial check to populate maps
+			_, err = monitor.checkLogPatterns(ctx)
+			if err != nil {
+				t.Fatalf("initial check failed: %v", err)
+			}
+
+			// Verify maps are populated
+			monitor.mu.Lock()
+			initialCount := len(monitor.patternLastEvent)
+			monitor.mu.Unlock()
+
+			if initialCount == 0 {
+				t.Fatal("expected some entries in patternLastEvent map")
+			}
+
+			// Manually adjust lastCleanup to simulate time passage
+			monitor.mu.Lock()
+			if tt.waitTime > 0 {
+				monitor.lastCleanup = time.Now().Add(-tt.waitTime)
+			}
+
+			// Manually adjust entry timestamps to simulate age
+			if tt.expectCleanup {
+				// Make entries old enough to be cleaned up
+				expiryTime := time.Now().Add(-tt.dedupWindow * 3)
+				for pattern := range monitor.patternLastEvent {
+					monitor.patternLastEvent[pattern] = expiryTime
+				}
+			}
+			monitor.mu.Unlock()
+
+			// Trigger cleanup
+			monitor.cleanupExpiredEntries()
+
+			// Check if maps were cleaned
+			monitor.mu.Lock()
+			finalCount := len(monitor.patternLastEvent)
+			monitor.mu.Unlock()
+
+			if tt.expectCleanup {
+				if finalCount >= initialCount {
+					t.Errorf("expected cleanup to reduce map size: initial=%d, final=%d",
+						initialCount, finalCount)
+				}
+			} else {
+				if finalCount != initialCount {
+					t.Errorf("expected no cleanup: initial=%d, final=%d",
+						initialCount, finalCount)
+				}
+			}
+		})
+	}
+}
+
+// TestParseLogPatternConfig_ErrorCases tests error handling in config parsing
+func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      map[string]interface{}
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "invalid patterns type - not a slice",
+			config: map[string]interface{}{
+				"patterns": "not-a-slice",
+			},
+			expectError: true,
+			errorMsg:    "patterns must be an array",
+		},
+		{
+			name: "invalid pattern item type",
+			config: map[string]interface{}{
+				"patterns": []interface{}{
+					"not-a-map",
+				},
+			},
+			expectError: true,
+			errorMsg:    "pattern must be a map",
+		},
+		{
+			name: "invalid maxEventsPerPattern type",
+			config: map[string]interface{}{
+				"maxEventsPerPattern": "not-a-number",
+			},
+			expectError: true,
+			errorMsg:    "maxEventsPerPattern",
+		},
+		{
+			name: "invalid dedupWindow type",
+			config: map[string]interface{}{
+				"dedupWindow": []int{1, 2, 3},  // Not a valid duration type
+			},
+			expectError: true,
+			errorMsg:    "dedupWindow",
+		},
+		{
+			name: "invalid checkKmsg type",
+			config: map[string]interface{}{
+				"checkKmsg": 123,  // Not a boolean
+			},
+			expectError: true,
+			errorMsg:    "checkKmsg",
+		},
+		{
+			name: "invalid journalUnits type - not a slice",
+			config: map[string]interface{}{
+				"journalUnits": "not-a-slice",
+			},
+			expectError: true,
+			errorMsg:    "journalUnits must be an array",
+		},
+		{
+			name: "invalid journalUnits item type",
+			config: map[string]interface{}{
+				"journalUnits": []interface{}{123, 456},  // Not strings
+			},
+			expectError: true,
+			errorMsg:    "journal unit must be a string",
+		},
+		{
+			name: "nil config",
+			config: nil,
+			expectError: false,  // Should return default config
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseLogPatternConfig(tt.config)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if cfg == nil {
+					t.Error("expected non-nil config")
 				}
 			}
 		})

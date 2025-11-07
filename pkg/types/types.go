@@ -32,6 +32,9 @@ type Status struct {
 
 	// Timestamp when this status was generated.
 	Timestamp time.Time
+
+	// Metadata holds monitor-specific observability data (metrics, diagnostics, etc.)
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // EventSeverity represents the severity level of an event.

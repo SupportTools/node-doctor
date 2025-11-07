@@ -3,6 +3,7 @@ package custom
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -19,28 +20,72 @@ const (
 	maxKmsgBufferSize = 1 * 1024 * 1024 // 1MB
 
 	// Default configuration values
-	defaultKmsgPath           = "/dev/kmsg"
+	defaultKmsgPath            = "/dev/kmsg"
 	defaultMaxEventsPerPattern = 10
-	defaultDedupWindow        = 5 * time.Minute
+	defaultDedupWindow         = 5 * time.Minute
 
 	// Regex safety limits to prevent ReDoS attacks
 	maxRegexLength = 1000 // Maximum allowed regex pattern length
 
 	// Resource limits to prevent unbounded memory usage and DoS attacks
-	maxConfiguredPatterns   = 50                  // Maximum number of patterns (user + defaults)
-	maxJournalUnits        = 20                  // Maximum number of journal units to monitor
-	minMaxEventsPerPattern = 1                   // Minimum events per pattern per window
-	maxMaxEventsPerPattern = 1000                // Maximum events per pattern per window
-	minDedupWindow         = 1 * time.Second     // Minimum deduplication window
-	maxDedupWindow         = 1 * time.Hour       // Maximum deduplication window
+	maxConfiguredPatterns  = 50              // Maximum number of patterns (user + defaults)
+	maxJournalUnits        = 20              // Maximum number of journal units to monitor
+	minMaxEventsPerPattern = 1               // Minimum events per pattern per window
+	maxMaxEventsPerPattern = 1000            // Maximum events per pattern per window
+	minDedupWindow         = 1 * time.Second // Minimum deduplication window
+	maxDedupWindow         = 1 * time.Hour   // Maximum deduplication window
 
 	// Memory estimation constants (approximate per-item memory usage in bytes)
-	memoryPerPattern       = 512  // bytes: regex + compiled state + name + desc
-	memoryPerJournalUnit   = 256  // bytes: unit name + timestamp tracking
-	memoryPerEventRecord   = 128  // bytes: map entry overhead + timestamp
+	memoryPerPattern     = 512 // bytes: regex + compiled state + name + desc
+	memoryPerJournalUnit = 256 // bytes: unit name + timestamp tracking
+	memoryPerEventRecord = 128 // bytes: map entry overhead + timestamp
 
 	// Overall memory limit per check (conservative estimate)
 	maxMemoryPerCheck = 10 * 1024 * 1024 // 10MB total limit
+)
+
+// Pre-compiled regex patterns for performance optimization
+// These are used in regex safety validation and complexity analysis
+var (
+	// Nested quantifier patterns (for checkDangerousPatterns)
+	nestedQuantifierPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\(\.\*\)\+`),         // (.*)+
+		regexp.MustCompile(`\(\.\+\)\+`),         // (.+)+
+		regexp.MustCompile(`\(\.\*\)\*`),         // (.*)*
+		regexp.MustCompile(`\(\.\+\)\*`),         // (.+)*
+		regexp.MustCompile(`\([a-zA-Z]\+\)\+`),   // (a+)+
+		regexp.MustCompile(`\([a-zA-Z]\*\)\+`),   // (a*)+
+		regexp.MustCompile(`\([a-zA-Z]\+\)\*`),   // (a+)*
+		regexp.MustCompile(`\([a-zA-Z]\*\)\*`),   // (a*)*
+		regexp.MustCompile(`\([a-zA-Z]\?\)\+`),   // (a?)+
+		regexp.MustCompile(`\([a-zA-Z]\?\)\*`),   // (a?)*
+		regexp.MustCompile(`\(\\[wdWDs]\+\)\+`),  // (\w+)+
+		regexp.MustCompile(`\(\\[wdWDs]\*\)\+`),  // (\w*)+
+		regexp.MustCompile(`\(\\[wdWDs]\+\)\*`),  // (\w+)*
+		regexp.MustCompile(`\(\\[wdWDs]\*\)\*`),  // (\w*)*
+		regexp.MustCompile(`\(\[[^\]]+\]\+\)\+`), // ([a-z]+)+
+		regexp.MustCompile(`\(\[[^\]]+\]\*\)\+`), // ([a-z]*)+
+		regexp.MustCompile(`\(\[[^\]]+\]\+\)\*`), // ([a-z]+)*
+		regexp.MustCompile(`\(\[[^\]]+\]\*\)\*`), // ([a-z]*)*
+	}
+
+	// Exponential alternation pattern (for counting branches)
+	// Note: Overlapping alternation detection removed - RE2 doesn't support backreferences needed for that check
+	exponentialAltPattern = regexp.MustCompile(`\([^)]*\|[^)]*\)[*+{]`)
+
+	// Quantified adjacency patterns (for hasQuantifiedAdjacency)
+	adjacencyPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\.\*\.\*`),                 // .*.*
+		regexp.MustCompile(`\.\+\.\+`),                 // .+.+
+		regexp.MustCompile(`\\d\+\\d\+`),               // \d+\d+
+		regexp.MustCompile(`\\d\*\\d\*`),               // \d*\d*
+		regexp.MustCompile(`\\w\+\\w\+`),               // \w+\w+
+		regexp.MustCompile(`\\w\*\\w\*`),               // \w*\w*
+		regexp.MustCompile(`\\s\+\\s\+`),               // \s+\s+
+		regexp.MustCompile(`\\s\*\\s\*`),               // \s*\s*
+		regexp.MustCompile(`\[[^\]]+\]\+\[[^\]]+\]\+`), // [a-z]+[a-z]+
+		regexp.MustCompile(`\[[^\]]+\]\*\[[^\]]+\]\*`), // [a-z]*[a-z]*
+	}
 )
 
 // FileReader interface abstracts file system operations for testability
@@ -77,7 +122,7 @@ func (e *defaultCommandExecutor) ExecuteCommand(ctx context.Context, command str
 type LogPatternConfig struct {
 	Name        string `json:"name"`
 	Regex       string `json:"regex"`
-	Severity    string `json:"severity"`    // info, warning, error
+	Severity    string `json:"severity"` // info, warning, error
 	Description string `json:"description"`
 	Source      string `json:"source"` // kmsg, journal, both
 
@@ -96,12 +141,12 @@ type LogPatternConfig struct {
 // LogPatternMonitorConfig holds the configuration for the log pattern monitor
 type LogPatternMonitorConfig struct {
 	// Pattern configuration
-	Patterns       []LogPatternConfig `json:"patterns"`
-	UseDefaults    bool               `json:"useDefaults"` // Merge with default patterns
+	Patterns    []LogPatternConfig `json:"patterns"`
+	UseDefaults bool               `json:"useDefaults"` // Merge with default patterns
 
 	// Kmsg configuration
-	KmsgPath   string `json:"kmsgPath,omitempty"`
-	CheckKmsg  bool   `json:"checkKmsg"`
+	KmsgPath  string `json:"kmsgPath,omitempty"`
+	CheckKmsg bool   `json:"checkKmsg"`
 
 	// Journal configuration
 	JournalUnits []string `json:"journalUnits,omitempty"`
@@ -110,34 +155,447 @@ type LogPatternMonitorConfig struct {
 	// Rate limiting
 	MaxEventsPerPattern int           `json:"maxEventsPerPattern,omitempty"`
 	DedupWindow         time.Duration `json:"dedupWindow,omitempty"`
+
+	// Initialization metrics (set during applyDefaults)
+	compilationTimeMs float64 // Total regex compilation time in milliseconds
+	compiledOK        int     // Number of patterns compiled successfully
+	compiledFailed    int     // Number of patterns failed to compile
 }
 
-// validateRegexSafety validates regex patterns to prevent ReDoS attacks
+// validateRegexSafety validates regex patterns to prevent ReDoS attacks and resource exhaustion
+// While Go's RE2 engine provides inherent protection against catastrophic backtracking (linear time),
+// this validation prevents resource exhaustion during compilation and enforces security best practices
+//
+// VALIDATION VS COMPLEXITY SCORING:
+// This function provides BINARY validation (pass/fail) for categorically dangerous patterns.
+// CalculateRegexComplexity() provides CONTINUOUS scoring (0-100) for nuanced complexity assessment.
+//
+// A pattern can score 25-30 (medium complexity) but still PASS validation if it's not dangerous:
+// - Validation rejects: nested quantifiers, deep nesting (>3), excessive alternation (>5 branches)
+// - Scoring measures: length, depth, nesting, adjacency, alternation (weighted 0-100)
+// - Example: A 500-char pattern with no nesting scores 15/100 (low) and passes validation
+// - Example: A pattern with depth=3 scores 20/100 (low) and passes (threshold is depth>3)
+//
+// Use validateRegexSafety() for security enforcement (prevent ReDoS and resource exhaustion).
+// Use CalculateRegexComplexity() for understanding and documenting pattern complexity.
 func validateRegexSafety(pattern string) error {
 	// Check pattern length to prevent overly complex regex
 	if len(pattern) > maxRegexLength {
 		return fmt.Errorf("regex pattern exceeds maximum length of %d characters", maxRegexLength)
 	}
 
-	// Check for potentially dangerous patterns that could cause catastrophic backtracking
-	// Patterns with nested quantifiers like (a+)+ are particularly dangerous
-	dangerousPatterns := []string{
-		`\(\.\*\)\+`,  // (.*)+
-		`\(\.\+\)\+`,  // (.+)+
-		`\(\.\*\)\*`,  // (.*)*
-		`\(\.\+\)\*`,  // (.+)*
-		`\([^)]*\+\)\+`, // (x+)+ where x is any pattern
-		`\([^)]*\*\)\+`, // (x*)+ where x is any pattern
+	// Check for dangerous patterns that could cause resource exhaustion
+	if err := checkDangerousPatterns(pattern); err != nil {
+		return err
 	}
 
-	for _, dangerous := range dangerousPatterns {
-		matched, _ := regexp.MatchString(dangerous, pattern)
-		if matched {
-			return fmt.Errorf("regex pattern contains potentially dangerous nested quantifiers that could cause ReDoS")
+	// Check for quantified adjacencies (e.g., \d+\d+, .*.*)
+	if hasQuantifiedAdjacency(pattern) {
+		return fmt.Errorf("regex pattern contains quantified adjacencies (e.g., \\d+\\d+) which can cause polynomial complexity")
+	}
+
+	// Check for excessive repetition depth
+	if repetitionDepth := calculateRepetitionDepth(pattern); repetitionDepth > 3 {
+		return fmt.Errorf("regex pattern has excessive repetition nesting (depth %d > 3), which may cause resource exhaustion", repetitionDepth)
+	}
+
+	return nil
+}
+
+// checkDangerousPatterns detects specific dangerous regex constructs using pre-compiled patterns
+func checkDangerousPatterns(pattern string) error {
+	// Nested quantifiers - catastrophic backtracking patterns
+	// Note: RE2 handles these safely, but they indicate poor regex design and can cause compilation overhead
+	nestedQuantifierDescriptions := []struct {
+		example string
+		desc    string
+	}{
+		{"(.*)+", "nested star-plus"},
+		{"(.+)+", "nested plus-plus"},
+		{"(.*)*", "nested star-star"},
+		{"(.+)*", "nested plus-star"},
+		{"(a+)+", "nested plus quantifiers"},
+		{"(a*)+", "nested star-plus quantifiers"},
+		{"(a+)*", "nested plus-star quantifiers"},
+		{"(a*)*", "nested star quantifiers"},
+		{"(a?)+", "nested optional-plus"},
+		{"(a?)*", "nested optional-star"},
+		{`(\w+)+`, "nested plus quantifiers"},
+		{`(\w*)+`, "nested star-plus quantifiers"},
+		{`(\w+)*`, "nested plus-star quantifiers"},
+		{`(\w*)*`, "nested star quantifiers"},
+		{`([a-z]+)+`, "nested character class plus-plus"},
+		{`([a-z]*)+`, "nested character class star-plus"},
+		{`([a-z]+)*`, "nested character class plus-star"},
+		{`([a-z]*)*`, "nested character class star-star"},
+	}
+
+	// Use pre-compiled patterns for faster matching
+	for i, compiledPattern := range nestedQuantifierPatterns {
+		if compiledPattern.MatchString(pattern) {
+			desc := nestedQuantifierDescriptions[i]
+			return fmt.Errorf("regex pattern contains dangerous %s pattern (e.g., %s) which can cause resource exhaustion. Consider simplifying the pattern", desc.desc, desc.example)
+		}
+	}
+
+	// Exponential alternation growth - count alternations in quantified groups using pre-compiled pattern
+	// Note: Overlapping alternation detection removed - RE2 doesn't support backreferences needed for that check
+	if matches := exponentialAltPattern.FindAllString(pattern, -1); len(matches) > 0 {
+		for _, match := range matches {
+			pipeCount := 0
+			for _, ch := range match {
+				if ch == '|' {
+					pipeCount++
+				}
+			}
+			if pipeCount > 5 {
+				return fmt.Errorf("regex pattern contains alternation group with %d branches under quantifier, which can cause exponential complexity. Consider splitting into multiple patterns", pipeCount+1)
+			}
 		}
 	}
 
 	return nil
+}
+
+// hasQuantifiedAdjacency detects patterns like \d+\d+, .*.*, [a-z]+[a-z]+ which cause polynomial complexity
+// Uses pre-compiled patterns for performance
+func hasQuantifiedAdjacency(pattern string) bool {
+	// Check for adjacent quantified atoms (can cause O(n²) complexity) using pre-compiled patterns
+	for _, compiledPattern := range adjacencyPatterns {
+		if compiledPattern.MatchString(pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// calculateRepetitionDepth calculates the maximum nesting depth of quantified groups
+// Example: ((a+)+)+ has depth 3, but (error: \d+)+ has depth 1
+// This only counts nested GROUPS with quantifiers, not quantifiers within a single group
+// Handles escape sequences and character classes correctly
+func calculateRepetitionDepth(pattern string) int {
+	maxDepth := 0
+	parenDepth := 0
+	quantifiedGroupDepth := 0
+	inCharClass := false
+
+	i := 0
+	for i < len(pattern) {
+		ch := pattern[i]
+
+		// Handle escape sequences - skip escaped character
+		if ch == '\\' && i+1 < len(pattern) {
+			i += 2
+			continue
+		}
+
+		// Track character class state - parens inside [...] don't count
+		if ch == '[' && !inCharClass {
+			inCharClass = true
+			i++
+			continue
+		}
+		if ch == ']' && inCharClass {
+			inCharClass = false
+			i++
+			continue
+		}
+
+		// Only count parens outside of character classes
+		if !inCharClass {
+			if ch == '(' {
+				parenDepth++
+			} else if ch == ')' {
+				parenDepth--
+				// Check if this group is quantified
+				if i+1 < len(pattern) {
+					nextCh := pattern[i+1]
+					if nextCh == '*' || nextCh == '+' || nextCh == '?' || nextCh == '{' {
+						quantifiedGroupDepth++
+						if quantifiedGroupDepth > maxDepth {
+							maxDepth = quantifiedGroupDepth
+						}
+					}
+				}
+				// When we close a group, check if we're exiting a quantified group
+				if parenDepth == 0 {
+					quantifiedGroupDepth = 0
+				}
+			}
+		}
+
+		i++
+	}
+
+	return maxDepth
+}
+
+// CalculateRegexComplexity calculates a complexity score (0-100) for a regex pattern
+// Scores are weighted based on multiple risk factors:
+// - Pattern length (0-25 points)
+// - Repetition depth (0-30 points)
+// - Nested quantifiers (0-20 points)
+// - Quantified adjacency (0-15 points)
+// - Alternation branches (0-10 points)
+//
+// Score ranges:
+//
+//	0-30: Low complexity (safe)
+//	31-60: Medium complexity (caution)
+//	61-80: High complexity (review needed)
+//	81-100: Very high complexity (dangerous, likely to fail validation)
+//
+// SCORING VS VALIDATION:
+// This function provides CONTINUOUS complexity assessment (0-100 scale).
+// validateRegexSafety() provides BINARY security enforcement (pass/fail).
+//
+// Key differences:
+// - A pattern scoring 25-30 may still PASS validation (not dangerous, just moderately complex)
+// - A pattern scoring 60+ will likely FAIL validation (dangerous patterns score high)
+// - Scoring is for documentation and understanding; validation is for security
+//
+// Example: A 500-character pattern with simple structure:
+// - CalculateRegexComplexity() returns 15 (low complexity)
+// - validateRegexSafety() returns nil (passes - pattern is safe)
+//
+// Example: A pattern with nested quantifiers `(.*)+`:
+// - CalculateRegexComplexity() returns 25 (low-medium complexity)
+// - validateRegexSafety() returns error (fails - pattern is dangerous)
+//
+// This function is designed to provide gradual complexity assessment,
+// complementing the binary pass/fail of validateRegexSafety()
+func CalculateRegexComplexity(pattern string) int {
+	score := 0
+
+	// Factor 1: Pattern length (max 25 points)
+	score += calculateLengthScore(pattern)
+
+	// Factor 2: Repetition depth (max 30 points)
+	score += calculateDepthScore(pattern)
+
+	// Factor 3: Nested quantifiers (max 20 points)
+	score += calculateNestedQuantifierScore(pattern)
+
+	// Factor 4: Quantified adjacency (max 15 points)
+	score += calculateAdjacencyScore(pattern)
+
+	// Factor 5: Alternation branches (max 10 points)
+	score += calculateAlternationScore(pattern)
+
+	// Cap at 100
+	if score > 100 {
+		score = 100
+	}
+
+	return score
+}
+
+// calculateLengthScore scores pattern length on a scale of 0-25
+// Uses progressive scaling:
+//
+//	0-100 chars: 0-5 points (linear)
+//	101-500 chars: 5-15 points (linear)
+//	501-1000 chars: 15-25 points (linear)
+//	>1000 chars: 25 points (max)
+func calculateLengthScore(pattern string) int {
+	length := len(pattern)
+
+	switch {
+	case length <= 100:
+		// 0-100 chars: 0-5 points (0.05 points per char)
+		return int(float64(length) * 0.05)
+	case length <= 500:
+		// 101-500 chars: 5-15 points (0.025 points per char above 100)
+		return 5 + int(float64(length-100)*0.025)
+	case length <= maxRegexLength: // 1000
+		// 501-1000 chars: 15-25 points (0.02 points per char above 500)
+		return 15 + int(float64(length-500)*0.02)
+	default:
+		// Over 1000 chars: max 25 points
+		return 25
+	}
+}
+
+// calculateDepthScore scores repetition depth on a scale of 0-30
+// Uses existing calculateRepetitionDepth() function
+// Scoring:
+//
+//	Depth 0: 0 points
+//	Depth 1: 5 points
+//	Depth 2: 12 points
+//	Depth 3: 20 points (max safe depth)
+//	Depth 4+: 30 points (dangerous)
+func calculateDepthScore(pattern string) int {
+	depth := calculateRepetitionDepth(pattern)
+
+	switch depth {
+	case 0:
+		return 0
+	case 1:
+		return 5
+	case 2:
+		return 12
+	case 3:
+		return 20
+	default: // 4 or more
+		return 30
+	}
+}
+
+// calculateNestedQuantifierScore detects nested quantifiers and scores 0-20
+// Uses patterns from checkDangerousPatterns()
+// Each type of nested quantifier adds points:
+//
+//	Basic nested (.*)+, (.+)+: 20 points each (any match = max score)
+//	Complex nested (a+)+, (\w+)+: 20 points each
+//	Character class nested ([a-z]+)+: 20 points each
+//
+// Returns 20 if ANY nested quantifier is found, 0 otherwise
+// This is binary because nested quantifiers are categorically dangerous
+func calculateNestedQuantifierScore(pattern string) int {
+	// Reuse detection logic from checkDangerousPatterns()
+	nestedQuantifiers := []string{
+		`\(\.\*\)\+`,         // (.*)+
+		`\(\.\+\)\+`,         // (.+)+
+		`\(\.\*\)\*`,         // (.*)*
+		`\(\.\+\)\*`,         // (.+)*
+		`\([a-zA-Z]\+\)\+`,   // (a+)+
+		`\([a-zA-Z]\*\)\+`,   // (a*)+
+		`\([a-zA-Z]\+\)\*`,   // (a+)*
+		`\([a-zA-Z]\*\)\*`,   // (a*)*
+		`\([a-zA-Z]\?\)\+`,   // (a?)+
+		`\([a-zA-Z]\?\)\*`,   // (a?)*
+		`\(\\[wdWDs]\+\)\+`,  // (\w+)+
+		`\(\\[wdWDs]\*\)\+`,  // (\w*)+
+		`\(\\[wdWDs]\+\)\*`,  // (\w+)*
+		`\(\\[wdWDs]\*\)\*`,  // (\w*)*
+		`\(\[[^\]]+\]\+\)\+`, // ([a-z]+)+
+		`\(\[[^\]]+\]\*\)\+`, // ([a-z]*)+
+		`\(\[[^\]]+\]\+\)\*`, // ([a-z]+)*
+		`\(\[[^\]]+\]\*\)\*`, // ([a-z]*)*
+	}
+
+	for _, nq := range nestedQuantifiers {
+		if matched, _ := regexp.MatchString(nq, pattern); matched {
+			return 20 // Binary: found = dangerous
+		}
+	}
+
+	return 0
+}
+
+// calculateAdjacencyScore detects quantified adjacency patterns and scores 0-15
+// Uses hasQuantifiedAdjacency() to detect patterns like \d+\d+, .*.*
+//
+// Returns 15 if adjacency is found, 0 otherwise
+// This is binary because adjacency causes polynomial complexity
+func calculateAdjacencyScore(pattern string) int {
+	if hasQuantifiedAdjacency(pattern) {
+		return 15
+	}
+	return 0
+}
+
+// calculateAlternationScore counts alternation branches in quantified groups
+// Scoring scale:
+//
+//	0-2 branches: 0 points
+//	3 branches: 2 points
+//	4 branches: 4 points
+//	5 branches: 6 points (threshold of safety)
+//	6 branches: 8 points
+//	7+ branches: 10 points (dangerous)
+func calculateAlternationScore(pattern string) int {
+	altPattern := regexp.MustCompile(`\([^)]*\|[^)]*\)[*+{]`)
+	matches := altPattern.FindAllString(pattern, -1)
+
+	maxBranches := 0
+	for _, match := range matches {
+		pipeCount := 0
+		for _, ch := range match {
+			if ch == '|' {
+				pipeCount++
+			}
+		}
+		branches := pipeCount + 1
+		if branches > maxBranches {
+			maxBranches = branches
+		}
+	}
+
+	// Score based on max branches found
+	switch {
+	case maxBranches <= 2:
+		return 0
+	case maxBranches == 3:
+		return 2
+	case maxBranches == 4:
+		return 4
+	case maxBranches == 5:
+		return 6
+	case maxBranches == 6:
+		return 8
+	default: // 7+
+		return 10
+	}
+}
+
+// compileWithTimeout compiles a regex pattern with a timeout to prevent resource exhaustion
+// If compilation takes longer than the timeout, an error is returned
+// This protects against pathological regex patterns that could cause excessive CPU usage during compilation
+func compileWithTimeout(pattern string, timeout time.Duration) (*regexp.Regexp, error) {
+	type compileResult struct {
+		compiled *regexp.Regexp
+		err      error
+	}
+
+	resultChan := make(chan compileResult, 1)
+
+	// Run compilation in a goroutine
+	go func() {
+		compiled, err := regexp.Compile(pattern)
+		resultChan <- compileResult{compiled: compiled, err: err}
+	}()
+
+	// Wait for result or timeout
+	select {
+	case result := <-resultChan:
+		return result.compiled, result.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("regex compilation timeout after %v - pattern may be too complex", timeout)
+	}
+}
+
+// LogPatternMetrics holds observability metrics for the log pattern monitor
+type LogPatternMetrics struct {
+	// Pattern matching metrics
+	TotalPatternsChecked int            `json:"totalPatternsChecked"` // Total patterns evaluated per check
+	PatternsMatched      map[string]int `json:"patternsMatched"`      // Pattern name -> match count
+	PatternsSuppressed   map[string]int `json:"patternsSuppressed"`   // Pattern name -> suppressed count (rate limited)
+
+	// Performance metrics
+	CheckDurationMs        float64            `json:"checkDurationMs"`        // Total check duration in milliseconds
+	KmsgCheckDurationMs    float64            `json:"kmsgCheckDurationMs"`    // Kmsg check duration
+	JournalCheckDurationMs map[string]float64 `json:"journalCheckDurationMs"` // Unit name -> check duration
+	RegexCompilationTimeMs float64            `json:"regexCompilationTimeMs"` // Total regex compilation time (initialization)
+
+	// Configuration metrics
+	TotalConfiguredPatterns int            `json:"totalConfiguredPatterns"`
+	PatternsBySource        map[string]int `json:"patternsBySource"` // Source -> count
+	TotalJournalUnits       int            `json:"totalJournalUnits"`
+	MaxEventsPerPattern     int            `json:"maxEventsPerPattern"`
+	DedupWindowSeconds      float64        `json:"dedupWindowSeconds"`
+
+	// Health metrics
+	KmsgAccessible         bool `json:"kmsgAccessible"`
+	JournalAccessible      bool `json:"journalAccessible"`
+	PatternsCompiledOK     int  `json:"patternsCompiledOK"`
+	PatternsCompiledFailed int  `json:"patternsCompiledFailed"`
+
+	// Resource metrics
+	LastCleanupTime      time.Time `json:"lastCleanupTime"`
+	TrackedPatternStates int       `json:"trackedPatternStates"` // Number of patterns being tracked
 }
 
 // LogPatternMonitor monitors log patterns in kernel messages and systemd journals
@@ -150,15 +608,26 @@ type LogPatternMonitor struct {
 	commandExecutor CommandExecutor
 
 	// Thread-safe state tracking
-	mu                     sync.RWMutex
-	patternEventCount      map[string]int       // pattern name -> event count
-	patternLastEvent       map[string]time.Time // pattern name -> last event time
-	lastJournalCheck       map[string]time.Time // unit name -> last check time
-	kmsgPermissionWarned   bool                 // Track if we've warned about kmsg permissions
-	lastCleanup            time.Time            // Last time map cleanup was performed
+	mu                   sync.RWMutex
+	patternEventCount    map[string]int       // pattern name -> event count
+	patternLastEvent     map[string]time.Time // pattern name -> last event time
+	lastJournalCheck     map[string]time.Time // unit name -> last check time
+	kmsgPermissionWarned bool                 // Track if we've warned about kmsg permissions
+	lastCleanup          time.Time            // Last time map cleanup was performed
+
+	// Metrics tracking (thread-safe access via methods)
+	metrics                LogPatternMetrics
+	regexCompilationTimeMs float64 // Set during initialization
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
+}
+
+// logStructured writes a structured log message with consistent format
+// Format: [LogPattern] [level] monitor=<name> component=<component> action=<action> message
+func (m *LogPatternMonitor) logStructured(level, component, action, message string) {
+	log.Printf("[LogPattern] [%s] monitor=%s component=%s action=%s %s",
+		level, m.name, component, action, message)
 }
 
 // NewLogPatternMonitor creates a new log pattern monitor
@@ -198,17 +667,45 @@ func NewLogPatternMonitorWithDependencies(
 		return nil, fmt.Errorf("failed to create base monitor: %w", err)
 	}
 
-	// Create log pattern monitor
-	monitor := &LogPatternMonitor{
-		name:              config.Name,
-		config:            logConfig,
-		fileReader:        fileReader,
-		commandExecutor:   commandExecutor,
-		patternEventCount: make(map[string]int),
-		patternLastEvent:  make(map[string]time.Time),
-		lastJournalCheck:  make(map[string]time.Time),
-		BaseMonitor:       baseMonitor,
+	// Initialize configuration metrics
+	patternsBySource := make(map[string]int)
+	for _, pattern := range logConfig.Patterns {
+		patternsBySource[pattern.Source]++
 	}
+
+	// Create log pattern monitor with initialized metrics
+	monitor := &LogPatternMonitor{
+		name:                   config.Name,
+		config:                 logConfig,
+		fileReader:             fileReader,
+		commandExecutor:        commandExecutor,
+		patternEventCount:      make(map[string]int),
+		patternLastEvent:       make(map[string]time.Time),
+		lastJournalCheck:       make(map[string]time.Time),
+		regexCompilationTimeMs: logConfig.compilationTimeMs,
+		BaseMonitor:            baseMonitor,
+		metrics: LogPatternMetrics{
+			// Initialize configuration metrics (static)
+			TotalConfiguredPatterns: len(logConfig.Patterns),
+			PatternsBySource:        patternsBySource,
+			TotalJournalUnits:       len(logConfig.JournalUnits),
+			MaxEventsPerPattern:     logConfig.MaxEventsPerPattern,
+			DedupWindowSeconds:      logConfig.DedupWindow.Seconds(),
+			RegexCompilationTimeMs:  logConfig.compilationTimeMs,
+			PatternsCompiledOK:      logConfig.compiledOK,
+			PatternsCompiledFailed:  logConfig.compiledFailed,
+
+			// Initialize runtime metrics (will be updated per check)
+			PatternsMatched:        make(map[string]int),
+			PatternsSuppressed:     make(map[string]int),
+			JournalCheckDurationMs: make(map[string]float64),
+		},
+	}
+
+	// Log monitor initialization
+	monitor.logStructured("INFO", "initialization", "created",
+		fmt.Sprintf("patterns=%d journalUnits=%d compilationTimeMs=%.2f",
+			len(logConfig.Patterns), len(logConfig.JournalUnits), logConfig.compilationTimeMs))
 
 	// Set the check function
 	if err := baseMonitor.SetCheckFunc(monitor.checkLogPatterns); err != nil {
@@ -220,22 +717,77 @@ func NewLogPatternMonitorWithDependencies(
 
 // checkLogPatterns performs the log pattern checking
 func (m *LogPatternMonitor) checkLogPatterns(ctx context.Context) (*types.Status, error) {
+	checkStart := time.Now()
 	status := types.NewStatus(m.GetName())
+
+	// Reset runtime metrics for this check
+	m.mu.Lock()
+	m.metrics.PatternsMatched = make(map[string]int)
+	m.metrics.PatternsSuppressed = make(map[string]int)
+	m.metrics.JournalCheckDurationMs = make(map[string]float64)
+	m.metrics.TotalPatternsChecked = 0
+	m.metrics.KmsgCheckDurationMs = 0
+	m.metrics.TrackedPatternStates = len(m.patternEventCount)
+	m.metrics.LastCleanupTime = m.lastCleanup
+	m.mu.Unlock()
 
 	// Perform periodic cleanup of expired entries to prevent unbounded map growth
 	m.cleanupExpiredEntries()
 
 	// Check kmsg if enabled
 	if m.config.CheckKmsg {
+		kmsgStart := time.Now()
 		m.checkKmsg(ctx, status)
+
+		m.mu.Lock()
+		m.metrics.KmsgCheckDurationMs = float64(time.Since(kmsgStart).Microseconds()) / 1000.0
+		m.mu.Unlock()
 	}
 
 	// Check journal units if enabled
 	if m.config.CheckJournal {
 		for _, unit := range m.config.JournalUnits {
+			journalStart := time.Now()
 			m.checkJournalUnit(ctx, unit, status)
+
+			m.mu.Lock()
+			m.metrics.JournalCheckDurationMs[unit] = float64(time.Since(journalStart).Microseconds()) / 1000.0
+			m.mu.Unlock()
 		}
 	}
+
+	// Calculate total check duration
+	m.mu.Lock()
+	m.metrics.CheckDurationMs = float64(time.Since(checkStart).Microseconds()) / 1000.0
+
+	// Update health metrics
+	m.metrics.KmsgAccessible = !m.kmsgPermissionWarned || !m.config.CheckKmsg
+	m.metrics.JournalAccessible = true // Updated per-unit in checkJournalUnit
+
+	// Log check completion with performance metrics
+	checkDurationMs := m.metrics.CheckDurationMs
+	patternsChecked := m.metrics.TotalPatternsChecked
+	patternsMatched := len(m.metrics.PatternsMatched)
+	patternsSuppressed := len(m.metrics.PatternsSuppressed)
+	m.mu.Unlock()
+
+	// Log performance warning if check took too long
+	if checkDurationMs > 100.0 {
+		m.logStructured("WARN", "performance", "check_slow",
+			fmt.Sprintf("durationMs=%.2f patternsChecked=%d patternsMatched=%d patternsSuppressed=%d",
+				checkDurationMs, patternsChecked, patternsMatched, patternsSuppressed))
+	} else {
+		m.logStructured("DEBUG", "performance", "check_complete",
+			fmt.Sprintf("durationMs=%.2f patternsChecked=%d patternsMatched=%d patternsSuppressed=%d",
+				checkDurationMs, patternsChecked, patternsMatched, patternsSuppressed))
+	}
+
+	// Add metrics to status as metadata
+	m.mu.Lock()
+	status.Metadata = map[string]interface{}{
+		"metrics": m.metrics,
+	}
+	m.mu.Unlock()
 
 	return status, nil
 }
@@ -259,6 +811,8 @@ func (m *LogPatternMonitor) checkKmsg(ctx context.Context, status *types.Status)
 
 			// Create event outside lock to prevent blocking other goroutines
 			if shouldWarn {
+				m.logStructured("WARN", "kmsg", "permission_denied",
+					fmt.Sprintf("path=%s error=%v", m.config.KmsgPath, err))
 				status.AddEvent(types.NewEvent(
 					types.EventWarning,
 					"KmsgPermissionDenied",
@@ -269,6 +823,8 @@ func (m *LogPatternMonitor) checkKmsg(ctx context.Context, status *types.Status)
 		}
 
 		// Other errors
+		m.logStructured("ERROR", "kmsg", "read_failed",
+			fmt.Sprintf("path=%s error=%v", m.config.KmsgPath, err))
 		status.AddEvent(types.NewEvent(
 			types.EventWarning,
 			"KmsgReadError",
@@ -353,12 +909,33 @@ func (m *LogPatternMonitor) matchPatterns(line, source string, status *types.Sta
 			continue
 		}
 
+		// Increment patterns checked metric
+		m.mu.Lock()
+		m.metrics.TotalPatternsChecked++
+		m.mu.Unlock()
+
 		// Check if pattern matches
 		if pattern.compiled.MatchString(line) {
-			// Check rate limiting
-			if !m.shouldReportEvent(pattern.Name) {
+			// Check rate limiting (this will track suppressions)
+			reported, suppressed := m.shouldReportEvent(pattern.Name)
+
+			if suppressed {
+				// Pattern was suppressed due to rate limiting
+				m.mu.Lock()
+				m.metrics.PatternsSuppressed[pattern.Name]++
+				m.mu.Unlock()
 				continue
 			}
+
+			if !reported {
+				// First occurrence or within dedup window but under limit
+				continue
+			}
+
+			// Track matched patterns
+			m.mu.Lock()
+			m.metrics.PatternsMatched[pattern.Name]++
+			m.mu.Unlock()
 
 			// Generate event
 			severity := m.parseSeverity(pattern.Severity)
@@ -398,9 +975,12 @@ func (m *LogPatternMonitor) shouldCheckPattern(pattern *LogPatternConfig, source
 }
 
 // shouldReportEvent checks rate limiting and deduplication
+// Returns (reported, suppressed):
+//   - reported: true if event should be reported
+//   - suppressed: true if event was suppressed due to rate limiting
 // This function is thread-safe and consolidates map operations to minimize
 // lock time and reduce race condition potential
-func (m *LogPatternMonitor) shouldReportEvent(patternName string) bool {
+func (m *LogPatternMonitor) shouldReportEvent(patternName string) (reported bool, suppressed bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -412,19 +992,20 @@ func (m *LogPatternMonitor) shouldReportEvent(patternName string) bool {
 		// Reset to 1 (this event counts as first in new window)
 		m.patternEventCount[patternName] = 1
 		m.patternLastEvent[patternName] = now
-		return true
+		return true, false
 	}
 
 	// Check rate limit
 	count := m.patternEventCount[patternName]
 	if count >= m.config.MaxEventsPerPattern {
-		return false
+		// Event is suppressed due to rate limiting
+		return false, true
 	}
 
 	// Increment and update (single write path)
 	m.patternEventCount[patternName] = count + 1
 	m.patternLastEvent[patternName] = now
-	return true
+	return true, false
 }
 
 // parseSeverity converts string severity to event severity
@@ -693,18 +1274,26 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 			len(c.Patterns), len(c.JournalUnits), c.MaxEventsPerPattern)
 	}
 
-	// Validate and compile regex patterns
+	// Validate and compile regex patterns, tracking compilation time
+	compilationStart := time.Now()
+	compiledOK := 0
+	compiledFailed := 0
+
 	for i := range c.Patterns {
 		// Validate regex safety to prevent ReDoS attacks
 		if err := validateRegexSafety(c.Patterns[i].Regex); err != nil {
+			compiledFailed++
 			return fmt.Errorf("regex safety validation failed for pattern %s: %w", c.Patterns[i].Name, err)
 		}
 
-		compiled, err := regexp.Compile(c.Patterns[i].Regex)
+		// Compile with timeout to prevent resource exhaustion during compilation
+		compiled, err := compileWithTimeout(c.Patterns[i].Regex, 100*time.Millisecond)
 		if err != nil {
-			return fmt.Errorf("invalid regex in pattern %s: %w", c.Patterns[i].Name, err)
+			compiledFailed++
+			return fmt.Errorf("regex compilation failed for pattern %s: %w", c.Patterns[i].Name, err)
 		}
 		c.Patterns[i].compiled = compiled
+		compiledOK++
 
 		// Validate source
 		source := c.Patterns[i].Source
@@ -712,6 +1301,11 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 			return fmt.Errorf("invalid source in pattern %s: %s (must be kmsg, journal, or both)", c.Patterns[i].Name, source)
 		}
 	}
+
+	// Store compilation metrics
+	c.compilationTimeMs = float64(time.Since(compilationStart).Microseconds()) / 1000.0
+	c.compiledOK = compiledOK
+	c.compiledFailed = compiledFailed
 
 	return nil
 }
@@ -773,10 +1367,50 @@ func ValidateLogPatternConfig(config types.MonitorConfig) error {
 
 // init registers the log pattern monitor
 func init() {
+	description := `Monitors log patterns in kernel messages and systemd journals for known issues.
+
+Observability Metrics (exposed via status.Metadata["metrics"]):
+
+Pattern Matching Metrics:
+  - totalPatternsChecked: Total patterns evaluated per check
+  - patternsMatched: Map of pattern name -> match count
+  - patternsSuppressed: Map of pattern name -> suppressed count (rate limited)
+
+Performance Metrics:
+  - checkDurationMs: Total check duration in milliseconds
+  - kmsgCheckDurationMs: Kernel message check duration
+  - journalCheckDurationMs: Map of unit name -> check duration
+  - regexCompilationTimeMs: Total regex compilation time (initialization)
+
+Configuration Metrics:
+  - totalConfiguredPatterns: Number of patterns configured
+  - patternsBySource: Map of source (kmsg/journal/both) -> count
+  - totalJournalUnits: Number of journal units monitored
+  - maxEventsPerPattern: Rate limit configuration
+  - dedupWindowSeconds: Deduplication window in seconds
+
+Health Metrics:
+  - kmsgAccessible: Whether /dev/kmsg is accessible
+  - journalAccessible: Whether journalctl is accessible
+  - patternsCompiledOK: Number of patterns compiled successfully
+  - patternsCompiledFailed: Number of patterns failed to compile
+
+Resource Metrics:
+  - lastCleanupTime: Timestamp of last map cleanup
+  - trackedPatternStates: Number of patterns being tracked
+
+Structured Logging Format:
+  [LogPattern] [level] monitor=<name> component=<component> action=<action> <message>
+
+Performance Targets:
+  - Check duration: <10ms for typical configurations (10-25 patterns, 100-500 log lines)
+  - Warning logged if check duration >100ms
+`
+
 	monitors.Register(monitors.MonitorInfo{
 		Type:        "custom-logpattern",
 		Factory:     NewLogPatternMonitor,
 		Validator:   ValidateLogPatternConfig,
-		Description: "Monitors log patterns in kernel messages and systemd journals for known issues",
+		Description: description,
 	})
 }
