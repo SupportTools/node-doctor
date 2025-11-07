@@ -1,0 +1,16 @@
+# TaskForge Repository Configuration
+# Maps this Git repository to a TaskForge project ID
+
+# Project ID for this repository
+# All TaskForge MCP queries will default to this project
+project_id: 40
+
+# Repository URL (used for validation)
+# Supports both SSH and HTTPS formats
+repository: git@github.com:SupportTools/node-doctor.git
+
+# Project name (optional, for human reference)
+project_name: Node Doctor
+
+# Description (optional)
+description: Kubernetes node health monitoring and auto-remediation system based on Node Problem Detector. Runs as DaemonSet on each node, performing health checks (CPU, memory, disk, network, DNS, gateway, kubelet, kube-apiserver, k8s status), updating node annotations, exposing HTTP health endpoints on hostPort for external monitoring and load balancers, and providing auto-remediation capabilities.

@@ -866,7 +866,7 @@ func TestBaseMonitor_PanicRecovery(t *testing.T) {
 		hasError := false
 		for _, event := range status.Events {
 			if event.Severity == types.EventError &&
-			   event.Reason == "CheckFailed" {
+				event.Reason == "CheckFailed" {
 				hasError = true
 				break
 			}

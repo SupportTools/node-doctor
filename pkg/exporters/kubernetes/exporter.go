@@ -252,20 +252,20 @@ func (ke *KubernetesExporter) GetStats() map[string]interface{} {
 	defer ke.stats.mu.RUnlock()
 
 	stats := map[string]interface{}{
-		"start_time":               ke.stats.StartTime.Format(time.RFC3339),
-		"uptime":                   time.Since(ke.stats.StartTime).String(),
-		"status_exports_total":     ke.stats.StatusExportsTotal,
-		"status_exports_success":   ke.stats.StatusExportsSuccess,
-		"status_exports_failed":    ke.stats.StatusExportsFailed,
-		"problem_exports_total":    ke.stats.ProblemExportsTotal,
-		"problem_exports_success":  ke.stats.ProblemExportsSuccess,
-		"problem_exports_failed":   ke.stats.ProblemExportsFailed,
-		"events_created":           ke.stats.EventsCreated,
-		"conditions_updated":       ke.stats.ConditionsUpdated,
-		"last_export_time":         ke.stats.LastExportTime.Format(time.RFC3339),
-		"started":                  ke.started,
-		"node_name":                ke.settings.NodeName,
-		"namespace":                ke.config.Namespace,
+		"start_time":              ke.stats.StartTime.Format(time.RFC3339),
+		"uptime":                  time.Since(ke.stats.StartTime).String(),
+		"status_exports_total":    ke.stats.StatusExportsTotal,
+		"status_exports_success":  ke.stats.StatusExportsSuccess,
+		"status_exports_failed":   ke.stats.StatusExportsFailed,
+		"problem_exports_total":   ke.stats.ProblemExportsTotal,
+		"problem_exports_success": ke.stats.ProblemExportsSuccess,
+		"problem_exports_failed":  ke.stats.ProblemExportsFailed,
+		"events_created":          ke.stats.EventsCreated,
+		"conditions_updated":      ke.stats.ConditionsUpdated,
+		"last_export_time":        ke.stats.LastExportTime.Format(time.RFC3339),
+		"started":                 ke.started,
+		"node_name":               ke.settings.NodeName,
+		"namespace":               ke.config.Namespace,
 	}
 
 	if !ke.stats.LastErrorTime.IsZero() {

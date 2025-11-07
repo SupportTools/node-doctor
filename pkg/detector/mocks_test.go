@@ -156,13 +156,13 @@ func (m *MockMonitor) GetName() string {
 
 // MockExporter is a configurable mock implementation of types.Exporter for testing.
 type MockExporter struct {
-	mu                sync.RWMutex
-	name              string
-	statusExports     []*types.Status
-	problemExports    []*types.Problem
-	statusExportError error
+	mu                 sync.RWMutex
+	name               string
+	statusExports      []*types.Status
+	problemExports     []*types.Problem
+	statusExportError  error
 	problemExportError error
-	exportDelay       time.Duration
+	exportDelay        time.Duration
 }
 
 // NewMockExporter creates a new MockExporter with the given name.

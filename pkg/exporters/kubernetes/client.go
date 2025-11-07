@@ -151,8 +151,9 @@ func (c *K8sClient) PatchNodeConditions(ctx context.Context, conditions []corev1
 
 // CreateEvent creates a Kubernetes event with retry logic and error handling
 func (c *K8sClient) CreateEvent(ctx context.Context, event corev1.Event, namespace string) error {
-	// Set the involved object UID
+	// Set the involved object UID and namespace
 	event.InvolvedObject.UID = k8stypes.UID(c.nodeUID)
+	event.InvolvedObject.Namespace = namespace
 	event.Namespace = namespace
 
 	log.Printf("[DEBUG] Creating event: %s/%s (reason: %s)", namespace, event.Name, event.Reason)

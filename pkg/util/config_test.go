@@ -122,7 +122,14 @@ func TestLoadConfigJSON(t *testing.T) {
   "exporters": {
     "http": {
       "enabled": true,
-      "hostPort": 8080
+      "webhooks": [
+        {
+          "name": "test-webhook",
+          "url": "https://example.com/webhook",
+          "sendStatus": true,
+          "sendProblems": true
+        }
+      ]
     }
   },
   "monitors": [
@@ -153,8 +160,8 @@ func TestLoadConfigJSON(t *testing.T) {
 		t.Errorf("LoadConfig() NodeName = %v, want json-test-node", config.Settings.NodeName)
 	}
 
-	if config.Exporters.HTTP != nil && config.Exporters.HTTP.HostPort != 8080 {
-		t.Errorf("LoadConfig() HTTP Port = %v, want 8080", config.Exporters.HTTP.HostPort)
+	if config.Exporters.HTTP != nil && len(config.Exporters.HTTP.Webhooks) == 0 {
+		t.Error("LoadConfig() should load HTTP webhooks")
 	}
 
 	if len(config.Monitors) == 0 {
@@ -569,8 +576,8 @@ monitors:
 	}
 
 	// 4. Verify defaults were applied
-	if config.Exporters.HTTP != nil && config.Exporters.HTTP.HostPort == 0 {
-		t.Error("Workflow should apply default HTTP port")
+	if config.Exporters.HTTP != nil && len(config.Exporters.HTTP.Webhooks) == 0 {
+		t.Error("Workflow should configure HTTP webhooks")
 	}
 
 	// 5. Save the configuration back to a new file

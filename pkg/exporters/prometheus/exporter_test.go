@@ -12,11 +12,11 @@ import (
 
 func TestNewPrometheusExporter(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         *types.PrometheusExporterConfig
-		settings       *types.GlobalSettings
-		expectedError  bool
-		errorContains  string
+		name          string
+		config        *types.PrometheusExporterConfig
+		settings      *types.GlobalSettings
+		expectedError bool
+		errorContains string
 	}{
 		{
 			name:          "nil config",
@@ -390,12 +390,12 @@ func contains(s, substr string) bool {
 	return len(s) >= len(substr) && s[len(s)-len(substr):] == substr ||
 		len(s) > len(substr) && s[:len(substr)] == substr ||
 		len(s) > len(substr) &&
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
+			func() bool {
+				for i := 0; i <= len(s)-len(substr); i++ {
+					if s[i:i+len(substr)] == substr {
+						return true
+					}
 				}
-			}
-			return false
-		}()
+				return false
+			}()
 }

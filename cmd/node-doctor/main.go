@@ -17,12 +17,17 @@ import (
 	httpexporter "github.com/supporttools/node-doctor/pkg/exporters/http"
 	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
 	prometheusexporter "github.com/supporttools/node-doctor/pkg/exporters/prometheus"
+	"github.com/supporttools/node-doctor/pkg/health"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
 	"github.com/supporttools/node-doctor/pkg/util"
 
-	// Import example monitors to register them
+	// Import monitors to register them
+	_ "github.com/supporttools/node-doctor/pkg/monitors/custom"
 	_ "github.com/supporttools/node-doctor/pkg/monitors/example"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/kubernetes"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/network"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/system"
 )
 
 // Build-time variables set by goreleaser or make
@@ -310,6 +315,27 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]Exp
 				exporterInterfaces = append(exporterInterfaces, httpExporter)
 				log.Printf("[INFO] HTTP exporter created and started")
 			}
+		}
+	}
+
+	// Create Health Server (always enabled for Kubernetes probes)
+	log.Printf("[INFO] Creating health server...")
+	healthServer, err := health.NewServer(&health.Config{
+		Enabled:      true,
+		BindAddress:  "0.0.0.0",
+		Port:         8080,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		log.Printf("[WARN] Failed to create health server: %v", err)
+	} else {
+		if err := healthServer.Start(ctx); err != nil {
+			log.Printf("[WARN] Failed to start health server: %v", err)
+		} else {
+			exporters = append(exporters, healthServer)
+			exporterInterfaces = append(exporterInterfaces, healthServer)
+			log.Printf("[INFO] Health server created and started on port 8080")
 		}
 	}
 

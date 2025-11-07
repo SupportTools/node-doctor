@@ -34,8 +34,8 @@ func createTestEventManager(maxEventsPerMin int, deduplicationWindow time.Durati
 	config := &types.KubernetesExporterConfig{
 		Namespace: "test-namespace",
 		Events: types.EventConfig{
-			MaxEventsPerMinute:        maxEventsPerMin,
-			DeduplicationWindow:       deduplicationWindow,
+			MaxEventsPerMinute:  maxEventsPerMin,
+			DeduplicationWindow: deduplicationWindow,
 		},
 	}
 

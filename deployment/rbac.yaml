@@ -12,7 +12,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: node-doctor
-  namespace: kube-system
+  namespace: node-doctor
   labels:
     app: node-doctor
     component: monitoring
@@ -134,4 +134,4 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: node-doctor
-  namespace: kube-system
+  namespace: node-doctor

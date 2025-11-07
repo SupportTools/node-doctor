@@ -3,13 +3,13 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-	"errors"
 
 	"github.com/supporttools/node-doctor/pkg/types"
 )

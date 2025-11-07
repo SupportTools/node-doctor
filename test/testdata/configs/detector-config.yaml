@@ -1,0 +1,31 @@
+---
+# Sample detector configuration for testing
+detectors:
+  - name: "kubelet-monitor"
+    type: "kubernetes"
+    enabled: true
+    interval: "30s"
+    config:
+      service: "kubelet"
+      critical_conditions:
+        - "Ready=false"
+        - "MemoryPressure=true"
+
+  - name: "disk-monitor"
+    type: "system"
+    enabled: true
+    interval: "60s"
+    config:
+      threshold: 85
+      paths:
+        - "/"
+        - "/var"
+        - "/var/lib/docker"
+
+  - name: "memory-monitor"
+    type: "system"
+    enabled: true
+    interval: "30s"
+    config:
+      threshold: 90
+      check_swap: true

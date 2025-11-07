@@ -14,11 +14,11 @@ import (
 
 // Mock monitor implementation for testing
 type mockMonitor struct {
-	name      string
-	started   bool
-	stopped   bool
-	statusCh  chan *types.Status
-	mu        sync.Mutex
+	name     string
+	started  bool
+	stopped  bool
+	statusCh chan *types.Status
+	mu       sync.Mutex
 }
 
 func newMockMonitor(name string) *mockMonitor {
@@ -133,8 +133,8 @@ func TestNewRegistry(t *testing.T) {
 
 func TestRegistry_Register(t *testing.T) {
 	tests := []struct {
-		name      string
-		info      MonitorInfo
+		name        string
+		info        MonitorInfo
 		shouldPanic bool
 		panicMsg    string
 	}{

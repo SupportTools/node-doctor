@@ -52,36 +52,36 @@ func TestParseAPIServerConfig(t *testing.T) {
 		{
 			name: "Full configuration with string durations",
 			configMap: map[string]interface{}{
-				"endpoint":          "https://10.96.0.1:443",
-				"latencyThreshold":  "3s",
-				"checkVersion":      true,
-				"checkAuth":         true,
-				"failureThreshold":  5,
-				"httpTimeout":       "15s",
+				"endpoint":         "https://10.96.0.1:443",
+				"latencyThreshold": "3s",
+				"checkVersion":     true,
+				"checkAuth":        true,
+				"failureThreshold": 5,
+				"httpTimeout":      "15s",
 			},
 			want: &APIServerMonitorConfig{
-				Endpoint:          "https://10.96.0.1:443",
-				LatencyThreshold:  3 * time.Second,
-				CheckVersion:      true,
-				CheckAuth:         true,
-				FailureThreshold:  5,
-				HTTPTimeout:       15 * time.Second,
+				Endpoint:         "https://10.96.0.1:443",
+				LatencyThreshold: 3 * time.Second,
+				CheckVersion:     true,
+				CheckAuth:        true,
+				FailureThreshold: 5,
+				HTTPTimeout:      15 * time.Second,
 			},
 			wantErr: false,
 		},
 		{
 			name: "Numeric duration values",
 			configMap: map[string]interface{}{
-				"latencyThreshold":  2.5,
-				"failureThreshold":  3,
-				"httpTimeout":       10,
+				"latencyThreshold": 2.5,
+				"failureThreshold": 3,
+				"httpTimeout":      10,
 			},
 			want: &APIServerMonitorConfig{
-				LatencyThreshold:  2500 * time.Millisecond,
-				CheckVersion:      true,
-				CheckAuth:         true,
-				FailureThreshold:  3,
-				HTTPTimeout:       10 * time.Second,
+				LatencyThreshold: 2500 * time.Millisecond,
+				CheckVersion:     true,
+				CheckAuth:        true,
+				FailureThreshold: 3,
+				HTTPTimeout:      10 * time.Second,
 			},
 			wantErr: false,
 		},
@@ -156,10 +156,10 @@ func TestAPIServerMonitorConfig_ApplyDefaults(t *testing.T) {
 			name:   "Empty config gets all defaults",
 			config: &APIServerMonitorConfig{},
 			want: &APIServerMonitorConfig{
-				Endpoint:          defaultAPIServerEndpoint,
-				LatencyThreshold:  defaultAPIServerLatencyThreshold,
-				FailureThreshold:  defaultAPIServerFailureThreshold,
-				HTTPTimeout:       defaultAPIServerTimeout,
+				Endpoint:         defaultAPIServerEndpoint,
+				LatencyThreshold: defaultAPIServerLatencyThreshold,
+				FailureThreshold: defaultAPIServerFailureThreshold,
+				HTTPTimeout:      defaultAPIServerTimeout,
 			},
 			wantErr: false,
 		},
@@ -296,12 +296,12 @@ func TestValidateAPIServerConfig(t *testing.T) {
 // TestAPIServerMonitor_CheckAPIServer_Success tests successful health checks.
 func TestAPIServerMonitor_CheckAPIServer_Success(t *testing.T) {
 	config := &APIServerMonitorConfig{
-		Endpoint:          defaultAPIServerEndpoint,
-		LatencyThreshold:  2 * time.Second,
-		CheckVersion:      true,
-		CheckAuth:         true,
-		FailureThreshold:  3,
-		HTTPTimeout:       10 * time.Second,
+		Endpoint:         defaultAPIServerEndpoint,
+		LatencyThreshold: 2 * time.Second,
+		CheckVersion:     true,
+		CheckAuth:        true,
+		FailureThreshold: 3,
+		HTTPTimeout:      10 * time.Second,
 	}
 
 	baseMonitor, err := monitors.NewBaseMonitor("apiserver-test", 60*time.Second, 10*time.Second)
@@ -351,12 +351,12 @@ func TestAPIServerMonitor_CheckAPIServer_Success(t *testing.T) {
 // TestAPIServerMonitor_CheckAPIServer_LatencySlow tests latency threshold detection.
 func TestAPIServerMonitor_CheckAPIServer_LatencySlow(t *testing.T) {
 	config := &APIServerMonitorConfig{
-		Endpoint:          defaultAPIServerEndpoint,
-		LatencyThreshold:  1 * time.Second,
-		CheckVersion:      true,
-		CheckAuth:         true,
-		FailureThreshold:  3,
-		HTTPTimeout:       10 * time.Second,
+		Endpoint:         defaultAPIServerEndpoint,
+		LatencyThreshold: 1 * time.Second,
+		CheckVersion:     true,
+		CheckAuth:        true,
+		FailureThreshold: 3,
+		HTTPTimeout:      10 * time.Second,
 	}
 
 	baseMonitor, err := monitors.NewBaseMonitor("apiserver-test", 60*time.Second, 10*time.Second)
@@ -396,12 +396,12 @@ func TestAPIServerMonitor_CheckAPIServer_LatencySlow(t *testing.T) {
 // TestAPIServerMonitor_CheckAPIServer_ConsecutiveFailures tests failure tracking.
 func TestAPIServerMonitor_CheckAPIServer_ConsecutiveFailures(t *testing.T) {
 	config := &APIServerMonitorConfig{
-		Endpoint:          defaultAPIServerEndpoint,
-		LatencyThreshold:  2 * time.Second,
-		CheckVersion:      true,
-		CheckAuth:         true,
-		FailureThreshold:  3,
-		HTTPTimeout:       10 * time.Second,
+		Endpoint:         defaultAPIServerEndpoint,
+		LatencyThreshold: 2 * time.Second,
+		CheckVersion:     true,
+		CheckAuth:        true,
+		FailureThreshold: 3,
+		HTTPTimeout:      10 * time.Second,
 	}
 
 	baseMonitor, err := monitors.NewBaseMonitor("apiserver-test", 60*time.Second, 10*time.Second)
@@ -459,12 +459,12 @@ func TestAPIServerMonitor_CheckAPIServer_ConsecutiveFailures(t *testing.T) {
 // TestAPIServerMonitor_CheckAPIServer_Recovery tests recovery from failures.
 func TestAPIServerMonitor_CheckAPIServer_Recovery(t *testing.T) {
 	config := &APIServerMonitorConfig{
-		Endpoint:          defaultAPIServerEndpoint,
-		LatencyThreshold:  2 * time.Second,
-		CheckVersion:      true,
-		CheckAuth:         true,
-		FailureThreshold:  3,
-		HTTPTimeout:       10 * time.Second,
+		Endpoint:         defaultAPIServerEndpoint,
+		LatencyThreshold: 2 * time.Second,
+		CheckVersion:     true,
+		CheckAuth:        true,
+		FailureThreshold: 3,
+		HTTPTimeout:      10 * time.Second,
 	}
 
 	baseMonitor, err := monitors.NewBaseMonitor("apiserver-test", 60*time.Second, 10*time.Second)
@@ -542,12 +542,12 @@ func TestAPIServerMonitor_CheckAPIServer_Recovery(t *testing.T) {
 // TestAPIServerMonitor_CheckAPIServer_AuthFailure tests authentication failure detection.
 func TestAPIServerMonitor_CheckAPIServer_AuthFailure(t *testing.T) {
 	config := &APIServerMonitorConfig{
-		Endpoint:          defaultAPIServerEndpoint,
-		LatencyThreshold:  2 * time.Second,
-		CheckVersion:      true,
-		CheckAuth:         true,
-		FailureThreshold:  3,
-		HTTPTimeout:       10 * time.Second,
+		Endpoint:         defaultAPIServerEndpoint,
+		LatencyThreshold: 2 * time.Second,
+		CheckVersion:     true,
+		CheckAuth:        true,
+		FailureThreshold: 3,
+		HTTPTimeout:      10 * time.Second,
 	}
 
 	baseMonitor, err := monitors.NewBaseMonitor("apiserver-test", 60*time.Second, 10*time.Second)
@@ -593,12 +593,12 @@ func TestAPIServerMonitor_CheckAPIServer_AuthFailure(t *testing.T) {
 // TestAPIServerMonitor_CheckAPIServer_RateLimit tests rate limit detection.
 func TestAPIServerMonitor_CheckAPIServer_RateLimit(t *testing.T) {
 	config := &APIServerMonitorConfig{
-		Endpoint:          defaultAPIServerEndpoint,
-		LatencyThreshold:  2 * time.Second,
-		CheckVersion:      true,
-		CheckAuth:         true,
-		FailureThreshold:  3,
-		HTTPTimeout:       10 * time.Second,
+		Endpoint:         defaultAPIServerEndpoint,
+		LatencyThreshold: 2 * time.Second,
+		CheckVersion:     true,
+		CheckAuth:        true,
+		FailureThreshold: 3,
+		HTTPTimeout:      10 * time.Second,
 	}
 
 	baseMonitor, err := monitors.NewBaseMonitor("apiserver-test", 60*time.Second, 10*time.Second)
@@ -611,8 +611,8 @@ func TestAPIServerMonitor_CheckAPIServer_RateLimit(t *testing.T) {
 		config:      config,
 		client: &mockAPIServerClient{
 			metrics: &APIServerMetrics{
-				StatusCode:   429,
-				RateLimited:  true,
+				StatusCode:    429,
+				RateLimited:   true,
 				Authenticated: true,
 			},
 			err: errors.New("Too Many Requests"),
@@ -750,12 +750,12 @@ func TestNewAPIServerMonitor(t *testing.T) {
 				Interval: 60 * time.Second,
 				Timeout:  10 * time.Second,
 				Config: map[string]interface{}{
-					"endpoint":          defaultAPIServerEndpoint,
-					"latencyThreshold":  "2s",
-					"checkVersion":      true,
-					"checkAuth":         true,
-					"failureThreshold":  3,
-					"httpTimeout":       "10s",
+					"endpoint":         defaultAPIServerEndpoint,
+					"latencyThreshold": "2s",
+					"checkVersion":     true,
+					"checkAuth":        true,
+					"failureThreshold": 3,
+					"httpTimeout":      "10s",
 				},
 			},
 			wantErr: false,
@@ -796,4 +796,3 @@ func TestNewAPIServerMonitor(t *testing.T) {
 		})
 	}
 }
-

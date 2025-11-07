@@ -32,7 +32,7 @@ const (
 	DefaultCircuitBreakerThreshold  = 5
 	DefaultCircuitBreakerTimeout    = "30m"
 	DefaultHistorySize              = 100
-	MaxRecursionDepth               = 10  // Maximum nesting depth for strategies
+	MaxRecursionDepth               = 10 // Maximum nesting depth for strategies
 	MaxQPS                          = 10000
 	MaxBurst                        = 100000
 )
@@ -280,8 +280,8 @@ type HTTPExporterConfig struct {
 
 // WebhookEndpoint defines a webhook destination for HTTP exports.
 type WebhookEndpoint struct {
-	Name string `json:"name" yaml:"name"`
-	URL  string `json:"url" yaml:"url"`
+	Name string     `json:"name" yaml:"name"`
+	URL  string     `json:"url" yaml:"url"`
 	Auth AuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 
 	// Per-webhook timeout (overrides default)
@@ -301,7 +301,7 @@ type WebhookEndpoint struct {
 
 // AuthConfig defines authentication configuration for webhooks.
 type AuthConfig struct {
-	Type     string `json:"type" yaml:"type"`           // "none", "bearer", "basic"
+	Type     string `json:"type" yaml:"type"`                             // "none", "bearer", "basic"
 	Token    string `json:"token,omitempty" yaml:"token,omitempty"`       // Bearer token
 	Username string `json:"username,omitempty" yaml:"username,omitempty"` // Basic auth username
 	Password string `json:"password,omitempty" yaml:"password,omitempty"` // Basic auth password

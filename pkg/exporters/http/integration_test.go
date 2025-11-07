@@ -490,12 +490,12 @@ func TestHTTPExporterGracefulShutdown(t *testing.T) {
 		},
 		Webhooks: []types.WebhookEndpoint{
 			{
-				Name:         "shutdown-test-webhook",
-				URL:          server.URL,
-				Timeout:      10 * time.Second,
-				Auth:         types.AuthConfig{Type: "none"},
-				Retry:        &types.RetryConfig{MaxAttempts: 1, BaseDelay: 10 * time.Millisecond, MaxDelay: 100 * time.Millisecond},
-				SendStatus:   true,
+				Name:       "shutdown-test-webhook",
+				URL:        server.URL,
+				Timeout:    10 * time.Second,
+				Auth:       types.AuthConfig{Type: "none"},
+				Retry:      &types.RetryConfig{MaxAttempts: 1, BaseDelay: 10 * time.Millisecond, MaxDelay: 100 * time.Millisecond},
+				SendStatus: true,
 			},
 		},
 	}

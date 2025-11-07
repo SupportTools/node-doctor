@@ -635,105 +635,170 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid HTTP exporter",
+			name: "valid HTTP exporter with webhook",
 			input: HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 8080,
+				Workers:  3,
+				QueueSize: 100,
+				Timeout:  30 * time.Second,
+				Webhooks: []WebhookEndpoint{
+					{
+						Name:         "test-webhook",
+						URL:          "https://example.com/webhook",
+						Timeout:      10 * time.Second,
+						SendStatus:   true,
+						SendProblems: true,
+						Auth: AuthConfig{
+							Type: "none",
+						},
+						Retry: &RetryConfig{
+							MaxAttempts: 3,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    10 * time.Second,
+						},
+					},
+				},
 			},
 			wantErr: false,
 		},
 		{
-			name: "port out of range (low)",
+			name: "enabled exporter without webhooks",
 			input: HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 0,
+				Workers:  3,
+				QueueSize: 100,
+				Timeout:  30 * time.Second,
 			},
 			wantErr: true,
-			errMsg:  "hostPort must be in range 1-65535",
+			errMsg:  "at least one webhook must be configured",
 		},
 		{
-			name: "port out of range (high)",
+			name: "invalid workers count",
 			input: HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 99999,
-			},
-			wantErr: true,
-			errMsg:  "hostPort must be in range 1-65535",
-		},
-		{
-			name: "TLS enabled without cert file",
-			input: HTTPExporterConfig{
-				Enabled:    true,
-				HostPort:   8080,
-				TLSEnabled: true,
-			},
-			wantErr: true,
-			errMsg:  "tlsCertFile is required when TLS is enabled",
-		},
-		{
-			name: "TLS enabled without key file",
-			input: HTTPExporterConfig{
-				Enabled:     true,
-				HostPort:    8080,
-				TLSEnabled:  true,
-				TLSCertFile: "/path/to/cert",
-			},
-			wantErr: true,
-			errMsg:  "tlsKeyFile is required when TLS is enabled",
-		},
-		{
-			name: "endpoint without path",
-			input: HTTPExporterConfig{
-				Enabled:  true,
-				HostPort: 8080,
-				Endpoints: []HTTPEndpointConfig{
-					{Handler: "test"},
+				Workers:  0,
+				QueueSize: 100,
+				Timeout:  30 * time.Second,
+				Webhooks: []WebhookEndpoint{
+					{URL: "https://example.com/webhook"},
 				},
 			},
 			wantErr: true,
-			errMsg:  "path is required",
+			errMsg:  "workers must be positive",
 		},
 		{
-			name: "endpoint without handler",
+			name: "invalid queue size",
 			input: HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 8080,
-				Endpoints: []HTTPEndpointConfig{
-					{Path: "/test"},
+				Workers:  3,
+				QueueSize: 0,
+				Timeout:  30 * time.Second,
+				Webhooks: []WebhookEndpoint{
+					{URL: "https://example.com/webhook"},
 				},
 			},
 			wantErr: true,
-			errMsg:  "handler is required",
+			errMsg:  "queueSize must be positive",
 		},
 		{
-			name: "endpoint path not starting with /",
+			name: "invalid timeout",
 			input: HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 8080,
-				Endpoints: []HTTPEndpointConfig{
-					{Path: "test", Handler: "handler"},
+				Workers:  3,
+				QueueSize: 100,
+				Timeout:  0,
+				Webhooks: []WebhookEndpoint{
+					{URL: "https://example.com/webhook"},
 				},
 			},
 			wantErr: true,
-			errMsg:  "path must start with '/'",
+			errMsg:  "timeout must be positive",
 		},
 		{
-			name: "duplicate endpoint paths",
+			name: "webhook without URL",
 			input: HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 8080,
-				Endpoints: []HTTPEndpointConfig{
-					{Path: "/test", Handler: "handler1"},
-					{Path: "/test", Handler: "handler2"},
+				Workers:  3,
+				QueueSize: 100,
+				Timeout:  30 * time.Second,
+				Webhooks: []WebhookEndpoint{
+					{Name: "test"},
 				},
 			},
 			wantErr: true,
-			errMsg:  "duplicate endpoint path",
+			errMsg:  "url is required",
+		},
+		{
+			name: "webhook with invalid URL",
+			input: HTTPExporterConfig{
+				Enabled:  true,
+				Workers:  3,
+				QueueSize: 100,
+				Timeout:  30 * time.Second,
+				Webhooks: []WebhookEndpoint{
+					{URL: "invalid-url"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "url must start with http:// or https://",
+		},
+		{
+			name: "duplicate webhook names",
+			input: HTTPExporterConfig{
+				Enabled:  true,
+				Workers:  3,
+				QueueSize: 100,
+				Timeout:  30 * time.Second,
+				Webhooks: []WebhookEndpoint{
+					{
+						Name:         "test",
+						URL:          "https://example.com/webhook1",
+						Timeout:      10 * time.Second,
+						SendStatus:   true,
+						SendProblems: true,
+						Auth: AuthConfig{
+							Type: "none",
+						},
+						Retry: &RetryConfig{
+							MaxAttempts: 3,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    10 * time.Second,
+						},
+					},
+					{
+						Name:         "test",
+						URL:          "https://example.com/webhook2",
+						Timeout:      10 * time.Second,
+						SendStatus:   true,
+						SendProblems: true,
+						Auth: AuthConfig{
+							Type: "none",
+						},
+						Retry: &RetryConfig{
+							MaxAttempts: 3,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    10 * time.Second,
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "duplicate webhook name",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Ensure retry config has valid defaults for enabled exporters
+			// (unless we're specifically testing retry validation)
+			if tt.input.Enabled && tt.input.Retry.BaseDelay == 0 {
+				tt.input.Retry = RetryConfig{
+					MaxAttempts: 3,
+					BaseDelay:   1 * time.Second,
+					MaxDelay:    30 * time.Second,
+				}
+			}
+
 			err := tt.input.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
@@ -1120,11 +1185,14 @@ func TestExporterConfigApplyDefaults(t *testing.T) {
 		if err != nil {
 			t.Errorf("ApplyDefaults() error = %v", err)
 		}
-		if config.BindAddress != DefaultHTTPBindAddress {
-			t.Errorf("BindAddress = %v, want %v", config.BindAddress, DefaultHTTPBindAddress)
+		if config.Workers != 5 {
+			t.Errorf("Workers = %v, want 5", config.Workers)
 		}
-		if config.HostPort != DefaultHTTPPort {
-			t.Errorf("HostPort = %v, want %v", config.HostPort, DefaultHTTPPort)
+		if config.QueueSize != 100 {
+			t.Errorf("QueueSize = %v, want 100", config.QueueSize)
+		}
+		if config.Timeout != 30*time.Second {
+			t.Errorf("Timeout = %v, want 30s", config.Timeout)
 		}
 	})
 
@@ -1395,8 +1463,8 @@ func TestNodeDoctorConfigApplyDefaults(t *testing.T) {
 	}
 
 	// Check that defaults were applied to exporters
-	if config.Exporters.HTTP.HostPort != DefaultHTTPPort {
-		t.Errorf("HTTP.HostPort = %v, want %v", config.Exporters.HTTP.HostPort, DefaultHTTPPort)
+	if config.Exporters.HTTP.Workers != 5 {
+		t.Errorf("HTTP.Workers = %v, want 5", config.Exporters.HTTP.Workers)
 	}
 
 	// Check that defaults were applied to remediation
@@ -1463,10 +1531,10 @@ func TestRemediationOverrideValidation(t *testing.T) {
 		HistorySize:              100,
 		Overrides: []RemediationOverride{
 			{
-				Problem:         "test-problem",
-				CooldownString:  "10m",
-				Cooldown:        10 * time.Minute,
-				MaxAttempts:     5,
+				Problem:        "test-problem",
+				CooldownString: "10m",
+				Cooldown:       10 * time.Minute,
+				MaxAttempts:    5,
 			},
 		},
 	}
@@ -1683,11 +1751,14 @@ func TestComplexConfigurationValidation(t *testing.T) {
 			},
 			HTTP: &HTTPExporterConfig{
 				Enabled:  true,
-				HostPort: 8080,
-				Endpoints: []HTTPEndpointConfig{
+				Workers:  5,
+				QueueSize: 100,
+				Webhooks: []WebhookEndpoint{
 					{
-						Path:    "/health",
-						Handler: "health-check",
+						Name: "test-webhook",
+						URL:  "https://example.com/webhook",
+						SendStatus: true,
+						SendProblems: true,
 					},
 				},
 			},

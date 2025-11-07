@@ -35,8 +35,8 @@ func createTestKubernetesExporter() (*KubernetesExporter, error) {
 			},
 		},
 		Events: types.EventConfig{
-			MaxEventsPerMinute:        10,
-			DeduplicationWindow:       time.Minute,
+			MaxEventsPerMinute:  10,
+			DeduplicationWindow: time.Minute,
 		},
 	}
 

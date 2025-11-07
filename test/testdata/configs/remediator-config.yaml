@@ -1,0 +1,38 @@
+---
+# Sample remediator configuration for testing
+remediators:
+  - name: "kubelet-restart"
+    type: "systemd"
+    enabled: true
+    cooldown: "5m"
+    config:
+      service: "kubelet"
+      action: "restart"
+      verify_after: true
+
+  - name: "docker-cleanup"
+    type: "runtime"
+    enabled: true
+    cooldown: "10m"
+    config:
+      runtime: "docker"
+      operation: "clean-containers"
+      verify_after: true
+
+  - name: "disk-cleanup"
+    type: "disk"
+    enabled: true
+    cooldown: "1h"
+    config:
+      operation: "clean-journal-logs"
+      vacuum_size: "500M"
+      verify_after: true
+
+  - name: "custom-health-check"
+    type: "custom"
+    enabled: false
+    cooldown: "5m"
+    config:
+      script_path: "/usr/local/bin/health-check.sh"
+      timeout: "30s"
+      capture_output: true

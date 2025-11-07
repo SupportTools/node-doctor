@@ -447,11 +447,11 @@ func TestParseLoadAvg(t *testing.T) {
 
 func TestGetCPUCount(t *testing.T) {
 	tests := []struct {
-		name         string
-		cpuInfoData  string
-		fileExists   bool
-		expectedMin  int
-		wantError    bool
+		name        string
+		cpuInfoData string
+		fileExists  bool
+		expectedMin int
+		wantError   bool
 	}{
 		{
 			name: "valid cpuinfo with 4 cores",
@@ -486,10 +486,10 @@ vendor_id	: GenuineIntel`,
 			wantError:   false,
 		},
 		{
-			name:         "file not exists - fallback to runtime",
-			fileExists:   false,
-			expectedMin:  1, // runtime.NumCPU() should return at least 1
-			wantError:    false,
+			name:        "file not exists - fallback to runtime",
+			fileExists:  false,
+			expectedMin: 1, // runtime.NumCPU() should return at least 1
+			wantError:   false,
 		},
 		{
 			name:        "empty cpuinfo - fallback to runtime",
@@ -537,53 +537,53 @@ vendor_id	: GenuineIntel`,
 
 func TestCheckLoadAverage(t *testing.T) {
 	tests := []struct {
-		name              string
-		loadAvgContent    string
-		cpuInfoContent    string
-		highLoadCount     int
-		expectedEvents    int
-		expectedConditions int
+		name                  string
+		loadAvgContent        string
+		cpuInfoContent        string
+		highLoadCount         int
+		expectedEvents        int
+		expectedConditions    int
 		expectedHighLoadCount int
-		conditionStatus   types.ConditionStatus
+		conditionStatus       types.ConditionStatus
 	}{
 		{
-			name:              "normal load",
-			loadAvgContent:    "0.50 0.40 0.30 1/180 12345",
-			cpuInfoContent:    "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3", // 4 cores
-			highLoadCount:     0,
-			expectedEvents:    0,
-			expectedConditions: 1,
+			name:                  "normal load",
+			loadAvgContent:        "0.50 0.40 0.30 1/180 12345",
+			cpuInfoContent:        "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3", // 4 cores
+			highLoadCount:         0,
+			expectedEvents:        0,
+			expectedConditions:    1,
 			expectedHighLoadCount: 0,
-			conditionStatus:   types.ConditionFalse, // No pressure
+			conditionStatus:       types.ConditionFalse, // No pressure
 		},
 		{
-			name:              "elevated load",
-			loadAvgContent:    "3.50 3.00 2.50 1/180 12345", // 3.5/4 = 0.875 > 0.8 warning threshold
-			cpuInfoContent:    "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3",
-			highLoadCount:     0,
-			expectedEvents:    1,
-			expectedConditions: 1,
+			name:                  "elevated load",
+			loadAvgContent:        "3.50 3.00 2.50 1/180 12345", // 3.5/4 = 0.875 > 0.8 warning threshold
+			cpuInfoContent:        "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3",
+			highLoadCount:         0,
+			expectedEvents:        1,
+			expectedConditions:    1,
 			expectedHighLoadCount: 0,
-			conditionStatus:   types.ConditionFalse, // Elevated but not critical
+			conditionStatus:       types.ConditionFalse, // Elevated but not critical
 		},
 		{
-			name:              "critical load - first occurrence",
-			loadAvgContent:    "7.00 6.00 5.00 1/180 12345", // 7.0/4 = 1.75 > 1.5 critical threshold
-			cpuInfoContent:    "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3",
-			highLoadCount:     0,
-			expectedEvents:    1,
-			expectedConditions: 0, // No condition until sustained
+			name:                  "critical load - first occurrence",
+			loadAvgContent:        "7.00 6.00 5.00 1/180 12345", // 7.0/4 = 1.75 > 1.5 critical threshold
+			cpuInfoContent:        "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3",
+			highLoadCount:         0,
+			expectedEvents:        1,
+			expectedConditions:    0, // No condition until sustained
 			expectedHighLoadCount: 1,
 		},
 		{
-			name:              "critical load - sustained (3rd occurrence)",
-			loadAvgContent:    "7.00 6.00 5.00 1/180 12345",
-			cpuInfoContent:    "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3",
-			highLoadCount:     2, // This will be the 3rd occurrence
-			expectedEvents:    1,
-			expectedConditions: 1,
+			name:                  "critical load - sustained (3rd occurrence)",
+			loadAvgContent:        "7.00 6.00 5.00 1/180 12345",
+			cpuInfoContent:        "processor : 0\nprocessor : 1\nprocessor : 2\nprocessor : 3",
+			highLoadCount:         2, // This will be the 3rd occurrence
+			expectedEvents:        1,
+			expectedConditions:    1,
 			expectedHighLoadCount: 3,
-			conditionStatus:   types.ConditionTrue, // Sustained pressure
+			conditionStatus:       types.ConditionTrue, // Sustained pressure
 		},
 	}
 
@@ -645,12 +645,12 @@ func TestCheckLoadAverage(t *testing.T) {
 
 func TestCheckThermalThrottle(t *testing.T) {
 	tests := []struct {
-		name               string
-		setupMock          func(*mockFileReader)
+		name                 string
+		setupMock            func(*mockFileReader)
 		initialThrottleState map[int]int64
-		expectedEvents     int
-		expectedConditions int
-		conditionStatus    types.ConditionStatus
+		expectedEvents       int
+		expectedConditions   int
+		conditionStatus      types.ConditionStatus
 	}{
 		{
 			name: "no thermal directory",
@@ -709,7 +709,7 @@ func TestCheckThermalThrottle(t *testing.T) {
 			setupMock: func(m *mockFileReader) {
 				m.setDir("/sys/devices/system/cpu", []os.DirEntry{
 					mockDirEntry{name: "cpu0", isDir: true},
-					mockDirEntry{name: "cpuidle", isDir: true}, // Should be ignored
+					mockDirEntry{name: "cpuidle", isDir: true},    // Should be ignored
 					mockDirEntry{name: "some_file", isDir: false}, // Should be ignored
 					mockDirEntry{name: "cpu1", isDir: true},
 				})

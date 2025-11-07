@@ -418,14 +418,14 @@ func (cm *ConditionManager) GetStats() map[string]interface{} {
 	defer cm.mu.RUnlock()
 
 	return map[string]interface{}{
-		"current_conditions":   len(cm.conditions),
-		"pending_updates":      len(cm.pendingUpdates),
-		"last_update":          cm.lastUpdate.Format(time.RFC3339),
-		"last_resync":          cm.lastResync.Format(time.RFC3339),
-		"last_heartbeat":       cm.lastHeartbeat.Format(time.RFC3339),
-		"update_interval":      cm.updateInterval.String(),
-		"resync_interval":      cm.resyncInterval.String(),
-		"heartbeat_interval":   cm.heartbeatInterval.String(),
+		"current_conditions": len(cm.conditions),
+		"pending_updates":    len(cm.pendingUpdates),
+		"last_update":        cm.lastUpdate.Format(time.RFC3339),
+		"last_resync":        cm.lastResync.Format(time.RFC3339),
+		"last_heartbeat":     cm.lastHeartbeat.Format(time.RFC3339),
+		"update_interval":    cm.updateInterval.String(),
+		"resync_interval":    cm.resyncInterval.String(),
+		"heartbeat_interval": cm.heartbeatInterval.String(),
 	}
 }
 

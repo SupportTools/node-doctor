@@ -605,13 +605,13 @@ func stringContains(s, substr string) bool {
 // TestNilPointerHandling verifies nil pointer safety.
 func TestNilPointerHandling(t *testing.T) {
 	var problem *Problem
-	
+
 	// WithMetadata should handle nil gracefully
 	result := problem.WithMetadata("key", "value")
 	if result != nil {
 		t.Error("expected nil result from WithMetadata on nil pointer")
 	}
-	
+
 	// GetMetadata should handle nil gracefully
 	val, ok := problem.GetMetadata("key")
 	if ok || val != "" {

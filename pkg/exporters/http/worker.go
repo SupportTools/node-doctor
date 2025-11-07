@@ -12,27 +12,27 @@ import (
 
 // WorkerPool manages a pool of workers for asynchronous webhook processing
 type WorkerPool struct {
-	workers    int
-	queueSize  int
-	requestCh  chan *WorkerRequest
-	wg         sync.WaitGroup
-	ctx        context.Context
-	cancel     context.CancelFunc
-	clients    map[string]*HTTPClient
-	stats      *Stats
-	nodeName   string
-	mu         sync.RWMutex
-	started    bool
+	workers   int
+	queueSize int
+	requestCh chan *WorkerRequest
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	clients   map[string]*HTTPClient
+	stats     *Stats
+	nodeName  string
+	mu        sync.RWMutex
+	started   bool
 }
 
 // WorkerRequest represents a request to be processed by workers
 type WorkerRequest struct {
-	Type        string                // "status" or "problem"
-	Status      *types.Status         // Status data (for status requests)
-	Problem     *types.Problem        // Problem data (for problem requests)
-	Endpoints   []types.WebhookEndpoint // Target endpoints
-	RequestID   string                // Unique request ID for tracing
-	SubmitTime  time.Time            // When the request was submitted
+	Type       string                  // "status" or "problem"
+	Status     *types.Status           // Status data (for status requests)
+	Problem    *types.Problem          // Problem data (for problem requests)
+	Endpoints  []types.WebhookEndpoint // Target endpoints
+	RequestID  string                  // Unique request ID for tracing
+	SubmitTime time.Time               // When the request was submitted
 }
 
 // NewWorkerPool creates a new worker pool

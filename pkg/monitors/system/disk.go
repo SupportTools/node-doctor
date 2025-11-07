@@ -121,10 +121,10 @@ type DiskMonitor struct {
 	config      *DiskMonitorConfig
 
 	// State tracking for sustained conditions per mount point
-	mu                   sync.RWMutex
-	highDiskCount        map[string]int    // mount path -> consecutive critical count
-	lastIOStats          map[string]*IOStats // device -> last IO stats
-	lastIOCheckTime      int64             // last time IO stats were checked (nanoseconds)
+	mu              sync.RWMutex
+	highDiskCount   map[string]int      // mount path -> consecutive critical count
+	lastIOStats     map[string]*IOStats // device -> last IO stats
+	lastIOCheckTime int64               // last time IO stats were checked (nanoseconds)
 
 	// System interfaces (for testing)
 	statfsProvider StatfsProvider
@@ -133,33 +133,33 @@ type DiskMonitor struct {
 
 // DiskInfo represents disk information for a mount point.
 type DiskInfo struct {
-	Path            string  // Mount point path
-	TotalSpace      uint64  // Total space in bytes
-	FreeSpace       uint64  // Free space in bytes
-	AvailableSpace  uint64  // Available space in bytes (for non-root)
-	UsedSpace       uint64  // Used space in bytes
-	UsagePercent    float64 // Usage percentage
-	TotalInodes     uint64  // Total inodes
-	FreeInodes      uint64  // Free inodes
-	UsedInodes      uint64  // Used inodes
-	InodePercent    float64 // Inode usage percentage
-	IsReadonly      bool    // Whether filesystem is readonly
+	Path           string  // Mount point path
+	TotalSpace     uint64  // Total space in bytes
+	FreeSpace      uint64  // Free space in bytes
+	AvailableSpace uint64  // Available space in bytes (for non-root)
+	UsedSpace      uint64  // Used space in bytes
+	UsagePercent   float64 // Usage percentage
+	TotalInodes    uint64  // Total inodes
+	FreeInodes     uint64  // Free inodes
+	UsedInodes     uint64  // Used inodes
+	InodePercent   float64 // Inode usage percentage
+	IsReadonly     bool    // Whether filesystem is readonly
 }
 
 // IOStats represents I/O statistics for a device.
 type IOStats struct {
-	Device         string // Device name
-	ReadsCompleted uint64 // Number of reads completed
-	ReadsMerged    uint64 // Number of reads merged
-	SectorsRead    uint64 // Number of sectors read
-	TimeReading    uint64 // Time spent reading (ms)
+	Device          string // Device name
+	ReadsCompleted  uint64 // Number of reads completed
+	ReadsMerged     uint64 // Number of reads merged
+	SectorsRead     uint64 // Number of sectors read
+	TimeReading     uint64 // Time spent reading (ms)
 	WritesCompleted uint64 // Number of writes completed
-	WritesMerged   uint64 // Number of writes merged
-	SectorsWritten uint64 // Number of sectors written
-	TimeWriting    uint64 // Time spent writing (ms)
-	IOsInProgress  uint64 // Number of I/Os currently in progress
-	TimeDoingIO    uint64 // Time spent doing I/Os (ms)
-	WeightedTimeIO uint64 // Weighted time spent doing I/Os (ms)
+	WritesMerged    uint64 // Number of writes merged
+	SectorsWritten  uint64 // Number of sectors written
+	TimeWriting     uint64 // Time spent writing (ms)
+	IOsInProgress   uint64 // Number of I/Os currently in progress
+	TimeDoingIO     uint64 // Time spent doing I/Os (ms)
+	WeightedTimeIO  uint64 // Weighted time spent doing I/Os (ms)
 }
 
 // NewDiskMonitor creates a new Disk monitor instance.
@@ -185,13 +185,13 @@ func NewDiskMonitor(ctx context.Context, config types.MonitorConfig) (types.Moni
 
 	// Create Disk monitor
 	diskMonitor := &DiskMonitor{
-		name:            config.Name,
-		baseMonitor:     baseMonitor,
-		config:          diskConfig,
-		highDiskCount:   make(map[string]int),
-		lastIOStats:     make(map[string]*IOStats),
-		statfsProvider:  &defaultStatfsProvider{},
-		fileReader:      &defaultFileReader{},
+		name:           config.Name,
+		baseMonitor:    baseMonitor,
+		config:         diskConfig,
+		highDiskCount:  make(map[string]int),
+		lastIOStats:    make(map[string]*IOStats),
+		statfsProvider: &defaultStatfsProvider{},
+		fileReader:     &defaultFileReader{},
 	}
 
 	// Set the check function

@@ -235,14 +235,14 @@ func TestParseDiskInfo(t *testing.T) {
 				Flags:       0, // No special flags
 			},
 			expected: DiskInfo{
-				TotalSpace:      4096000000,   // 4096 * 1000000
-				FreeSpace:       3276800000,   // 4096 * 800000
-				AvailableSpace:  3072000000,   // 4096 * 750000
-				UsagePercent:    25.0,         // (750000 / 1000000) * 100 = 75% free, so 25% used
-				TotalInodes:     100000,
-				FreeInodes:      80000,
-				InodePercent:    20.0,         // (20000 / 100000) * 100 = 20%
-				IsReadonly:      false,
+				TotalSpace:     4096000000, // 4096 * 1000000
+				FreeSpace:      3276800000, // 4096 * 800000
+				AvailableSpace: 3072000000, // 4096 * 750000
+				UsagePercent:   25.0,       // (750000 / 1000000) * 100 = 75% free, so 25% used
+				TotalInodes:    100000,
+				FreeInodes:     80000,
+				InodePercent:   20.0, // (20000 / 100000) * 100 = 20%
+				IsReadonly:     false,
 			},
 		},
 		{
@@ -471,8 +471,8 @@ func TestCheckDiskSpaceUsage(t *testing.T) {
 			},
 			currentCount:       0,
 			sustainedThreshold: 3,
-			expectedCondition:  true,                  // Condition added
-			expectedEvent:      true,                  // Event for elevated usage
+			expectedCondition:  true, // Condition added
+			expectedEvent:      true, // Event for elevated usage
 			expectedSeverity:   types.EventWarning,
 			expectedNewCount:   1, // Count incremented
 		},
@@ -488,8 +488,8 @@ func TestCheckDiskSpaceUsage(t *testing.T) {
 			},
 			currentCount:       0,
 			sustainedThreshold: 3,
-			expectedCondition:  true,                // Condition added
-			expectedEvent:      true,                // Event for critical usage
+			expectedCondition:  true, // Condition added
+			expectedEvent:      true, // Event for critical usage
 			expectedSeverity:   types.EventError,
 			expectedNewCount:   1, // Count incremented
 		},
@@ -505,8 +505,8 @@ func TestCheckDiskSpaceUsage(t *testing.T) {
 			},
 			currentCount:       2, // Already 2 occurrences
 			sustainedThreshold: 3,
-			expectedCondition:  true,                // Condition added
-			expectedEvent:      true,                // Event for sustained critical
+			expectedCondition:  true, // Condition added
+			expectedEvent:      true, // Event for sustained critical
 			expectedSeverity:   types.EventError,
 			expectedNewCount:   3, // Count incremented to threshold
 		},
@@ -596,8 +596,8 @@ func TestCheckInodeUsage(t *testing.T) {
 				InodeWarningThreshold:  85.0,
 				InodeCriticalThreshold: 95.0,
 			},
-			expectedCondition: true,                  // Condition added
-			expectedEvent:     true,                  // Event for elevated usage
+			expectedCondition: true, // Condition added
+			expectedEvent:     true, // Event for elevated usage
 			expectedSeverity:  types.EventWarning,
 		},
 		{
@@ -611,8 +611,8 @@ func TestCheckInodeUsage(t *testing.T) {
 				InodeWarningThreshold:  85.0,
 				InodeCriticalThreshold: 95.0,
 			},
-			expectedCondition: true,                // Condition added
-			expectedEvent:     true,                // Event for critical usage
+			expectedCondition: true, // Condition added
+			expectedEvent:     true, // Event for critical usage
 			expectedSeverity:  types.EventError,
 		},
 		{
@@ -828,7 +828,7 @@ func TestCheckIOHealth(t *testing.T) {
 				m.lastIOCheckTime = 1 // Small positive value to enable the check
 			},
 			context:        context.WithValue(context.Background(), "timestamp", int64(1000000000)), // Now: 1000000000 nanoseconds
-			expectedEvents: 1, // High IO event: (1210-400)/((1000000000-1)/1000000)*100 = 810/999.999*100 ≈ 81% > 80%
+			expectedEvents: 1,                                                                       // High IO event: (1210-400)/((1000000000-1)/1000000)*100 = 810/999.999*100 ≈ 81% > 80%
 		},
 		{
 			name: "normal IO utilization",
@@ -852,8 +852,8 @@ func TestCheckIOHealth(t *testing.T) {
 			setupMock: func(m *mockFileReader) {
 				// Don't set up the file
 			},
-			setupMonitor: func(m *DiskMonitor) {},
-			context:      context.WithValue(context.Background(), "timestamp", int64(1000000000)),
+			setupMonitor:   func(m *DiskMonitor) {},
+			context:        context.WithValue(context.Background(), "timestamp", int64(1000000000)),
 			expectedEvents: 0, // Should return error, not events
 		},
 		{
@@ -861,8 +861,8 @@ func TestCheckIOHealth(t *testing.T) {
 			setupMock: func(m *mockFileReader) {
 				m.setFile("/proc/diskstats", "8 0 sda 2000 100 4000 300 1500 50 3000 200 0 400 500")
 			},
-			setupMonitor: func(m *DiskMonitor) {},
-			context:      context.Background(), // No timestamp
+			setupMonitor:   func(m *DiskMonitor) {},
+			context:        context.Background(), // No timestamp
 			expectedEvents: 0,
 		},
 	}

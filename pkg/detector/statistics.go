@@ -214,17 +214,17 @@ func (s *Statistics) Summary() map[string]interface{} {
 	defer s.mu.RUnlock()
 
 	return map[string]interface{}{
-		"uptime":                   time.Since(s.startTime).String(),
-		"monitors_started":         s.monitorsStarted,
-		"monitors_failed":          s.monitorsFailed,
-		"statuses_received":        s.statusesReceived,
-		"problems_detected":        s.problemsDetected,
-		"problems_deduplicated":    s.problemsDeduplicated,
-		"exports_succeeded":        s.exportsSucceeded,
-		"exports_failed":           s.exportsFailed,
-		"total_exports":            s.exportsSucceeded + s.exportsFailed,
-		"export_success_rate_pct":  s.getExportSuccessRateUnsafe(),
-		"deduplication_rate_pct":   s.getDeduplicationRateUnsafe(),
+		"uptime":                  time.Since(s.startTime).String(),
+		"monitors_started":        s.monitorsStarted,
+		"monitors_failed":         s.monitorsFailed,
+		"statuses_received":       s.statusesReceived,
+		"problems_detected":       s.problemsDetected,
+		"problems_deduplicated":   s.problemsDeduplicated,
+		"exports_succeeded":       s.exportsSucceeded,
+		"exports_failed":          s.exportsFailed,
+		"total_exports":           s.exportsSucceeded + s.exportsFailed,
+		"export_success_rate_pct": s.getExportSuccessRateUnsafe(),
+		"deduplication_rate_pct":  s.getDeduplicationRateUnsafe(),
 	}
 }
 

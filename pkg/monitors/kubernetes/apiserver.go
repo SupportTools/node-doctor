@@ -18,8 +18,8 @@ import (
 
 const (
 	// Default configuration values for API server monitor
-	defaultAPIServerEndpoint      = "https://kubernetes.default.svc.cluster.local"
-	defaultAPIServerTimeout       = 10 * time.Second
+	defaultAPIServerEndpoint         = "https://kubernetes.default.svc.cluster.local"
+	defaultAPIServerTimeout          = 10 * time.Second
 	defaultAPIServerLatencyThreshold = 2 * time.Second
 	defaultAPIServerFailureThreshold = 3
 )
@@ -178,9 +178,9 @@ func isAuthError(err error) bool {
 	// Check error message for common auth failure patterns (case-insensitive)
 	errMsg := strings.ToLower(err.Error())
 	return strings.Contains(errMsg, "unauthorized") ||
-		   strings.Contains(errMsg, "forbidden") ||
-		   strings.Contains(errMsg, "401") ||
-		   strings.Contains(errMsg, "403")
+		strings.Contains(errMsg, "forbidden") ||
+		strings.Contains(errMsg, "401") ||
+		strings.Contains(errMsg, "403")
 }
 
 // isRateLimitError checks if an error indicates rate limiting (429).
@@ -190,8 +190,8 @@ func isRateLimitError(err error) bool {
 	}
 	errMsg := strings.ToLower(err.Error())
 	return strings.Contains(errMsg, "rate limit") ||
-		   strings.Contains(errMsg, "429") ||
-		   strings.Contains(errMsg, "too many requests")
+		strings.Contains(errMsg, "429") ||
+		strings.Contains(errMsg, "too many requests")
 }
 
 // sanitizeError removes potentially sensitive information from error messages.

@@ -48,9 +48,9 @@ func TestNoOpMonitor_ValidateConfig(t *testing.T) {
 				Type:    "noop",
 				Enabled: true,
 				Config: map[string]interface{}{
-					"interval":       "5s",
-					"testMessage":    "Test message",
-					"includeEvents":  true,
+					"interval":      "5s",
+					"testMessage":   "Test message",
+					"includeEvents": true,
 				},
 			},
 			wantErr: false,
@@ -177,9 +177,9 @@ func TestNoOpMonitor_Creation(t *testing.T) {
 				Type:    "noop",
 				Enabled: true,
 				Config: map[string]interface{}{
-					"interval":       "2s",
-					"testMessage":    "Custom test message",
-					"includeEvents":  true,
+					"interval":      "2s",
+					"testMessage":   "Custom test message",
+					"includeEvents": true,
 				},
 			},
 			wantErr: false,
@@ -248,9 +248,9 @@ func TestNoOpMonitor_StartStop(t *testing.T) {
 		Type:    "noop",
 		Enabled: true,
 		Config: map[string]interface{}{
-			"interval":       "100ms", // Fast for testing
-			"testMessage":    "Test message",
-			"includeEvents":  true,
+			"interval":      "100ms", // Fast for testing
+			"testMessage":   "Test message",
+			"includeEvents": true,
 		},
 	}
 
@@ -361,8 +361,8 @@ func TestNoOpMonitor_WithoutEvents(t *testing.T) {
 		Type:    "noop",
 		Enabled: true,
 		Config: map[string]interface{}{
-			"interval":       "50ms",
-			"includeEvents":  false, // No events
+			"interval":      "50ms",
+			"includeEvents": false, // No events
 		},
 	}
 
@@ -475,9 +475,9 @@ func TestNoOpMonitor_ConfigParsing(t *testing.T) {
 		{
 			name: "valid config",
 			configMap: map[string]interface{}{
-				"interval":       "5s",
-				"testMessage":    "Test",
-				"includeEvents":  true,
+				"interval":      "5s",
+				"testMessage":   "Test",
+				"includeEvents": true,
 			},
 			wantErr: false,
 			expectValue: func(t *testing.T, config *NoOpConfig) {
@@ -547,9 +547,9 @@ func TestNoOpMonitor_ConfigParsing(t *testing.T) {
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr ||
 		(len(s) > len(substr) &&
-		 (s[:len(substr)] == substr ||
-		  s[len(s)-len(substr):] == substr ||
-		  hasSubstring(s, substr))))
+			(s[:len(substr)] == substr ||
+				s[len(s)-len(substr):] == substr ||
+				hasSubstring(s, substr))))
 }
 
 func hasSubstring(s, substr string) bool {

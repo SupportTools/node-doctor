@@ -93,7 +93,7 @@ func DefaultConfig() (*types.NodeDoctorConfig, error) {
 				Enabled: true,
 			},
 			HTTP: &types.HTTPExporterConfig{
-				Enabled: true,
+				Enabled: false, // Disabled by default - requires webhook configuration
 			},
 			Prometheus: &types.PrometheusExporterConfig{
 				Enabled: true,

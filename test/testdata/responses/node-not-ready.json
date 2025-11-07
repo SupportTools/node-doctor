@@ -1,0 +1,65 @@
+{
+  "kind": "Node",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "test-node-02",
+    "uid": "87654321-4321-4321-4321-210987654321",
+    "creationTimestamp": "2025-01-01T00:00:00Z"
+  },
+  "status": {
+    "conditions": [
+      {
+        "type": "Ready",
+        "status": "False",
+        "lastHeartbeatTime": "2025-01-07T11:55:00Z",
+        "lastTransitionTime": "2025-01-07T11:50:00Z",
+        "reason": "KubeletNotReady",
+        "message": "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized"
+      },
+      {
+        "type": "MemoryPressure",
+        "status": "True",
+        "lastHeartbeatTime": "2025-01-07T11:55:00Z",
+        "lastTransitionTime": "2025-01-07T11:45:00Z",
+        "reason": "KubeletHasInsufficientMemory",
+        "message": "kubelet has insufficient memory available"
+      },
+      {
+        "type": "DiskPressure",
+        "status": "False",
+        "lastHeartbeatTime": "2025-01-07T11:55:00Z",
+        "lastTransitionTime": "2025-01-01T00:00:00Z",
+        "reason": "KubeletHasNoDiskPressure",
+        "message": "kubelet has no disk pressure"
+      },
+      {
+        "type": "PIDPressure",
+        "status": "False",
+        "lastHeartbeatTime": "2025-01-07T11:55:00Z",
+        "lastTransitionTime": "2025-01-01T00:00:00Z",
+        "reason": "KubeletHasSufficientPID",
+        "message": "kubelet has sufficient PID available"
+      }
+    ],
+    "addresses": [
+      {
+        "type": "InternalIP",
+        "address": "192.168.1.101"
+      },
+      {
+        "type": "Hostname",
+        "address": "test-node-02"
+      }
+    ],
+    "capacity": {
+      "cpu": "4",
+      "memory": "8Gi",
+      "pods": "110"
+    },
+    "allocatable": {
+      "cpu": "4",
+      "memory": "7Gi",
+      "pods": "110"
+    }
+  }
+}

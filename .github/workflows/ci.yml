@@ -1,0 +1,230 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+env:
+  GO_VERSION: '1.21'
+  REGISTRY: harbor.support.tools/node-doctor
+
+jobs:
+  # Lint job - runs golangci-lint
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # Test job - runs unit and integration tests with Go version matrix
+  test:
+    name: Test (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.21', '1.22']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: go test ./pkg/... ./cmd/... -v -race -covermode=atomic -coverprofile=coverage.out -short
+
+      - name: Run integration tests
+        run: |
+          if [ -d "test/integration" ]; then
+            go test ./test/integration/... -v -race -covermode=atomic -coverprofile=coverage-integration.out
+          else
+            echo "Integration tests not yet implemented - skipping"
+          fi
+
+      - name: Generate coverage report
+        run: |
+          go tool cover -func=coverage.out | grep total | awk '{print "Unit test coverage: " $3}'
+          if [ -f coverage-integration.out ]; then
+            go tool cover -func=coverage-integration.out | grep total | awk '{print "Integration test coverage: " $3}'
+          fi
+
+      - name: Upload coverage to Codecov
+        if: matrix.go-version == '1.22'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out,./coverage-integration.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Security scan - gosec
+  security-gosec:
+    name: Security Scan (gosec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
+
+      - name: Upload gosec results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec-results.sarif
+
+  # Build job - builds the binary
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binary
+        run: |
+          VERSION=$(date +%s)
+          GIT_COMMIT=$(git rev-parse HEAD)
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          mkdir -p bin
+          cd cmd/node-doctor
+          go build \
+            -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" \
+            -o ../../bin/node-doctor
+
+      - name: Test binary
+        run: ./bin/node-doctor --version
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-doctor-binary
+          path: bin/node-doctor
+          retention-days: 7
+
+  # Docker build and push - only on tags
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [lint, test, build, security-gosec]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Harbor Registry
+        uses: docker/login-action@v3
+        with:
+          registry: harbor.support.tools
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Extract tag name
+        id: tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build metadata
+        id: meta
+        run: |
+          VERSION=${{ steps.tag.outputs.TAG }}
+          GIT_COMMIT=$(git rev-parse HEAD)
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "GIT_COMMIT=${GIT_COMMIT}" >> $GITHUB_OUTPUT
+          echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/node-doctor:${{ steps.tag.outputs.TAG }}
+            ${{ env.REGISTRY }}/node-doctor:latest
+          build-args: |
+            VERSION=${{ steps.meta.outputs.VERSION }}
+            GIT_COMMIT=${{ steps.meta.outputs.GIT_COMMIT }}
+            BUILD_TIME=${{ steps.meta.outputs.BUILD_TIME }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy security scan on image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/node-doctor:${{ steps.tag.outputs.TAG }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  # Summary job - provides overall status
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [lint, test, build, security-gosec]
+    if: always()
+    steps:
+      - name: Check job results
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" ]] || \
+             [[ "${{ needs.test.result }}" != "success" ]] || \
+             [[ "${{ needs.build.result }}" != "success" ]] || \
+             [[ "${{ needs.security-gosec.result }}" != "success" ]]; then
+            echo "One or more CI jobs failed"
+            exit 1
+          fi
+          echo "All CI jobs passed successfully!"

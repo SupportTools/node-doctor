@@ -28,10 +28,10 @@
 //
 // The registration process:
 //
-//   1. Happens at init time (single-threaded, no locking needed for registration)
-//   2. Panics on conflicts (fail-fast for development-time errors)
-//   3. Stores factory functions, not instances (enables on-demand creation)
-//   4. Includes optional validators for early configuration validation
+//  1. Happens at init time (single-threaded, no locking needed for registration)
+//  2. Panics on conflicts (fail-fast for development-time errors)
+//  3. Stores factory functions, not instances (enables on-demand creation)
+//  4. Includes optional validators for early configuration validation
 //
 // # Monitor Creation
 //

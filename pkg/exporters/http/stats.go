@@ -7,36 +7,36 @@ import (
 
 // Stats tracks HTTP exporter statistics
 type Stats struct {
-	mu                     sync.RWMutex
-	startTime              time.Time
-	statusExportsTotal     int64
-	statusExportsSuccess   int64
-	statusExportsFailed    int64
-	problemExportsTotal    int64
-	problemExportsSuccess  int64
-	problemExportsFailed   int64
-	requestsQueued         int64
-	requestsDropped        int64
-	lastExportTime         time.Time
-	lastError              error
-	lastErrorTime          time.Time
-	webhookStats           map[string]*WebhookStats
+	mu                    sync.RWMutex
+	startTime             time.Time
+	statusExportsTotal    int64
+	statusExportsSuccess  int64
+	statusExportsFailed   int64
+	problemExportsTotal   int64
+	problemExportsSuccess int64
+	problemExportsFailed  int64
+	requestsQueued        int64
+	requestsDropped       int64
+	lastExportTime        time.Time
+	lastError             error
+	lastErrorTime         time.Time
+	webhookStats          map[string]*WebhookStats
 }
 
 // WebhookStats tracks per-webhook statistics
 type WebhookStats struct {
-	mu                 sync.RWMutex
-	name               string
-	requestsTotal      int64
-	requestsSuccess    int64
-	requestsFailed     int64
-	lastRequestTime    time.Time
-	lastSuccessTime    time.Time
-	lastError          error
-	lastErrorTime      time.Time
-	totalResponseTime  time.Duration
-	avgResponseTime    time.Duration
-	retryAttempts      int64
+	mu                sync.RWMutex
+	name              string
+	requestsTotal     int64
+	requestsSuccess   int64
+	requestsFailed    int64
+	lastRequestTime   time.Time
+	lastSuccessTime   time.Time
+	lastError         error
+	lastErrorTime     time.Time
+	totalResponseTime time.Duration
+	avgResponseTime   time.Duration
+	retryAttempts     int64
 }
 
 // NewStats creates a new Stats instance
@@ -143,19 +143,19 @@ func (s *Stats) GetSnapshot() StatsSnapshot {
 	defer s.mu.RUnlock()
 
 	snapshot := StatsSnapshot{
-		StartTime:              s.startTime,
-		StatusExportsTotal:     s.statusExportsTotal,
-		StatusExportsSuccess:   s.statusExportsSuccess,
-		StatusExportsFailed:    s.statusExportsFailed,
-		ProblemExportsTotal:    s.problemExportsTotal,
-		ProblemExportsSuccess:  s.problemExportsSuccess,
-		ProblemExportsFailed:   s.problemExportsFailed,
-		RequestsQueued:         s.requestsQueued,
-		RequestsDropped:        s.requestsDropped,
-		LastExportTime:         s.lastExportTime,
-		LastError:              s.lastError,
-		LastErrorTime:          s.lastErrorTime,
-		WebhookStats:           make(map[string]WebhookStatsSnapshot),
+		StartTime:             s.startTime,
+		StatusExportsTotal:    s.statusExportsTotal,
+		StatusExportsSuccess:  s.statusExportsSuccess,
+		StatusExportsFailed:   s.statusExportsFailed,
+		ProblemExportsTotal:   s.problemExportsTotal,
+		ProblemExportsSuccess: s.problemExportsSuccess,
+		ProblemExportsFailed:  s.problemExportsFailed,
+		RequestsQueued:        s.requestsQueued,
+		RequestsDropped:       s.requestsDropped,
+		LastExportTime:        s.lastExportTime,
+		LastError:             s.lastError,
+		LastErrorTime:         s.lastErrorTime,
+		WebhookStats:          make(map[string]WebhookStatsSnapshot),
 	}
 
 	// Copy webhook stats
@@ -198,48 +198,48 @@ func (ws *WebhookStats) getSnapshot() WebhookStatsSnapshot {
 	defer ws.mu.RUnlock()
 
 	return WebhookStatsSnapshot{
-		Name:               ws.name,
-		RequestsTotal:      ws.requestsTotal,
-		RequestsSuccess:    ws.requestsSuccess,
-		RequestsFailed:     ws.requestsFailed,
-		LastRequestTime:    ws.lastRequestTime,
-		LastSuccessTime:    ws.lastSuccessTime,
-		LastError:          ws.lastError,
-		LastErrorTime:      ws.lastErrorTime,
-		AvgResponseTime:    ws.avgResponseTime,
-		RetryAttempts:      ws.retryAttempts,
+		Name:            ws.name,
+		RequestsTotal:   ws.requestsTotal,
+		RequestsSuccess: ws.requestsSuccess,
+		RequestsFailed:  ws.requestsFailed,
+		LastRequestTime: ws.lastRequestTime,
+		LastSuccessTime: ws.lastSuccessTime,
+		LastError:       ws.lastError,
+		LastErrorTime:   ws.lastErrorTime,
+		AvgResponseTime: ws.avgResponseTime,
+		RetryAttempts:   ws.retryAttempts,
 	}
 }
 
 // StatsSnapshot provides a point-in-time view of statistics
 type StatsSnapshot struct {
-	StartTime              time.Time                         `json:"startTime"`
-	StatusExportsTotal     int64                             `json:"statusExportsTotal"`
-	StatusExportsSuccess   int64                             `json:"statusExportsSuccess"`
-	StatusExportsFailed    int64                             `json:"statusExportsFailed"`
-	ProblemExportsTotal    int64                             `json:"problemExportsTotal"`
-	ProblemExportsSuccess  int64                             `json:"problemExportsSuccess"`
-	ProblemExportsFailed   int64                             `json:"problemExportsFailed"`
-	RequestsQueued         int64                             `json:"requestsQueued"`
-	RequestsDropped        int64                             `json:"requestsDropped"`
-	LastExportTime         time.Time                         `json:"lastExportTime"`
-	LastError              error                             `json:"lastError,omitempty"`
-	LastErrorTime          time.Time                         `json:"lastErrorTime"`
-	WebhookStats           map[string]WebhookStatsSnapshot   `json:"webhookStats"`
+	StartTime             time.Time                       `json:"startTime"`
+	StatusExportsTotal    int64                           `json:"statusExportsTotal"`
+	StatusExportsSuccess  int64                           `json:"statusExportsSuccess"`
+	StatusExportsFailed   int64                           `json:"statusExportsFailed"`
+	ProblemExportsTotal   int64                           `json:"problemExportsTotal"`
+	ProblemExportsSuccess int64                           `json:"problemExportsSuccess"`
+	ProblemExportsFailed  int64                           `json:"problemExportsFailed"`
+	RequestsQueued        int64                           `json:"requestsQueued"`
+	RequestsDropped       int64                           `json:"requestsDropped"`
+	LastExportTime        time.Time                       `json:"lastExportTime"`
+	LastError             error                           `json:"lastError,omitempty"`
+	LastErrorTime         time.Time                       `json:"lastErrorTime"`
+	WebhookStats          map[string]WebhookStatsSnapshot `json:"webhookStats"`
 }
 
 // WebhookStatsSnapshot provides a point-in-time view of webhook statistics
 type WebhookStatsSnapshot struct {
-	Name               string        `json:"name"`
-	RequestsTotal      int64         `json:"requestsTotal"`
-	RequestsSuccess    int64         `json:"requestsSuccess"`
-	RequestsFailed     int64         `json:"requestsFailed"`
-	LastRequestTime    time.Time     `json:"lastRequestTime"`
-	LastSuccessTime    time.Time     `json:"lastSuccessTime"`
-	LastError          error         `json:"lastError,omitempty"`
-	LastErrorTime      time.Time     `json:"lastErrorTime"`
-	AvgResponseTime    time.Duration `json:"avgResponseTime"`
-	RetryAttempts      int64         `json:"retryAttempts"`
+	Name            string        `json:"name"`
+	RequestsTotal   int64         `json:"requestsTotal"`
+	RequestsSuccess int64         `json:"requestsSuccess"`
+	RequestsFailed  int64         `json:"requestsFailed"`
+	LastRequestTime time.Time     `json:"lastRequestTime"`
+	LastSuccessTime time.Time     `json:"lastSuccessTime"`
+	LastError       error         `json:"lastError,omitempty"`
+	LastErrorTime   time.Time     `json:"lastErrorTime"`
+	AvgResponseTime time.Duration `json:"avgResponseTime"`
+	RetryAttempts   int64         `json:"retryAttempts"`
 }
 
 // GetUptime returns the uptime duration

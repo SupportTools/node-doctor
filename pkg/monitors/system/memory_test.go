@@ -33,28 +33,28 @@ func TestParseMemoryConfig(t *testing.T) {
 		{
 			name: "valid config with all fields",
 			configMap: map[string]interface{}{
-				"warningThreshold":             75.0,
-				"criticalThreshold":            90.0,
-				"swapWarningThreshold":         40.0,
-				"swapCriticalThreshold":        70.0,
-				"sustainedHighMemoryChecks":    5,
-				"checkOOMKills":                true,
-				"checkMemoryUsage":             false,
-				"checkSwapUsage":               false,
-				"memInfoPath":                  "/custom/meminfo",
-				"kmsgPath":                     "/custom/kmsg",
+				"warningThreshold":          75.0,
+				"criticalThreshold":         90.0,
+				"swapWarningThreshold":      40.0,
+				"swapCriticalThreshold":     70.0,
+				"sustainedHighMemoryChecks": 5,
+				"checkOOMKills":             true,
+				"checkMemoryUsage":          false,
+				"checkSwapUsage":            false,
+				"memInfoPath":               "/custom/meminfo",
+				"kmsgPath":                  "/custom/kmsg",
 			},
 			expected: &MemoryMonitorConfig{
-				WarningThreshold:             75.0,
-				CriticalThreshold:            90.0,
-				SwapWarningThreshold:         40.0,
-				SwapCriticalThreshold:        70.0,
-				SustainedHighMemoryChecks:    5,
-				CheckOOMKills:                true,
-				CheckMemoryUsage:             false,
-				CheckSwapUsage:               false,
-				MemInfoPath:                  "/custom/meminfo",
-				KmsgPath:                     "/custom/kmsg",
+				WarningThreshold:          75.0,
+				CriticalThreshold:         90.0,
+				SwapWarningThreshold:      40.0,
+				SwapCriticalThreshold:     70.0,
+				SustainedHighMemoryChecks: 5,
+				CheckOOMKills:             true,
+				CheckMemoryUsage:          false,
+				CheckSwapUsage:            false,
+				MemInfoPath:               "/custom/meminfo",
+				KmsgPath:                  "/custom/kmsg",
 			},
 			wantError: false,
 		},
@@ -815,52 +815,52 @@ func TestSustainedHighMemoryPressure(t *testing.T) {
 
 func TestSwapUsageChecks(t *testing.T) {
 	tests := []struct {
-		name                      string
-		swapTotal                 uint64
-		swapFree                  uint64
-		swapWarningThreshold      float64
-		swapCriticalThreshold     float64
-		expectedEventReason       string
+		name                  string
+		swapTotal             uint64
+		swapFree              uint64
+		swapWarningThreshold  float64
+		swapCriticalThreshold float64
+		expectedEventReason   string
 	}{
 		{
-			name:                      "no swap configured",
-			swapTotal:                 0,
-			swapFree:                  0,
-			swapWarningThreshold:      50.0,
-			swapCriticalThreshold:     80.0,
-			expectedEventReason:       "", // No events when no swap
+			name:                  "no swap configured",
+			swapTotal:             0,
+			swapFree:              0,
+			swapWarningThreshold:  50.0,
+			swapCriticalThreshold: 80.0,
+			expectedEventReason:   "", // No events when no swap
 		},
 		{
-			name:                      "normal swap usage",
-			swapTotal:                 4096000, // 4GB
-			swapFree:                  3276800, // 3.2GB (20% used)
-			swapWarningThreshold:      50.0,
-			swapCriticalThreshold:     80.0,
-			expectedEventReason:       "", // No events at normal usage
+			name:                  "normal swap usage",
+			swapTotal:             4096000, // 4GB
+			swapFree:              3276800, // 3.2GB (20% used)
+			swapWarningThreshold:  50.0,
+			swapCriticalThreshold: 80.0,
+			expectedEventReason:   "", // No events at normal usage
 		},
 		{
-			name:                      "warning level swap usage",
-			swapTotal:                 4096000, // 4GB
-			swapFree:                  2048000, // 2GB (50% used)
-			swapWarningThreshold:      50.0,
-			swapCriticalThreshold:     80.0,
-			expectedEventReason:       "ElevatedSwapUsage",
+			name:                  "warning level swap usage",
+			swapTotal:             4096000, // 4GB
+			swapFree:              2048000, // 2GB (50% used)
+			swapWarningThreshold:  50.0,
+			swapCriticalThreshold: 80.0,
+			expectedEventReason:   "ElevatedSwapUsage",
 		},
 		{
-			name:                      "critical level swap usage",
-			swapTotal:                 4096000, // 4GB
-			swapFree:                  819200,  // 0.8GB (80% used)
-			swapWarningThreshold:      50.0,
-			swapCriticalThreshold:     80.0,
-			expectedEventReason:       "HighSwapUsage",
+			name:                  "critical level swap usage",
+			swapTotal:             4096000, // 4GB
+			swapFree:              819200,  // 0.8GB (80% used)
+			swapWarningThreshold:  50.0,
+			swapCriticalThreshold: 80.0,
+			expectedEventReason:   "HighSwapUsage",
 		},
 		{
-			name:                      "very high swap usage",
-			swapTotal:                 4096000, // 4GB
-			swapFree:                  204800,  // 0.2GB (95% used)
-			swapWarningThreshold:      50.0,
-			swapCriticalThreshold:     80.0,
-			expectedEventReason:       "HighSwapUsage",
+			name:                  "very high swap usage",
+			swapTotal:             4096000, // 4GB
+			swapFree:              204800,  // 0.2GB (95% used)
+			swapWarningThreshold:  50.0,
+			swapCriticalThreshold: 80.0,
+			expectedEventReason:   "HighSwapUsage",
 		},
 	}
 

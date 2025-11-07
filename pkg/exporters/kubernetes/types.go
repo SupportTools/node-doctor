@@ -253,11 +253,11 @@ func sanitizeConditionReason(reason string) string {
 // isStandardNodeCondition checks if the condition type is a standard Kubernetes node condition
 func isStandardNodeCondition(conditionType string) bool {
 	standardConditions := map[string]bool{
-		"Ready":               true,
-		"MemoryPressure":      true,
-		"DiskPressure":        true,
-		"PIDPressure":         true,
-		"NetworkUnavailable":  true,
+		"Ready":              true,
+		"MemoryPressure":     true,
+		"DiskPressure":       true,
+		"PIDPressure":        true,
+		"NetworkUnavailable": true,
 	}
 	return standardConditions[conditionType]
 }

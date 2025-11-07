@@ -9,9 +9,9 @@ import (
 
 func TestNewStatusRequest(t *testing.T) {
 	status := &types.Status{
-		Source:    "test-monitor",
-		Timestamp: time.Now(),
-		Events:    []types.Event{},
+		Source:     "test-monitor",
+		Timestamp:  time.Now(),
+		Events:     []types.Event{},
 		Conditions: []types.Condition{},
 	}
 

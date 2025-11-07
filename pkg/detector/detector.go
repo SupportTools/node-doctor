@@ -16,25 +16,25 @@ import (
 // It collects status updates from monitors, processes them into problems,
 // deduplicates issues, and distributes results to exporters.
 type ProblemDetector struct {
-	config           *types.NodeDoctorConfig
-	monitors         []types.Monitor
-	exporters        []types.Exporter
-	statusChan       chan *types.Status // Buffered channel for status updates
-	stopChan         chan struct{}      // Signal for graceful shutdown
-	wg               sync.WaitGroup     // Track goroutines for shutdown
-	mu               sync.RWMutex       // Protects running state
-	running          bool               // Current running state
-	problems         map[string]*problemEntry // Deduplication map with TTL
-	problemsMu       sync.RWMutex              // Protects problems map
-	stats            Statistics                // Thread-safe statistics
-	problemTTL       time.Duration             // TTL for problem entries
-	cleanupInterval  time.Duration             // Cleanup interval
+	config          *types.NodeDoctorConfig
+	monitors        []types.Monitor
+	exporters       []types.Exporter
+	statusChan      chan *types.Status       // Buffered channel for status updates
+	stopChan        chan struct{}            // Signal for graceful shutdown
+	wg              sync.WaitGroup           // Track goroutines for shutdown
+	mu              sync.RWMutex             // Protects running state
+	running         bool                     // Current running state
+	problems        map[string]*problemEntry // Deduplication map with TTL
+	problemsMu      sync.RWMutex             // Protects problems map
+	stats           Statistics               // Thread-safe statistics
+	problemTTL      time.Duration            // TTL for problem entries
+	cleanupInterval time.Duration            // Cleanup interval
 }
 
 // problemEntry wraps a problem with TTL tracking
 type problemEntry struct {
-	problem     *types.Problem
-	lastSeen    time.Time
+	problem  *types.Problem
+	lastSeen time.Time
 }
 
 // NewProblemDetector creates a new ProblemDetector instance.
@@ -58,7 +58,7 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 		stopChan:        make(chan struct{}),
 		problems:        make(map[string]*problemEntry),
 		stats:           NewStatistics(),
-		problemTTL:      1 * time.Hour,  // Problems expire after 1 hour
+		problemTTL:      1 * time.Hour,    // Problems expire after 1 hour
 		cleanupInterval: 10 * time.Minute, // Cleanup every 10 minutes
 	}, nil
 }

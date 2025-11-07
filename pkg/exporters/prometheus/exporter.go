@@ -306,9 +306,9 @@ func (e *PrometheusExporter) initializeStaticMetrics() {
 	// Set version info (using runtime info as placeholder)
 	e.metrics.Info.WithLabelValues(
 		e.nodeName,
-		"unknown",           // version
-		"unknown",           // git_commit
-		runtime.Version(),   // go_version
+		"unknown",                        // version
+		"unknown",                        // git_commit
+		runtime.Version(),                // go_version
 		e.startTime.Format(time.RFC3339), // build_time
 	).Set(1)
 }

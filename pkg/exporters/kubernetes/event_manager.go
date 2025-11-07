@@ -17,11 +17,11 @@ type EventManager struct {
 	client           *K8sClient
 	config           *types.KubernetesExporterConfig
 	mu               sync.RWMutex
-	eventCache       map[string]time.Time       // Event signature -> last seen time
-	rateLimiter      map[time.Time]int          // Minute timestamp -> event count
-	maxEventsPerMin  int                        // Maximum events per minute
-	deduplicationTTL time.Duration              // How long to remember events for deduplication
-	cleanupInterval  time.Duration              // How often to clean up old cache entries
+	eventCache       map[string]time.Time // Event signature -> last seen time
+	rateLimiter      map[time.Time]int    // Minute timestamp -> event count
+	maxEventsPerMin  int                  // Maximum events per minute
+	deduplicationTTL time.Duration        // How long to remember events for deduplication
+	cleanupInterval  time.Duration        // How often to clean up old cache entries
 	stopCh           chan struct{}
 	stopped          bool
 	wg               sync.WaitGroup

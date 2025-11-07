@@ -20,7 +20,10 @@
 	bump bump-with-monitoring \
 	qa-check devils-advocate workflow-status \
 	gh-status gh-watch gh-logs gh-builds \
-	check-prerequisites check-docker check-kubectl
+	check-prerequisites check-docker check-kubectl \
+	build test test-integration test-e2e test-all \
+	lint fmt clean install-deps \
+	docker-build docker-push
 
 # ================================================================================================
 # Project Configuration
@@ -94,19 +97,19 @@ BLUE := \033[0;34m
 NC := \033[0m
 
 define print_status
-/bin/bash -c 'echo -e "$(BLUE)[$$(date +%Y-%m-%d\ %H:%M:%S)]$(NC) $(1)"'
+printf '\033[0;34m[%s]\033[0m %s\n' "$$(date +'%Y-%m-%d %H:%M:%S')" $(1)
 endef
 
 define print_success
-/bin/bash -c 'echo -e "$(GREEN)[SUCCESS]$(NC) $(1)"'
+printf '\033[0;32m[SUCCESS]\033[0m %s\n' $(1)
 endef
 
 define print_error
-/bin/bash -c 'echo -e "$(RED)[ERROR]$(NC) $(1)"'
+printf '\033[0;31m[ERROR]\033[0m %s\n' $(1)
 endef
 
 define print_warning
-/bin/bash -c 'echo -e "$(YELLOW)[WARNING]$(NC) $(1)"'
+printf '\033[1;33m[WARNING]\033[0m %s\n' $(1)
 endef
 
 # ================================================================================================
@@ -187,6 +190,92 @@ test-node-doctor-local:
 	@$(call print_status,"Running node-doctor tests...")
 	@go test ./... -v -cover
 	@$(call print_success,"node-doctor tests passed")
+
+# ================================================================================================
+# Standard Build and Test Targets (Task #3137)
+# ================================================================================================
+
+# Standard build target - compile binary
+build: build-local
+
+# Standard test target - unit tests only
+test:
+	@$(call print_status,"Running unit tests...")
+	@go test ./pkg/... ./cmd/... -v -cover -short
+	@$(call print_success,"Unit tests passed")
+
+# Integration tests
+test-integration:
+	@$(call print_status,"Running integration tests...")
+	@if [ -d "test/integration" ]; then \
+		go test ./test/integration/... -v -cover; \
+	else \
+		$(call print_warning,"Integration tests not yet implemented (test/integration/ does not exist)"); \
+	fi
+	@$(call print_success,"Integration tests completed")
+
+# End-to-end tests
+test-e2e:
+	@$(call print_status,"Running E2E tests...")
+	@if [ -d "test/e2e" ]; then \
+		go test ./test/e2e/... -v -timeout 10m; \
+	else \
+		$(call print_warning,"E2E tests not yet implemented (test/e2e/ does not exist)"); \
+	fi
+	@$(call print_success,"E2E tests completed")
+
+# Run all tests with coverage
+test-all:
+	@$(call print_status,"Running all tests with coverage...")
+	@mkdir -p coverage
+	@go test ./... -v -cover -covermode=atomic -coverprofile=coverage/coverage.out
+	@go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+	@go tool cover -func=coverage/coverage.out | grep total | awk '{print "Total coverage: " $$3}'
+	@$(call print_success,"All tests passed - coverage report: coverage/coverage.html")
+
+# Lint code with golangci-lint
+lint:
+	@$(call print_status,"Running golangci-lint...")
+	@command -v golangci-lint >/dev/null 2>&1 || ($(call print_error,"golangci-lint not found - run 'make install-deps'") && exit 1)
+	@golangci-lint run ./...
+	@$(call print_success,"Linting passed")
+
+# Format code with gofmt and goimports
+fmt:
+	@$(call print_status,"Formatting Go code...")
+	@command -v goimports >/dev/null 2>&1 || ($(call print_error,"goimports not found - run 'make install-deps'") && exit 1)
+	@gofmt -s -w .
+	@goimports -w .
+	@$(call print_success,"Code formatted")
+
+# Clean build artifacts
+clean:
+	@$(call print_status,"Cleaning build artifacts...")
+	@rm -rf bin/
+	@rm -rf coverage/
+	@rm -f coverage.txt coverage.out
+	@go clean -cache -testcache -modcache -fuzzcache
+	@$(call print_success,"Build artifacts cleaned")
+
+# Install development dependencies
+install-deps:
+	@$(call print_status,"Installing development dependencies...")
+	@command -v golangci-lint >/dev/null 2>&1 || \
+		($(call print_status,"Installing golangci-lint...") && \
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	@command -v goimports >/dev/null 2>&1 || \
+		($(call print_status,"Installing goimports...") && \
+		go install golang.org/x/tools/cmd/goimports@latest)
+	@$(call print_status,"Downloading Go module dependencies...")
+	@go mod download
+	@go mod tidy
+	@$(call print_success,"Dependencies installed")
+
+# Docker build shorthand
+docker-build: build-all-images
+
+# Docker push shorthand
+docker-push: push-all-images
 
 # ================================================================================================
 # Validation Targets (mirrors CI/CD pipeline)
@@ -323,59 +412,57 @@ increment-rc-version:
 
 # Deploy to production cluster using kubectl
 deploy-prd-kubectl: check-kubectl
-	@$(call print_status,"Deploying to production cluster $(KUBECTL_CONTEXT_PRD)...")
-	@$(call print_status,"Checking namespace $(NAMESPACE_PRD)...")
+	@$(call print_status,Deploying to production cluster $(KUBECTL_CONTEXT_PRD)...)
+	@$(call print_status,Checking namespace $(NAMESPACE_PRD)...)
 	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl config use-context $(KUBECTL_CONTEXT_PRD)
 	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl get namespace $(NAMESPACE_PRD) > /dev/null 2>&1 || \
-		($(call print_status,"Creating namespace $(NAMESPACE_PRD)...") && \
+		(echo "Creating namespace $(NAMESPACE_PRD)..." && \
 		KUBECONFIG=$(KUBECONFIG_PRD) kubectl create namespace $(NAMESPACE_PRD))
-	@$(call print_status,"Applying RBAC resources...")
+	@$(call print_status,Applying RBAC resources...)
 	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl apply -f deployment/rbac.yaml -n $(NAMESPACE_PRD)
-	@$(call print_status,"Applying DaemonSet...")
+	@$(call print_status,Applying DaemonSet...)
 	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl apply -f deployment/daemonset.yaml -n $(NAMESPACE_PRD)
-	@$(call print_status,"Waiting for rollout to complete...")
+	@$(call print_status,Waiting for rollout to complete...)
 	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl rollout status daemonset/node-doctor -n $(NAMESPACE_PRD) --timeout=5m
-	@$(call print_success,"Deployed to production cluster $(KUBECTL_CONTEXT_PRD)")
+	@$(call print_success,Deployed to production cluster $(KUBECTL_CONTEXT_PRD))
 
 # Build and push RC release to Harbor and deploy to a1-ops-prd cluster
 bump-rc: validate-pipeline-local increment-rc-version
-	@$(call print_status,"Building RC release: $(RC_VERSION)")
-	@$(call print_status,"Registry: $(REGISTRY)/$(PROJECT_NAME)")
-	@$(call print_status,"Cluster: $(KUBECTL_CONTEXT_PRD), Namespace: $(NAMESPACE_PRD)")
+	@$(call print_status,Building RC release: $(RC_VERSION))
+	@$(call print_status,Registry: $(REGISTRY)/$(PROJECT_NAME))
+	@$(call print_status,Cluster: $(KUBECTL_CONTEXT_PRD) Namespace: $(NAMESPACE_PRD))
 	@echo ""
-	@$(call print_status,"Building Docker image...")
-	@docker build \
+	@$(call print_status,Building multi-arch Docker image for amd64 and arm64...)
+	@docker buildx build \
+		--platform linux/amd64,linux/arm64 \
 		--build-arg VERSION=$(RC_VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION) \
 		-t $(REGISTRY)/$(PROJECT_NAME):latest \
-		-f Dockerfile .
-	@$(call print_success,"Docker image built: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)")
+		-f Dockerfile \
+		--push \
+		.
+	@$(call print_success,Multi-arch image built and pushed: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION))
 	@echo ""
-	@$(call print_status,"Pushing image to Harbor...")
-	@docker push $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)
-	@docker push $(REGISTRY)/$(PROJECT_NAME):latest
-	@$(call print_success,"Image pushed to Harbor")
-	@echo ""
-	@$(call print_status,"Updating DaemonSet image tag...")
+	@$(call print_status,Updating DaemonSet image tag...)
 	@sed -i.bak 's|image: harbor.support.tools/node-doctor/node-doctor:.*|image: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)|' deployment/daemonset.yaml
 	@rm -f deployment/daemonset.yaml.bak
 	@echo ""
 	@$(MAKE) deploy-prd-kubectl
 	@echo ""
-	@$(call print_status,"Committing RC release...")
+	@$(call print_status,Committing RC release...)
 	@git add $(RC_VERSION_FILE) deployment/daemonset.yaml
 	@git commit -m "bump-rc: Release candidate $(RC_VERSION) deployed to $(KUBECTL_CONTEXT_PRD)" || true
 	@git tag -a $(RC_VERSION) -m "Release candidate $(RC_VERSION)" || true
 	@git push origin main --tags || true
 	@echo ""
-	@$(call print_success,"🎉 RC Release $(RC_VERSION) complete!")
-	@$(call print_success,"   - Built and pushed to Harbor")
-	@$(call print_success,"   - Deployed to $(KUBECTL_CONTEXT_PRD) cluster")
-	@$(call print_success,"   - Tagged as $(RC_VERSION)")
+	@echo "🎉 RC Release $(RC_VERSION) complete!"
+	@echo "   - Built and pushed to Harbor"
+	@echo "   - Deployed to $(KUBECTL_CONTEXT_PRD) cluster"
+	@echo "   - Tagged as $(RC_VERSION)"
 	@echo ""
-	@$(call print_status,"Next steps:")
+	@echo "Next steps:"
 	@echo "  - Verify deployment: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor"
 	@echo "  - Check logs: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) logs -l app=node-doctor"
 	@echo "  - Monitor health: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor -w"
@@ -434,27 +521,42 @@ help:
 	@echo "QUICK START"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@echo "  make build-local           Build all components locally"
-	@echo "  make test-local            Run all tests"
-	@echo "  make validate-pipeline-local  Validate before push (mirrors CI/CD)"
-	@echo "  make bump                  Bump version and trigger deployment"
+	@echo "  make install-deps          Install development dependencies"
+	@echo "  make build                 Compile node-doctor binary"
+	@echo "  make test                  Run unit tests"
+	@echo "  make test-all              Run all tests with coverage"
+	@echo "  make lint                  Run linter (golangci-lint)"
+	@echo "  make fmt                   Format code (gofmt + goimports)"
+	@echo "  make clean                 Clean build artifacts"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "BUILD COMMANDS"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@echo "  make build-all-local       Build all components"
-	@echo "  make build-api-local       Build API component"
-	@echo "  make build-agent-local     Build agent component"
-	@echo "  make build-all-images      Build all Docker images"
+	@echo "  make build                 Compile binary (shorthand for build-local)"
+	@echo "  make build-local           Build node-doctor binary"
+	@echo "  make docker-build          Build Docker image"
+	@echo "  make docker-push           Push Docker image to registry"
+	@echo "  make clean                 Remove build artifacts and caches"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "TEST COMMANDS"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@echo "  make test-local            Run all tests with coverage"
-	@echo "  make test-api-local        Run API tests"
-	@echo "  make test-agent-local      Run agent tests"
+	@echo "  make test                  Run unit tests (fast)"
+	@echo "  make test-integration      Run integration tests"
+	@echo "  make test-e2e              Run end-to-end tests"
+	@echo "  make test-all              Run all tests with coverage report"
+	@echo "  make lint                  Run golangci-lint"
+	@echo "  make fmt                   Format code with gofmt and goimports"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "DEVELOPMENT COMMANDS"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo ""
+	@echo "  make install-deps          Install golangci-lint, goimports, etc."
+	@echo "  make validate-quick        Quick validation (format, vet, staticcheck)"
+	@echo "  make validate-pipeline-local  Full validation (mirrors CI/CD)"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "VALIDATION COMMANDS (Pre-push)"

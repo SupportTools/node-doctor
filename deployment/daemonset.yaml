@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-doctor
-  namespace: kube-system
+  namespace: node-doctor
   labels:
     app: node-doctor
     component: monitoring
@@ -36,7 +36,7 @@ spec:
       annotations:
         # Prometheus scraping annotations
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9100"
+        prometheus.io/port: "9101"
         prometheus.io/path: "/metrics"
         # Security annotations
         container.apparmor.security.beta.kubernetes.io/node-doctor: "unconfined"
@@ -123,11 +123,11 @@ spec:
 
       containers:
       - name: node-doctor
-        image: harbor.support.tools/node-doctor/node-doctor:v0.1.0
+        image: harbor.support.tools/node-doctor/node-doctor:v0.1.0-rc.9
         imagePullPolicy: IfNotPresent
 
         # Command and arguments
-        command: ["/node-doctor"]
+        command: ["/usr/local/bin/node-doctor"]
         args:
           - "--config=/etc/node-doctor/config.yaml"
           - "--log-level=info"
@@ -139,10 +139,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        - name: NODE_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.hostIP
         - name: POD_NAME
           valueFrom:
             fieldRef:
@@ -207,10 +203,11 @@ spec:
           protocol: TCP
           # Health/status endpoint
         - name: metrics
-          containerPort: 9100
+          containerPort: 9101
           protocol: TCP
-          # Prometheus metrics endpoint
+          # Prometheus metrics endpoint (using 9101 to avoid conflict with node-exporter on 9100)
 
+        # Health probes - provided by built-in health server on port 8080
         # Liveness probe - determines if container should be restarted
         livenessProbe:
           httpGet:
@@ -378,19 +375,16 @@ spec:
       - name: docker-sock
         hostPath:
           path: /var/run/docker.sock
-          type: SocketOrCreate
 
       # Containerd socket
       - name: containerd-sock
         hostPath:
           path: /run/containerd/containerd.sock
-          type: SocketOrCreate
 
       # CRI-O socket
       - name: crio-sock
         hostPath:
           path: /var/run/crio/crio.sock
-          type: SocketOrCreate
 
       # SystemD journal
       - name: host-journal
@@ -422,13 +416,17 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: node-doctor-config
-  namespace: kube-system
+  namespace: node-doctor
   labels:
     app: node-doctor
     component: monitoring
     tier: system
 data:
   config.yaml: |
+    apiVersion: v1
+    kind: NodeDoctorConfig
+    metadata:
+      name: node-doctor
     settings:
       nodeName: "${NODE_NAME}"
       logLevel: info
@@ -518,7 +516,7 @@ data:
         updateInterval: 30s
         resyncInterval: 5m
         heartbeatInterval: 1m
-        namespace: kube-system
+        namespace: node-doctor
         conditions:
           - type: NodeDoctorHealthy
             defaultStatus: "True"
@@ -530,7 +528,7 @@ data:
           deduplicationWindow: 5m
 
       http:
-        enabled: true
+        enabled: false
         bindAddress: "0.0.0.0"
         hostPort: 8080
         tlsEnabled: false
@@ -547,7 +545,7 @@ data:
 
       prometheus:
         enabled: true
-        port: 9100
+        port: 9101
         path: /metrics
         namespace: node_doctor
         subsystem: monitor
@@ -573,14 +571,14 @@ apiVersion: v1
 kind: Service
 metadata:
   name: node-doctor-metrics
-  namespace: kube-system
+  namespace: node-doctor
   labels:
     app: node-doctor
     component: monitoring
     tier: system
   annotations:
     prometheus.io/scrape: "true"
-    prometheus.io/port: "9100"
+    prometheus.io/port: "9101"
     prometheus.io/path: "/metrics"
 spec:
   type: ClusterIP
@@ -595,6 +593,6 @@ spec:
     targetPort: 8080
     protocol: TCP
   - name: metrics
-    port: 9100
-    targetPort: 9100
+    port: 9101
+    targetPort: 9101
     protocol: TCP

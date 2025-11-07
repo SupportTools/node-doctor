@@ -11,9 +11,9 @@ import (
 
 func TestNewAuthProvider(t *testing.T) {
 	tests := []struct {
-		name        string
-		config      types.AuthConfig
-		expectError bool
+		name         string
+		config       types.AuthConfig
+		expectError  bool
 		expectedType string
 	}{
 		{
@@ -25,8 +25,8 @@ func TestNewAuthProvider(t *testing.T) {
 			expectedType: "none",
 		},
 		{
-			name: "empty type defaults to none",
-			config: types.AuthConfig{},
+			name:         "empty type defaults to none",
+			config:       types.AuthConfig{},
 			expectError:  false,
 			expectedType: "none",
 		},

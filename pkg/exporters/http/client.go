@@ -294,15 +294,15 @@ func (c *HTTPClient) Close() error {
 // GetEndpointInfo returns information about the configured endpoint
 func (c *HTTPClient) GetEndpointInfo() map[string]interface{} {
 	return map[string]interface{}{
-		"name":           c.endpoint.Name,
-		"url":            c.endpoint.URL,
-		"authType":       c.auth.Type(),
-		"timeout":        c.endpoint.Timeout.String(),
-		"maxAttempts":    c.endpoint.Retry.MaxAttempts,
-		"baseDelay":      c.endpoint.Retry.BaseDelay.String(),
-		"maxDelay":       c.endpoint.Retry.MaxDelay.String(),
-		"sendStatus":     c.endpoint.SendStatus,
-		"sendProblems":   c.endpoint.SendProblems,
-		"customHeaders":  len(c.endpoint.Headers),
+		"name":          c.endpoint.Name,
+		"url":           c.endpoint.URL,
+		"authType":      c.auth.Type(),
+		"timeout":       c.endpoint.Timeout.String(),
+		"maxAttempts":   c.endpoint.Retry.MaxAttempts,
+		"baseDelay":     c.endpoint.Retry.BaseDelay.String(),
+		"maxDelay":      c.endpoint.Retry.MaxDelay.String(),
+		"sendStatus":    c.endpoint.SendStatus,
+		"sendProblems":  c.endpoint.SendProblems,
+		"customHeaders": len(c.endpoint.Headers),
 	}
 }

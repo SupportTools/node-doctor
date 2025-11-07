@@ -1,0 +1,65 @@
+{
+  "kind": "Node",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "test-node-01",
+    "uid": "12345678-1234-1234-1234-123456789012",
+    "creationTimestamp": "2025-01-01T00:00:00Z"
+  },
+  "status": {
+    "conditions": [
+      {
+        "type": "Ready",
+        "status": "True",
+        "lastHeartbeatTime": "2025-01-07T12:00:00Z",
+        "lastTransitionTime": "2025-01-01T00:00:00Z",
+        "reason": "KubeletReady",
+        "message": "kubelet is posting ready status"
+      },
+      {
+        "type": "MemoryPressure",
+        "status": "False",
+        "lastHeartbeatTime": "2025-01-07T12:00:00Z",
+        "lastTransitionTime": "2025-01-01T00:00:00Z",
+        "reason": "KubeletHasSufficientMemory",
+        "message": "kubelet has sufficient memory available"
+      },
+      {
+        "type": "DiskPressure",
+        "status": "False",
+        "lastHeartbeatTime": "2025-01-07T12:00:00Z",
+        "lastTransitionTime": "2025-01-01T00:00:00Z",
+        "reason": "KubeletHasNoDiskPressure",
+        "message": "kubelet has no disk pressure"
+      },
+      {
+        "type": "PIDPressure",
+        "status": "False",
+        "lastHeartbeatTime": "2025-01-07T12:00:00Z",
+        "lastTransitionTime": "2025-01-01T00:00:00Z",
+        "reason": "KubeletHasSufficientPID",
+        "message": "kubelet has sufficient PID available"
+      }
+    ],
+    "addresses": [
+      {
+        "type": "InternalIP",
+        "address": "192.168.1.100"
+      },
+      {
+        "type": "Hostname",
+        "address": "test-node-01"
+      }
+    ],
+    "capacity": {
+      "cpu": "4",
+      "memory": "8Gi",
+      "pods": "110"
+    },
+    "allocatable": {
+      "cpu": "4",
+      "memory": "7Gi",
+      "pods": "110"
+    }
+  }
+}

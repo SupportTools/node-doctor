@@ -215,35 +215,35 @@ func TestStatusToProblems_Events(t *testing.T) {
 	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")})
 
 	tests := []struct {
-		name            string
-		status          *types.Status
-		expectedCount   int
-		expectedTypes   []string
+		name               string
+		status             *types.Status
+		expectedCount      int
+		expectedTypes      []string
 		expectedSeverities []types.ProblemSeverity
 	}{
 		{
-			name:            "error event",
-			status:          helper.CreateErrorStatus("test-source"),
-			expectedCount:   2, // 1 error event + 1 false condition
-			expectedTypes:   []string{"event-CriticalError", "condition-SystemHealth"},
+			name:               "error event",
+			status:             helper.CreateErrorStatus("test-source"),
+			expectedCount:      2, // 1 error event + 1 false condition
+			expectedTypes:      []string{"event-CriticalError", "condition-SystemHealth"},
 			expectedSeverities: []types.ProblemSeverity{types.ProblemCritical, types.ProblemCritical},
 		},
 		{
-			name:            "warning event",
-			status:          helper.CreateWarningStatus("test-source"),
-			expectedCount:   1,
-			expectedTypes:   []string{"event-PerformanceWarning"},
+			name:               "warning event",
+			status:             helper.CreateWarningStatus("test-source"),
+			expectedCount:      1,
+			expectedTypes:      []string{"event-PerformanceWarning"},
 			expectedSeverities: []types.ProblemSeverity{types.ProblemWarning},
 		},
 		{
-			name:            "healthy status",
-			status:          helper.CreateHealthyStatus("test-source"),
-			expectedCount:   0, // Info events and true conditions are ignored
+			name:          "healthy status",
+			status:        helper.CreateHealthyStatus("test-source"),
+			expectedCount: 0, // Info events and true conditions are ignored
 		},
 		{
-			name:            "empty status",
-			status:          helper.CreateEmptyStatus("test-source"),
-			expectedCount:   0,
+			name:          "empty status",
+			status:        helper.CreateEmptyStatus("test-source"),
+			expectedCount: 0,
 		},
 	}
 

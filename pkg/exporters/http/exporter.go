@@ -221,30 +221,30 @@ func (e *HTTPExporter) GetHealthStatus() map[string]interface{} {
 	stats := e.stats.GetSnapshot()
 
 	health := map[string]interface{}{
-		"started":         e.started,
-		"uptime":          stats.GetUptime().String(),
-		"workerCount":     e.workerPool.GetWorkerCount(),
-		"queueLength":     e.workerPool.GetQueueLength(),
-		"queueCapacity":   e.workerPool.GetQueueCapacity(),
-		"totalExports":    stats.GetTotalExports(),
-		"successRate":     fmt.Sprintf("%.1f%%", stats.GetSuccessRate()),
-		"lastExportTime":  stats.LastExportTime,
-		"lastError":       stats.LastError,
-		"lastErrorTime":   stats.LastErrorTime,
-		"webhookCount":    len(e.config.Webhooks),
-		"webhookHealth":   make(map[string]interface{}),
+		"started":        e.started,
+		"uptime":         stats.GetUptime().String(),
+		"workerCount":    e.workerPool.GetWorkerCount(),
+		"queueLength":    e.workerPool.GetQueueLength(),
+		"queueCapacity":  e.workerPool.GetQueueCapacity(),
+		"totalExports":   stats.GetTotalExports(),
+		"successRate":    fmt.Sprintf("%.1f%%", stats.GetSuccessRate()),
+		"lastExportTime": stats.LastExportTime,
+		"lastError":      stats.LastError,
+		"lastErrorTime":  stats.LastErrorTime,
+		"webhookCount":   len(e.config.Webhooks),
+		"webhookHealth":  make(map[string]interface{}),
 	}
 
 	// Add per-webhook health
 	for name, webhookStats := range stats.WebhookStats {
 		health["webhookHealth"].(map[string]interface{})[name] = map[string]interface{}{
-			"healthy":          webhookStats.IsHealthy(),
-			"successRate":      fmt.Sprintf("%.1f%%", webhookStats.GetSuccessRate()),
-			"totalRequests":    webhookStats.RequestsTotal,
-			"lastSuccess":      webhookStats.LastSuccessTime,
-			"lastError":        webhookStats.LastError,
-			"avgResponseTime":  webhookStats.AvgResponseTime.String(),
-			"retryAttempts":    webhookStats.RetryAttempts,
+			"healthy":         webhookStats.IsHealthy(),
+			"successRate":     fmt.Sprintf("%.1f%%", webhookStats.GetSuccessRate()),
+			"totalRequests":   webhookStats.RequestsTotal,
+			"lastSuccess":     webhookStats.LastSuccessTime,
+			"lastError":       webhookStats.LastError,
+			"avgResponseTime": webhookStats.AvgResponseTime.String(),
+			"retryAttempts":   webhookStats.RetryAttempts,
 		}
 	}
 
@@ -273,11 +273,11 @@ func (e *HTTPExporter) GetConfiguration() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"enabled":     e.config.Enabled,
-		"workers":     e.config.Workers,
-		"queueSize":   e.config.QueueSize,
-		"timeout":     e.config.Timeout.String(),
-		"webhooks":    webhooks,
+		"enabled":       e.config.Enabled,
+		"workers":       e.config.Workers,
+		"queueSize":     e.config.QueueSize,
+		"timeout":       e.config.Timeout.String(),
+		"webhooks":      webhooks,
 		"globalHeaders": len(e.config.Headers),
 	}
 }

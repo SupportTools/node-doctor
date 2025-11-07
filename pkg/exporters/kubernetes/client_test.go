@@ -166,7 +166,7 @@ func TestK8sClientOperations(t *testing.T) {
 
 	t.Run("UpdateNodeAnnotations", func(t *testing.T) {
 		annotations := map[string]string{
-			"test-annotation": "test-value",
+			"test-annotation":        "test-value",
 			"node-doctor.io/version": "test-version",
 		}
 

@@ -11,10 +11,10 @@ type Metrics struct {
 	// Counter metrics
 	ProblemsTotal         *prometheus.CounterVec
 	StatusUpdatesTotal    *prometheus.CounterVec
-	EventsTotal          *prometheus.CounterVec
-	ConditionsTotal      *prometheus.CounterVec
+	EventsTotal           *prometheus.CounterVec
+	ConditionsTotal       *prometheus.CounterVec
 	ExportOperationsTotal *prometheus.CounterVec
-	ExportErrorsTotal    *prometheus.CounterVec
+	ExportErrorsTotal     *prometheus.CounterVec
 
 	// Gauge metrics
 	ProblemsActive   *prometheus.GaugeVec

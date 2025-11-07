@@ -5,12 +5,14 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/monitors"
@@ -78,10 +80,11 @@ type MemoryMonitor struct {
 	config      *MemoryMonitorConfig
 
 	// State tracking for sustained conditions
-	mu              sync.RWMutex
-	highMemoryCount int
-	lastOOMKillTime time.Time
+	mu                  sync.RWMutex
+	highMemoryCount     int
+	lastOOMKillTime     time.Time
 	oomPermissionWarned bool
+	oomReadErrorWarned  bool // Track if we've warned about kmsg read errors (e.g., EINVAL on ARM64)
 
 	// System interfaces (for testing)
 	fileReader FileReader
@@ -377,6 +380,26 @@ func (m *MemoryMonitor) checkOOMKills(ctx context.Context, status *types.Status)
 			}
 			return nil
 		}
+
+		// Handle EINVAL errors gracefully (occurs on ARM64 platforms when reading /dev/kmsg)
+		// This is a platform-specific limitation, not a critical failure
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) && errors.Is(pathErr.Err, syscall.EINVAL) {
+			m.mu.Lock()
+			if !m.oomReadErrorWarned {
+				m.oomReadErrorWarned = true
+				m.mu.Unlock()
+				status.AddEvent(types.NewEvent(
+					types.EventWarning,
+					"OOMCheckNotSupported",
+					fmt.Sprintf("OOM detection via %s not supported on this platform (ARM64): %v. Memory monitoring will continue without OOM detection.", m.config.KmsgPath, err),
+				))
+			} else {
+				m.mu.Unlock()
+			}
+			return nil
+		}
+
 		return fmt.Errorf("failed to read %s: %w", m.config.KmsgPath, err)
 	}
 

@@ -294,11 +294,11 @@ func (b *BaseMonitor) Stop() {
 
 // run contains the main monitoring loop.
 // This method runs in a separate goroutine and performs the following:
-//   1. Sets up a ticker for periodic checks
-//   2. Performs an initial check
-//   3. Loops until stopped, performing checks on each tick
-//   4. Handles errors and timeouts gracefully
-//   5. Cleans up resources on shutdown
+//  1. Sets up a ticker for periodic checks
+//  2. Performs an initial check
+//  3. Loops until stopped, performing checks on each tick
+//  4. Handles errors and timeouts gracefully
+//  5. Cleans up resources on shutdown
 func (b *BaseMonitor) run() {
 	defer func() {
 		close(b.statusChan)

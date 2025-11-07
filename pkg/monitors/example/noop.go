@@ -35,9 +35,9 @@ func init() {
 // It can be configured with custom intervals and test data for validation purposes.
 type NoOpMonitor struct {
 	// Configuration
-	name        string
-	interval    time.Duration
-	testMessage string
+	name          string
+	interval      time.Duration
+	testMessage   string
 	includeEvents bool
 
 	// Runtime state
