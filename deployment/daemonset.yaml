@@ -123,7 +123,7 @@ spec:
 
       containers:
       - name: node-doctor
-        image: harbor.support.tools/node-doctor/node-doctor:v0.1.0-rc.9
+        image: harbor.support.tools/node-doctor/node-doctor:v0.1.0-rc.10
         imagePullPolicy: IfNotPresent
 
         # Command and arguments
