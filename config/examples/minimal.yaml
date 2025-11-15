@@ -1,0 +1,80 @@
+# Minimal Node Doctor Configuration
+# This is the simplest possible configuration to get Node Doctor running.
+# Use this for quick starts, testing, or learning the basics.
+#
+# To use this configuration:
+#   node-doctor --config=/path/to/minimal.yaml
+
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+
+metadata:
+  name: node-doctor-minimal
+
+# Global settings - minimal required configuration
+settings:
+  # Node name - typically set from environment variable
+  nodeName: "${NODE_NAME}"
+
+  # Logging defaults (can be omitted, shown for clarity)
+  logLevel: info        # Options: debug, info, warn, error, fatal
+  logFormat: json       # Options: json, text
+  logOutput: stdout     # Options: stdout, stderr, file
+
+# Monitors - at least one monitor is required
+monitors:
+  # System disk monitor - most critical for node health
+  - name: disk-health
+    type: system-disk
+    enabled: true
+    interval: 1m          # Check every minute
+    timeout: 30s          # Timeout after 30 seconds
+    config:
+      # Monitor root filesystem and kubelet directory
+      paths:
+        - path: "/"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/kubelet"
+          warningThreshold: 85
+          criticalThreshold: 95
+      # Check for inode exhaustion
+      inodeThresholds:
+        warning: 85
+        critical: 95
+      # Detect read-only filesystems
+      readOnlyDetection: true
+      # Check I/O health
+      ioHealthCheck: true
+
+# Exporters - Kubernetes exporter is the minimum for node conditions
+exporters:
+  # Kubernetes exporter - updates node conditions and creates events
+  kubernetes:
+    enabled: true
+    # Use default intervals (10s update, 60s resync, 5m heartbeat)
+    namespace: node-doctor
+    # Define custom node condition
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor is monitoring the node"
+    # Event configuration
+    events:
+      maxEventsPerMinute: 10
+      eventTTL: 1h
+      deduplicationWindow: 5m
+
+  # HTTP webhook exporter - disabled in minimal config
+  http:
+    enabled: false
+
+  # Prometheus metrics - disabled in minimal config
+  prometheus:
+    enabled: false
+
+# Remediation - disabled in minimal configuration for safety
+remediation:
+  enabled: false
+  dryRun: true  # Even if enabled, only log actions (don't execute)

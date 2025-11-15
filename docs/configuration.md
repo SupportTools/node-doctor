@@ -6,6 +6,35 @@
 
 Node Doctor uses a declarative configuration system based on YAML with support for environment variable substitution, comprehensive validation, and dynamic updates. The configuration schema is defined in `pkg/types/config.go` and follows Kubernetes-style resource definitions.
 
+## Example Configurations
+
+Ready-to-use example configurations are available in the `config/examples/` directory:
+
+| File | Use Case | Description |
+|------|----------|-------------|
+| **[minimal.yaml](../config/examples/minimal.yaml)** | Quick start, learning | Bare minimum configuration with single disk monitor |
+| **[development.yaml](../config/examples/development.yaml)** | Local development | Debug logging, all monitors, dry-run remediation, profiling |
+| **[production.yaml](../config/examples/production.yaml)** | Production deployment | Comprehensive monitoring with safety mechanisms |
+| **[custom-plugins.yaml](../config/examples/custom-plugins.yaml)** | Extensibility | Custom monitors, log patterns, multi-step remediation |
+
+For detailed information about each example, see **[config/examples/README.md](../config/examples/README.md)**.
+
+### Quick Start with Examples
+
+```bash
+# Use minimal configuration
+node-doctor --config=config/examples/minimal.yaml
+
+# Use development configuration
+export NODE_NAME=dev-node
+node-doctor --config=config/examples/development.yaml
+
+# Use production configuration (via Kubernetes ConfigMap)
+kubectl create configmap node-doctor-config \
+  --from-file=config.yaml=config/examples/production.yaml \
+  -n node-doctor
+```
+
 ## Configuration Sources and Precedence
 
 Configuration is loaded from multiple sources in this order (later sources override earlier ones):

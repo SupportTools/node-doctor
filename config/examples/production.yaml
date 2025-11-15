@@ -1,0 +1,380 @@
+# Production Node Doctor Configuration
+# This is a comprehensive production-ready configuration with all recommended monitors,
+# exporters, and safety mechanisms enabled.
+#
+# To use this configuration:
+#   node-doctor --config=/path/to/production.yaml
+#
+# IMPORTANT: Review and customize this configuration for your environment:
+# - Adjust thresholds based on your workload
+# - Configure webhook URLs for HTTP exporter
+# - Set appropriate remediation cooldowns
+# - Review circuit breaker settings
+
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+
+metadata:
+  name: node-doctor-production
+  labels:
+    environment: production
+    managed-by: node-doctor
+    version: v0.1.0
+
+# Global settings - production defaults
+settings:
+  nodeName: "${NODE_NAME}"
+
+  # Production logging
+  logLevel: info        # Balance between visibility and noise
+  logFormat: json       # Structured logging for log aggregation
+  logOutput: stdout     # Send to stdout for container log collection
+
+  # Production intervals
+  updateInterval: 30s   # Update node conditions every 30 seconds
+  resyncInterval: 5m    # Full resync every 5 minutes
+  heartbeatInterval: 5m # Heartbeat every 5 minutes
+
+  # Enable remediation in production
+  enableRemediation: true
+  dryRunMode: false     # Actually execute remediation (not dry-run)
+
+  # Kubernetes client rate limiting
+  qps: 50               # Queries per second
+  burst: 100            # Burst capacity
+
+# Monitors - comprehensive production monitoring
+monitors:
+  # ==========================================
+  # SYSTEM HEALTH MONITORS
+  # ==========================================
+
+  # CPU Health - Load average and thermal monitoring
+  - name: cpu-health
+    type: system-cpu
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      loadAverageThresholds:
+        warning: 80
+        critical: 95
+      thermalThresholds:
+        warning: 85
+        critical: 95
+      cpuUsageThresholds:
+        warning: 85
+        critical: 95
+    # Remediation for high CPU (example - customize for your needs)
+    remediation:
+      enabled: false  # Disabled by default - enable with caution
+      strategy: custom-script
+      scriptPath: /usr/local/bin/remediate-high-cpu.sh
+      cooldown: 10m
+      maxAttempts: 2
+
+  # Memory Health - Memory and swap usage monitoring
+  - name: memory-health
+    type: system-memory
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      memoryThresholds:
+        warning: 85
+        critical: 95
+      swapThresholds:
+        warning: 50
+        critical: 80
+      oomDetection: true
+      kmsgPath: /dev/kmsg
+
+  # Disk Health - Disk space and I/O monitoring
+  - name: disk-health
+    type: system-disk
+    enabled: true
+    interval: 1m          # Less frequent for disk checks
+    timeout: 30s
+    config:
+      paths:
+        - path: "/"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/kubelet"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/docker"
+          warningThreshold: 80
+          criticalThreshold: 90
+        - path: "/var/lib/containerd"
+          warningThreshold: 80
+          criticalThreshold: 90
+      inodeThresholds:
+        warning: 85
+        critical: 95
+      readOnlyDetection: true
+      ioHealthCheck: true
+    # Remediation for disk pressure
+    remediation:
+      enabled: true
+      strategy: custom-script
+      scriptPath: /usr/local/bin/cleanup-disk.sh
+      cooldown: 30m     # Don't run cleanup too often
+      maxAttempts: 2
+
+  # ==========================================
+  # KUBERNETES COMPONENT MONITORS
+  # ==========================================
+
+  # Kubelet Health - Critical for node operation
+  - name: kubelet-health
+    type: kubernetes-kubelet-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      healthzURL: http://127.0.0.1:10248/healthz
+      checkSystemdStatus: true
+      plegThreshold: 10s
+    # Remediation: Restart kubelet if unhealthy
+    remediation:
+      enabled: true
+      strategy: systemd-restart
+      service: kubelet
+      gracefulStop: true
+      waitTimeout: 30s
+      cooldown: 10m     # Critical: Don't restart kubelet too often!
+      maxAttempts: 2
+
+  # API Server Health
+  - name: apiserver-health
+    type: kubernetes-apiserver-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      # Uses in-cluster kubeconfig automatically
+      warningLatency: 500   # 500ms warning
+      criticalLatency: 2000 # 2s critical
+
+  # Container Runtime Health
+  - name: runtime-health
+    type: kubernetes-runtime-check
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    config:
+      # Auto-detects runtime socket (Docker, containerd, CRI-O)
+      checkPods: true
+      timeout: 20s
+    # Remediation: Restart container runtime
+    remediation:
+      enabled: true
+      strategy: systemd-restart
+      service: containerd  # Or docker, crio depending on your runtime
+      gracefulStop: true
+      waitTimeout: 1m
+      cooldown: 15m       # Be conservative with runtime restarts
+      maxAttempts: 1      # Only try once per cooldown period
+
+  # Pod Capacity Monitoring
+  - name: capacity-health
+    type: kubernetes-capacity-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      warningThreshold: 80
+      criticalThreshold: 90
+      checkAllocatable: true
+
+  # ==========================================
+  # NETWORK HEALTH MONITORS
+  # ==========================================
+
+  # DNS Health
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      domains:
+        - kubernetes.default.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+        - google.com  # External DNS check
+      timeout: 3s
+
+  # Gateway Connectivity
+  - name: gateway-health
+    type: network-gateway-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      # Auto-detects default gateway
+      count: 3
+      warningLatency: 50  # 50ms
+      criticalLatency: 100 # 100ms
+
+  # External Connectivity
+  - name: connectivity-health
+    type: network-connectivity-check
+    enabled: true
+    interval: 2m
+    timeout: 15s
+    config:
+      endpoints:
+        - url: https://kubernetes.default.svc.cluster.local
+          timeout: 5s
+        - url: https://www.google.com
+          timeout: 5s
+      followRedirects: true
+
+# Exporters - all enabled for production visibility
+exporters:
+  # Kubernetes Exporter - Node conditions and events
+  kubernetes:
+    enabled: true
+    updateInterval: 30s
+    resyncInterval: 5m
+    heartbeatInterval: 5m
+    namespace: node-doctor
+
+    # Custom node conditions
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor is monitoring the node"
+
+    # Node annotations (optional - customize for your needs)
+    annotations:
+      - key: node-doctor.io/version
+        value: "${VERSION}"
+      - key: node-doctor.io/last-check
+        value: "${TIMESTAMP}"
+
+    # Event configuration
+    events:
+      maxEventsPerMinute: 10
+      eventTTL: 1h
+      deduplicationWindow: 5m
+
+  # HTTP Webhook Exporter - Send data to external systems
+  http:
+    enabled: true
+    workers: 5            # Worker pool for parallel webhook delivery
+    queueSize: 100        # Queue size for buffering
+    timeout: 30s          # Default timeout for webhooks
+
+    # Default retry configuration
+    retry:
+      maxAttempts: 3
+      baseDelay: 1s
+      maxDelay: 30s
+
+    # Default headers for all webhooks
+    headers:
+      User-Agent: "node-doctor/v0.1.0"
+      Content-Type: "application/json"
+
+    # Webhook endpoints
+    webhooks:
+      # Example: PagerDuty integration
+      - name: pagerduty
+        url: https://events.pagerduty.com/v2/enqueue
+        timeout: 10s
+        sendStatus: false    # Only send problems to PagerDuty
+        sendProblems: true
+        auth:
+          type: bearer
+          token: "${PAGERDUTY_TOKEN}"
+        retry:
+          maxAttempts: 5
+          baseDelay: 2s
+          maxDelay: 60s
+
+      # Example: Slack notifications
+      - name: slack-alerts
+        url: https://hooks.slack.com/services/${SLACK_WEBHOOK_PATH}
+        timeout: 10s
+        sendStatus: false
+        sendProblems: true
+        auth:
+          type: none
+
+      # Example: Internal monitoring system
+      - name: internal-monitoring
+        url: https://monitoring.internal.company.com/api/v1/node-health
+        timeout: 30s
+        sendStatus: true
+        sendProblems: true
+        auth:
+          type: basic
+          username: "${MONITORING_USER}"
+          password: "${MONITORING_PASSWORD}"
+
+  # Prometheus Metrics Exporter
+  prometheus:
+    enabled: true
+    port: 9101
+    path: /metrics
+    namespace: node_doctor
+    subsystem: monitor
+    labels:
+      cluster: "${CLUSTER_NAME}"
+      environment: production
+
+# Remediation - production safety configuration
+remediation:
+  enabled: true
+  dryRun: false         # Execute actual remediation
+
+  # Safety limits - conservative settings
+  maxRemediationsPerHour: 5    # Max 5 remediations per hour globally
+  maxRemediationsPerMinute: 1  # Max 1 remediation per minute
+  cooldownPeriod: 10m          # 10 minute global cooldown
+
+  # Global maximum attempts
+  maxAttemptsGlobal: 2
+
+  # Circuit breaker - stops remediation if too many failures
+  circuitBreaker:
+    enabled: true
+    threshold: 5              # Open circuit after 5 consecutive failures
+    timeout: 30m              # Keep circuit open for 30 minutes
+    successThreshold: 2       # Require 2 successes to close circuit
+
+  # History for audit trail
+  historySize: 200
+
+  # Problem-specific overrides
+  overrides:
+    # Be more conservative with kubelet restarts
+    - problem: "kubelet-unhealthy"
+      cooldown: 15m
+      maxAttempts: 1
+      circuitBreakerThreshold: 3
+
+    # Disk cleanup can be more frequent
+    - problem: "disk-space-critical"
+      cooldown: 20m
+      maxAttempts: 3
+
+    # Container runtime restarts should be very conservative
+    - problem: "container-runtime-unhealthy"
+      cooldown: 30m
+      maxAttempts: 1
+      circuitBreakerThreshold: 2
+
+# Features - production settings
+features:
+  enableMetrics: true
+  enableProfiling: false  # Disable profiling in production for security
+  enableTracing: false    # Enable if you have tracing infrastructure
+
+# Hot reload configuration
+reload:
+  enabled: true           # Enable hot reload for configuration updates
+  debounceInterval: 2s    # Wait 2 seconds for multiple changes

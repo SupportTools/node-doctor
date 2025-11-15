@@ -1,0 +1,408 @@
+# Custom Plugins and Advanced Features Configuration
+# This configuration demonstrates Node Doctor's extensibility through:
+# - Custom plugin monitors
+# - Log pattern monitoring
+# - Multi-step remediation strategies
+# - Custom script remediation
+# - Monitor dependencies
+#
+# Use this as a reference for implementing your own custom monitors and remediators.
+#
+# To use this configuration:
+#   node-doctor --config=/path/to/custom-plugins.yaml
+
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+
+metadata:
+  name: node-doctor-custom-plugins
+  labels:
+    purpose: extensibility-demonstration
+    features: custom-monitors
+
+# Global settings
+settings:
+  nodeName: "${NODE_NAME}"
+  logLevel: info
+  logFormat: json
+  logOutput: stdout
+
+# Monitors - demonstrating custom and advanced monitor types
+monitors:
+  # ==========================================
+  # CUSTOM PLUGIN MONITORS
+  # ==========================================
+  # Custom plugins allow you to integrate ANY monitoring logic
+  # by wrapping it in a simple executable that returns exit codes.
+
+  # Example 1: Custom hardware health check
+  - name: custom-hardware-check
+    type: custom-plugin
+    enabled: true
+    interval: 2m
+    timeout: 30s
+    config:
+      # Path to your custom monitoring script/binary
+      pluginPath: /usr/local/bin/check-hardware-health.sh
+
+      # Arguments to pass to the plugin
+      args:
+        - "--check-raid"
+        - "--check-fans"
+        - "--check-power"
+
+      # Exit code mapping (standard monitoring plugin format)
+      # 0 = OK, 1 = WARNING, 2 = CRITICAL, 3 = UNKNOWN
+      exitCodeMapping:
+        0: healthy
+        1: degraded
+        2: unhealthy
+        3: unknown
+
+    # Remediation: Alert operations team
+    remediation:
+      enabled: true
+      strategy: custom-script
+      scriptPath: /usr/local/bin/alert-ops-team.sh
+      args:
+        - "hardware-issue"
+        - "${NODE_NAME}"
+      cooldown: 1h
+      maxAttempts: 1
+
+  # Example 2: Custom application health check
+  - name: custom-app-health
+    type: custom-plugin
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      pluginPath: /usr/local/bin/check-critical-app.py
+      args:
+        - "--service=my-critical-service"
+        - "--port=9999"
+      exitCodeMapping:
+        0: healthy
+        1: degraded
+        2: unhealthy
+
+  # Example 3: Custom compliance check
+  - name: custom-compliance-check
+    type: custom-plugin
+    enabled: true
+    interval: 5m
+    timeout: 1m
+    config:
+      pluginPath: /usr/local/bin/compliance-checker
+      args:
+        - "--profile=cis-benchmark"
+        - "--level=1"
+      exitCodeMapping:
+        0: healthy
+        1: degraded
+        2: unhealthy
+
+  # ==========================================
+  # LOG PATTERN MONITORS
+  # ==========================================
+  # Monitor system logs for specific error patterns using regex
+
+  # Example 1: Kernel OOM events
+  - name: kernel-oom-monitor
+    type: custom-logpattern
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      # Patterns to match in logs (regex)
+      patterns:
+        # OOM killer patterns
+        - pattern: "Out of memory: Kill process"
+          severity: critical
+          description: "OOM killer invoked"
+
+        - pattern: "oom_reaper: reaped process"
+          severity: critical
+          description: "Process killed by OOM"
+
+        # Memory pressure warnings
+        - pattern: "page allocation failure"
+          severity: warning
+          description: "Memory allocation failure"
+
+      # Check kernel messages
+      checkKmsg: true
+      kmsgPath: /dev/kmsg
+
+      # Check systemd journal
+      checkJournal: true
+      journalUnits:
+        - kubelet
+        - docker
+        - containerd
+
+  # Example 2: Container runtime errors
+  - name: runtime-error-monitor
+    type: custom-logpattern
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      patterns:
+        # Containerd errors
+        - pattern: 'containerd.*error.*creating container'
+          severity: critical
+          description: "Container creation failure"
+
+        - pattern: 'containerd.*failed to start container'
+          severity: critical
+          description: "Container start failure"
+
+        # Docker errors (if using Docker)
+        - pattern: 'docker.*Error response from daemon'
+          severity: warning
+          description: "Docker daemon error"
+
+      checkJournal: true
+      journalUnits:
+        - containerd
+        - docker
+
+  # Example 3: Network errors
+  - name: network-error-monitor
+    type: custom-logpattern
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      patterns:
+        # CNI plugin errors
+        - pattern: 'CNI plugin.*failed'
+          severity: critical
+          description: "CNI plugin failure"
+
+        # Network unreachable
+        - pattern: 'Network is unreachable'
+          severity: critical
+          description: "Network unreachable"
+
+        # Interface down
+        - pattern: 'link is not ready'
+          severity: warning
+          description: "Network interface not ready"
+
+      checkKmsg: true
+      checkJournal: true
+      journalUnits:
+        - kubelet
+        - networkd
+
+  # ==========================================
+  # STANDARD MONITORS WITH DEPENDENCIES
+  # ==========================================
+  # Monitor dependencies ensure monitors run in the correct order
+
+  # Base monitor - runs first
+  - name: network-base-check
+    type: network-connectivity-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      endpoints:
+        - url: https://kubernetes.default.svc.cluster.local
+          timeout: 5s
+    # No dependencies - this runs first
+
+  # Dependent monitor - only runs if network-base-check succeeds
+  - name: api-detailed-check
+    type: kubernetes-apiserver-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    dependsOn:
+      - network-base-check  # Only run if network is working
+    config:
+      warningLatency: 500
+      criticalLatency: 2000
+
+  # ==========================================
+  # MULTI-STEP REMEDIATION STRATEGIES
+  # ==========================================
+  # Demonstrate escalating remediation strategies
+
+  - name: kubelet-advanced
+    type: kubernetes-kubelet-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      healthzURL: http://127.0.0.1:10248/healthz
+      checkSystemdStatus: true
+
+    # Multi-step remediation: Try gentle fixes first, escalate if needed
+    remediation:
+      enabled: true
+
+      # Primary strategy: Restart kubelet service
+      strategy: systemd-restart
+      service: kubelet
+      gracefulStop: true
+      waitTimeout: 30s
+      cooldown: 10m
+      maxAttempts: 2
+      priority: 1  # Try this first
+
+      # Backup strategies (nested)
+      strategies:
+        # If kubelet restart fails, try clearing CNI cache
+        - strategy: custom-script
+          scriptPath: /usr/local/bin/clear-cni-cache.sh
+          cooldown: 15m
+          maxAttempts: 1
+          priority: 2
+
+          # If that fails too, try full network reset
+          strategies:
+            - strategy: custom-script
+              scriptPath: /usr/local/bin/reset-network.sh
+              cooldown: 30m
+              maxAttempts: 1
+              priority: 3
+
+  # Example: Disk cleanup with progressive strategies
+  - name: disk-with-cleanup
+    type: system-disk
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    config:
+      paths:
+        - path: "/"
+          warningThreshold: 85
+          criticalThreshold: 95
+
+    remediation:
+      enabled: true
+
+      # Step 1: Clean temp files
+      strategy: custom-script
+      scriptPath: /usr/local/bin/clean-temp-files.sh
+      cooldown: 30m
+      maxAttempts: 1
+      priority: 1
+
+      strategies:
+        # Step 2: Clean old logs
+        - strategy: custom-script
+          scriptPath: /usr/local/bin/clean-old-logs.sh
+          cooldown: 1h
+          maxAttempts: 1
+          priority: 2
+
+          strategies:
+            # Step 3: Clean container images
+            - strategy: custom-script
+              scriptPath: /usr/local/bin/clean-container-images.sh
+              cooldown: 2h
+              maxAttempts: 1
+              priority: 3
+
+# Exporters
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: node-doctor
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor with custom plugins is running"
+    events:
+      maxEventsPerMinute: 10
+      eventTTL: 1h
+      deduplicationWindow: 5m
+
+  prometheus:
+    enabled: true
+    port: 9101
+    path: /metrics
+    namespace: node_doctor
+    labels:
+      config_type: custom-plugins
+
+# Remediation configuration
+remediation:
+  enabled: true
+  dryRun: false
+
+  # Allow more remediations for custom scripts
+  maxRemediationsPerHour: 10
+  maxRemediationsPerMinute: 2
+  cooldownPeriod: 5m
+  maxAttemptsGlobal: 3
+
+  # Circuit breaker
+  circuitBreaker:
+    enabled: true
+    threshold: 5
+    timeout: 30m
+    successThreshold: 2
+
+# Features
+features:
+  enableMetrics: true
+  enableProfiling: false
+  enableTracing: false
+
+# Hot reload
+reload:
+  enabled: true
+  debounceInterval: 1s
+
+# ==========================================
+# NOTES FOR CUSTOM PLUGIN DEVELOPMENT
+# ==========================================
+#
+# To create a custom monitoring plugin:
+# 1. Create an executable (script, binary, etc.) that:
+#    - Performs your monitoring check
+#    - Returns exit code: 0=OK, 1=WARNING, 2=CRITICAL, 3=UNKNOWN
+#    - Optionally prints details to stdout
+#    - Runs within the timeout period
+#
+# 2. Place the executable in a location accessible to Node Doctor
+#    (e.g., /usr/local/bin/)
+#
+# 3. Make it executable: chmod +x /path/to/plugin
+#
+# 4. Test it manually: /path/to/plugin && echo "OK" || echo "FAILED"
+#
+# 5. Add it to your configuration as shown in the examples above
+#
+# Example plugin script (/usr/local/bin/check-hardware-health.sh):
+# ```bash
+# #!/bin/bash
+# # Check RAID status
+# if mdadm --detail /dev/md0 | grep -q "State : clean"; then
+#     echo "RAID healthy"
+#     exit 0
+# else
+#     echo "RAID degraded"
+#     exit 2
+# fi
+# ```
+#
+# For log pattern monitoring:
+# - Use regex patterns to match log lines
+# - Patterns are checked against kernel messages (/dev/kmsg)
+#   and systemd journal units
+# - Set appropriate severity levels (warning, critical)
+# - Be careful with regex performance on high-volume logs
+#
+# For multi-step remediation:
+# - Strategies are nested and executed in priority order
+# - Lower priority number = executed first
+# - Each strategy has its own cooldown and max attempts
+# - Failed strategies trigger the next nested strategy
+# - Maximum nesting depth: 10 levels

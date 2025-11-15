@@ -1,0 +1,258 @@
+# Development Node Doctor Configuration
+# This configuration is optimized for local development and debugging.
+# Features: debug logging, all monitors enabled, short intervals, dry-run remediation
+#
+# To use this configuration:
+#   node-doctor --config=/path/to/development.yaml
+
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+
+metadata:
+  name: node-doctor-dev
+  labels:
+    environment: development
+    purpose: debugging
+
+# Global settings - optimized for development
+settings:
+  nodeName: "${NODE_NAME}"
+
+  # Debug logging for maximum visibility
+  logLevel: debug       # Show all log messages
+  logFormat: text       # Human-readable format (not JSON)
+  logOutput: stdout
+
+  # Shorter intervals for faster feedback during development
+  updateInterval: 5s    # Update every 5 seconds
+  resyncInterval: 30s   # Resync every 30 seconds
+  heartbeatInterval: 1m # Heartbeat every minute
+
+  # Development remediation settings
+  enableRemediation: true
+  dryRunMode: true      # NEVER actually execute remediation in dev
+
+  # Kubernetes client configuration
+  qps: 10               # Lower QPS for local testing
+  burst: 20             # Lower burst for local testing
+
+# Monitors - enable all types for comprehensive testing
+monitors:
+  # System CPU Monitor
+  - name: cpu-health
+    type: system-cpu
+    enabled: true
+    interval: 15s       # Short interval for development
+    timeout: 5s
+    config:
+      loadAverageThresholds:
+        warning: 80
+        critical: 95
+      thermalThresholds:
+        warning: 85
+        critical: 95
+      cpuUsageThresholds:
+        warning: 85
+        critical: 95
+
+  # System Memory Monitor
+  - name: memory-health
+    type: system-memory
+    enabled: true
+    interval: 15s
+    timeout: 5s
+    config:
+      memoryThresholds:
+        warning: 85
+        critical: 95
+      swapThresholds:
+        warning: 50
+        critical: 80
+      oomDetection: true
+      kmsgPath: /dev/kmsg
+
+  # System Disk Monitor
+  - name: disk-health
+    type: system-disk
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      paths:
+        - path: "/"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/kubelet"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/docker"
+          warningThreshold: 80
+          criticalThreshold: 90
+        - path: "/var/lib/containerd"
+          warningThreshold: 80
+          criticalThreshold: 90
+      inodeThresholds:
+        warning: 85
+        critical: 95
+      readOnlyDetection: true
+      ioHealthCheck: true
+
+  # Kubelet Health Monitor
+  - name: kubelet-health
+    type: kubernetes-kubelet-check
+    enabled: true
+    interval: 20s
+    timeout: 5s
+    config:
+      healthzURL: http://127.0.0.1:10248/healthz
+      checkSystemdStatus: true
+      plegThreshold: 10s
+
+  # API Server Monitor
+  - name: apiserver-health
+    type: kubernetes-apiserver-check
+    enabled: true
+    interval: 20s
+    timeout: 5s
+    config:
+      # Will use in-cluster config
+      warningLatency: 500
+      criticalLatency: 2000
+
+  # Container Runtime Monitor
+  - name: runtime-health
+    type: kubernetes-runtime-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      # Auto-detect runtime socket
+      checkPods: true
+
+  # Pod Capacity Monitor
+  - name: capacity-health
+    type: kubernetes-capacity-check
+    enabled: true
+    interval: 30s
+    timeout: 5s
+    config:
+      warningThreshold: 80
+      criticalThreshold: 90
+      checkAllocatable: true
+
+  # DNS Check
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 30s
+    timeout: 5s
+    config:
+      domains:
+        - kubernetes.default.svc.cluster.local
+        - google.com
+      timeout: 2s
+
+  # Gateway Check
+  - name: gateway-health
+    type: network-gateway-check
+    enabled: true
+    interval: 30s
+    timeout: 5s
+    config:
+      # Auto-detect default gateway
+      count: 3
+      warningLatency: 50
+      criticalLatency: 100
+
+  # Connectivity Check
+  - name: connectivity-health
+    type: network-connectivity-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      endpoints:
+        - url: https://kubernetes.default.svc.cluster.local
+          timeout: 5s
+        - url: https://www.google.com
+          timeout: 5s
+      followRedirects: true
+
+# Exporters - enable all for development testing
+exporters:
+  # Kubernetes exporter
+  kubernetes:
+    enabled: true
+    updateInterval: 10s
+    resyncInterval: 30s
+    heartbeatInterval: 1m
+    namespace: node-doctor
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor is monitoring the node"
+    events:
+      maxEventsPerMinute: 20  # Higher rate for development
+      eventTTL: 30m           # Shorter TTL
+      deduplicationWindow: 2m # Shorter window
+
+  # HTTP webhook exporter - example with local webhook
+  http:
+    enabled: true
+    workers: 2
+    queueSize: 50
+    timeout: 10s
+    retry:
+      maxAttempts: 2
+      baseDelay: 1s
+      maxDelay: 5s
+    webhooks:
+      - name: local-webhook
+        url: http://localhost:8080/webhook
+        timeout: 5s
+        sendStatus: true
+        sendProblems: true
+        auth:
+          type: none
+
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    port: 9101
+    path: /metrics
+    namespace: node_doctor
+    subsystem: monitor
+    labels:
+      environment: development
+      cluster: local
+
+# Remediation - enabled but in dry-run mode
+remediation:
+  enabled: true
+  dryRun: true          # CRITICAL: Never actually execute in dev
+
+  # Relaxed limits for testing
+  maxRemediationsPerHour: 20
+  maxRemediationsPerMinute: 5
+  cooldownPeriod: 1m    # Short cooldown for testing
+
+  # Global settings
+  maxAttemptsGlobal: 2
+  historySize: 50
+
+  # Circuit breaker disabled for development
+  circuitBreaker:
+    enabled: false
+
+# Features - enable all for development
+features:
+  enableMetrics: true
+  enableProfiling: true   # Enable profiling on port 6060
+  profilingPort: 6060
+  enableTracing: false    # Tracing can be added later
+
+# Hot reload configuration
+reload:
+  enabled: true           # Enable hot reload for development
+  debounceInterval: 500ms # Quick reload

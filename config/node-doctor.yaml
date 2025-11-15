@@ -1,5 +1,22 @@
+# Node Doctor Default Configuration
+# This is the default production-ready configuration for Node Doctor.
+# It provides comprehensive node monitoring with sensible defaults.
+#
+# Configuration can be customized via:
+# 1. Editing this file directly
+# 2. Using ConfigMap in Kubernetes deployments
+# 3. Environment variable substitution (e.g., ${NODE_NAME})
+# 4. Hot reload (enabled by default)
+#
+# See config/examples/ for additional configuration templates:
+# - minimal.yaml: Bare minimum configuration
+# - development.yaml: Development/debugging setup
+# - production.yaml: Full production configuration
+# - custom-plugins.yaml: Custom monitors and plugins
+
 apiVersion: node-doctor.io/v1alpha1
 kind: NodeDoctorConfig
+
 metadata:
   name: default-config
   namespace: kube-system
@@ -7,20 +24,105 @@ metadata:
     app: node-doctor
     version: v1alpha1
 
+# Global settings
 settings:
+  # Node name - typically populated from environment variable
   nodeName: "${NODE_NAME}"
-  logLevel: info
-  logFormat: json
-  logOutput: stdout
-  updateInterval: 10s
-  resyncInterval: 60s
-  heartbeatInterval: 5m
-  enableRemediation: true
-  dryRunMode: false
-  qps: 50
-  burst: 100
 
+  # Logging configuration
+  logLevel: info        # Options: debug, info, warn, error, fatal
+  logFormat: json       # Options: json, text
+  logOutput: stdout     # Options: stdout, stderr, file
+
+  # Update intervals
+  updateInterval: 10s       # How often to update node conditions
+  resyncInterval: 60s       # How often to perform full reconciliation
+  heartbeatInterval: 5m     # How often to send heartbeat
+
+  # Remediation master switches
+  enableRemediation: true   # Global remediation enable/disable
+  dryRunMode: false         # Set to true to log actions without executing
+
+  # Kubernetes client configuration
+  qps: 50       # Queries per second to API server
+  burst: 100    # Burst capacity for API requests
+
+# Monitors - comprehensive node health monitoring
 monitors:
+  # ==========================================
+  # SYSTEM HEALTH MONITORS
+  # ==========================================
+
+  # CPU Health Monitor
+  - name: cpu-health
+    type: system-cpu
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      loadAverageThresholds:
+        warning: 80
+        critical: 95
+      thermalThresholds:
+        warning: 85
+        critical: 95
+      cpuUsageThresholds:
+        warning: 85
+        critical: 95
+
+  # Memory Health Monitor
+  - name: memory-health
+    type: system-memory
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      memoryThresholds:
+        warning: 85
+        critical: 95
+      swapThresholds:
+        warning: 50
+        critical: 80
+      oomDetection: true
+      kmsgPath: /dev/kmsg
+
+  # Disk Health Monitor
+  - name: disk-health
+    type: system-disk
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    config:
+      paths:
+        - path: "/"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/kubelet"
+          warningThreshold: 85
+          criticalThreshold: 95
+        - path: "/var/lib/docker"
+          warningThreshold: 80
+          criticalThreshold: 90
+        - path: "/var/lib/containerd"
+          warningThreshold: 80
+          criticalThreshold: 90
+      inodeThresholds:
+        warning: 85
+        critical: 95
+      readOnlyDetection: true
+      ioHealthCheck: true
+    remediation:
+      enabled: true
+      strategy: custom-script
+      scriptPath: /usr/local/bin/cleanup-docker-logs.sh
+      cooldown: 1h
+      maxAttempts: 1
+
+  # ==========================================
+  # KUBERNETES COMPONENT MONITORS
+  # ==========================================
+
+  # Kubelet Health Monitor
   - name: kubelet-health
     type: kubernetes-kubelet-check
     enabled: true
@@ -29,69 +131,95 @@ monitors:
     config:
       healthzURL: http://127.0.0.1:10248/healthz
       checkSystemdStatus: true
+      plegThreshold: 10s
     remediation:
       enabled: true
       strategy: systemd-restart
       service: kubelet
-      cooldown: 5m
-      maxAttempts: 3
+      cooldown: 10m
+      maxAttempts: 2
       gracefulStop: true
       waitTimeout: 30s
 
-  - name: disk-health
-    type: system-disk-check
-    enabled: true
-    interval: 5m
-    timeout: 30s
-    config:
-      paths:
-        - path: "/"
-          warningThreshold: 85
-          criticalThreshold: 95
-        - path: "/var/lib/docker"
-          warningThreshold: 80
-          criticalThreshold: 90
-        - path: "/var/lib/kubelet"
-          warningThreshold: 80
-          criticalThreshold: 90
-    remediation:
-      enabled: true
-      strategy: custom-script
-      scriptPath: /usr/local/bin/cleanup-docker-logs.sh
-      cooldown: 1h
-      maxAttempts: 1
-
-  - name: containerd-health
-    type: runtime-containerd-check
+  # Container Runtime Health Monitor
+  - name: runtime-health
+    type: kubernetes-runtime-check
     enabled: true
     interval: 1m
     timeout: 15s
     config:
-      socketPath: /run/containerd/containerd.sock
+      # Auto-detects runtime socket (Docker, containerd, CRI-O)
       checkPods: true
+      timeout: 10s
     remediation:
       enabled: true
       strategy: systemd-restart
-      service: containerd
-      cooldown: 10m
-      maxAttempts: 2
+      service: containerd  # Change to 'docker' or 'crio' if using different runtime
+      cooldown: 15m
+      maxAttempts: 1
 
+  # Pod Capacity Monitor
+  - name: capacity-health
+    type: kubernetes-capacity-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      warningThreshold: 80
+      criticalThreshold: 90
+      checkAllocatable: true
+
+  # ==========================================
+  # NETWORK HEALTH MONITORS
+  # ==========================================
+
+  # DNS Health Monitor
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      domains:
+        - kubernetes.default.svc.cluster.local
+        - google.com
+      timeout: 3s
+
+  # Gateway Connectivity Monitor
+  - name: gateway-health
+    type: network-gateway-check
+    enabled: true
+    interval: 1m
+    timeout: 10s
+    config:
+      # Auto-detects default gateway
+      count: 3
+      warningLatency: 50
+      criticalLatency: 100
+
+# Exporters - export monitoring data to various systems
 exporters:
+  # Kubernetes Exporter - Updates node conditions and creates events
   kubernetes:
     enabled: true
     updateInterval: 10s
     resyncInterval: 60s
     heartbeatInterval: 5m
     namespace: default
+
+    # Custom node conditions
     conditions:
       - type: NodeDoctorHealthy
         defaultStatus: "True"
         defaultReason: "NodeDoctorRunning"
         defaultMessage: "Node Doctor is running and monitoring the node"
+
       - type: KubeletHealthy
         defaultStatus: "Unknown"
         defaultReason: "NotYetChecked"
         defaultMessage: "Kubelet health not yet verified"
+
+    # Node annotations to manage
     annotations:
       - key: node-doctor.io/status
         value: "healthy"
@@ -99,36 +227,37 @@ exporters:
         value: "${VERSION}"
       - key: node-doctor.io/last-check
         value: "${TIMESTAMP}"
+
+    # Event configuration
     events:
       maxEventsPerMinute: 10
       eventTTL: 1h
       deduplicationWindow: 5m
 
+  # HTTP Webhook Exporter - Send data to external systems
+  # This exporter is disabled by default. Enable and configure webhooks as needed.
   http:
-    enabled: true
-    bindAddress: "0.0.0.0"
-    hostPort: 8080
-    tlsEnabled: false
-    endpoints:
-      - path: /health
-        handler: overall-health
-        description: "Overall node health status"
-      - path: /healthz
-        handler: overall-health
-        description: "Kubernetes-style health endpoint"
-      - path: /ready
-        handler: readiness
-        description: "Readiness check"
-      - path: /metrics
-        handler: prometheus-metrics
-        description: "Prometheus metrics endpoint"
-      - path: /status
-        handler: detailed-status
-        description: "Detailed node and monitor status"
+    enabled: false
+    workers: 5
+    queueSize: 100
+    timeout: 30s
+    retry:
+      maxAttempts: 3
+      baseDelay: 1s
+      maxDelay: 30s
+    # Uncomment and configure webhooks as needed:
+    # webhooks:
+    #   - name: example-webhook
+    #     url: https://example.com/webhook
+    #     sendStatus: true
+    #     sendProblems: true
+    #     auth:
+    #       type: none
 
+  # Prometheus Metrics Exporter
   prometheus:
     enabled: true
-    port: 9100
+    port: 9101          # Note: Using 9101 to avoid conflict with node-exporter on 9100
     path: /metrics
     namespace: node_doctor
     subsystem: monitor
@@ -136,32 +265,53 @@ exporters:
       environment: production
       cluster: main
 
+# Remediation - automated problem remediation configuration
 remediation:
   enabled: true
   dryRun: false
+
+  # Safety limits
   maxRemediationsPerHour: 10
   maxRemediationsPerMinute: 2
   cooldownPeriod: 5m
   maxAttemptsGlobal: 3
+
+  # Circuit breaker - stops remediation if too many failures
   circuitBreaker:
     enabled: true
-    threshold: 5
-    timeout: 30m
-    successThreshold: 2
+    threshold: 5              # Open circuit after 5 consecutive failures
+    timeout: 30m              # Keep circuit open for 30 minutes
+    successThreshold: 2       # Require 2 successes to close circuit
+
+  # History for audit trail
   historySize: 100
+
+  # Problem-specific overrides
   overrides:
     - problem: kubelet-unhealthy
-      cooldown: 3m
-      maxAttempts: 5
-      circuitBreakerThreshold: 10
+      cooldown: 10m
+      maxAttempts: 2
+      circuitBreakerThreshold: 3
+
     - problem: disk-pressure
       cooldown: 30m
       maxAttempts: 2
       circuitBreakerThreshold: 3
 
+    - problem: container-runtime-unhealthy
+      cooldown: 15m
+      maxAttempts: 1
+      circuitBreakerThreshold: 2
+
+# Features - optional feature flags
 features:
   enableMetrics: true
-  enableProfiling: false
+  enableProfiling: false  # Enable for debugging (port 6060)
   profilingPort: 6060
   enableTracing: false
   tracingEndpoint: ""
+
+# Hot reload configuration - allows config updates without restart
+reload:
+  enabled: true
+  debounceInterval: 2s  # Wait for multiple changes before reloading
