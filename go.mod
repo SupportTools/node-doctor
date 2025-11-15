@@ -3,6 +3,7 @@ module github.com/supporttools/node-doctor
 go 1.21
 
 require (
+	github.com/fsnotify/fsnotify v1.7.0
 	github.com/prometheus/client_golang v1.17.0
 	github.com/prometheus/client_model v0.4.1-0.20230718164431-9a2bf3000d16
 	golang.org/x/net v0.13.0

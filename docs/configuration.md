@@ -1,646 +1,688 @@
 # Node Doctor Configuration Reference
 
+**Source:** `pkg/types/config.go:1457`
+
 ## Overview
 
-Node Doctor uses a declarative configuration system based on YAML (primary) with JSON support for Node Problem Detector compatibility. Configuration can be loaded from multiple sources with a clear precedence order.
+Node Doctor uses a declarative configuration system based on YAML with support for environment variable substitution, comprehensive validation, and dynamic updates. The configuration schema is defined in `pkg/types/config.go` and follows Kubernetes-style resource definitions.
 
 ## Configuration Sources and Precedence
 
 Configuration is loaded from multiple sources in this order (later sources override earlier ones):
 
-1. **Embedded Defaults**: Compiled into the binary
+1. **Embedded Defaults**: Compiled into the binary (`pkg/types/config.go:12-38`)
 2. **ConfigMap**: Mounted at `/etc/node-doctor/config.yaml`
-3. **Environment Variables**: Override specific values
+3. **Environment Variables**: Override specific values via `${VAR}` syntax
 4. **Command-Line Flags**: Highest precedence
 
-## Complete Configuration Example
+## Configuration Schema
+
+### Top-Level Structure
 
 ```yaml
-apiVersion: node-doctor.io/v1alpha1
-kind: NodeDoctorConfig
-metadata:
-  name: default-config
-  namespace: kube-system
+apiVersion: node-doctor.io/v1alpha1  # Required
+kind: NodeDoctorConfig               # Required
+metadata:                            # Required
+  name: string                       # Required
+  namespace: string                  # Optional
+  labels:                            # Optional
+    key: value
+settings:                            # Global settings
+  # See Global Settings section
+monitors:                            # List of monitor configurations
+  - name: string
+    # See Monitors section
+exporters:                           # Exporter configurations
+  # See Exporters section
+remediation:                         # Remediation settings
+  # See Remediation section
+features:                            # Feature flags
+  # See Features section
+```
 
-# Global settings
+## Global Settings
+
+**Source:** `pkg/types/config.go:110-139`
+
+```yaml
 settings:
-  # Node name (from downward API or hostname)
-  nodeName: "${NODE_NAME}"
+  # Node identification
+  nodeName: "${NODE_NAME}"           # Required, usually from downward API
 
   # Logging configuration
-  logLevel: info  # debug, info, warn, error
-  logFormat: json  # json, text
-  logOutput: stdout  # stdout, stderr, file
-  logFile: /var/log/node-doctor.log
+  logLevel: info                     # Default: "info"
+  logFormat: json                    # Default: "json"
+  logOutput: stdout                  # Default: "stdout"
+  logFile: ""                        # Required if logOutput: file
 
   # Update intervals
-  updateInterval: 10s
-  resyncInterval: 60s
-  heartbeatInterval: 5m
+  updateInterval: 10s                # Default: "10s"
+  resyncInterval: 60s                # Default: "60s"
+  heartbeatInterval: 5m              # Default: "5m"
 
-  # Remediation settings
-  enableRemediation: true
-  dryRunMode: false
+  # Remediation master switches
+  enableRemediation: true            # Default: false
+  dryRunMode: false                  # Default: false
 
   # Kubernetes client configuration
-  kubeconfig: ""  # Empty for in-cluster
-  qps: 50
-  burst: 100
+  kubeconfig: ""                     # Default: "" (in-cluster)
+  qps: 50                            # Default: 50 (max: 10000)
+  burst: 100                         # Default: 100 (max: 100000)
+```
 
-# Monitors configuration
+### Global Settings Defaults
+
+**Source:** `pkg/types/config.go:12-38`
+
+| Field | Default | Valid Values | Description |
+|-------|---------|--------------|-------------|
+| `logLevel` | `info` | debug, info, warn, error, fatal | Logging verbosity |
+| `logFormat` | `json` | json, text | Log output format |
+| `logOutput` | `stdout` | stdout, stderr, file | Log destination |
+| `updateInterval` | `10s` | > 0 | Kubernetes API update interval |
+| `resyncInterval` | `60s` | > 0 | Full resynchronization interval |
+| `heartbeatInterval` | `5m` | > 0 | Condition update interval |
+| `qps` | `50` | > 0, ≤ 10000 | Kubernetes API QPS limit |
+| `burst` | `100` | > 0, ≤ 100000 | Kubernetes API burst limit |
+
+### Global Settings Validation
+
+**Source:** `pkg/types/config.go:875-936`
+
+- ✅ `nodeName` must not be empty
+- ✅ `logLevel` must be one of: debug, info, warn, error, fatal
+- ✅ `logFormat` must be one of: json, text
+- ✅ `logOutput` must be one of: stdout, stderr, file
+- ✅ `logFile` required when `logOutput: file`
+- ✅ All intervals must be positive durations
+- ✅ `heartbeatInterval` must be ≥ MinHeartbeatInterval (5 seconds)
+- ✅ `qps` must be > 0 and ≤ 10000
+- ✅ `burst` must be > 0 and ≤ 100000
+
+## Monitor Configuration
+
+**Source:** `pkg/types/config.go:141-166`
+
+Each monitor follows this structure:
+
+```yaml
 monitors:
-  # System Health Monitors
-  - name: cpu-health
-    type: system-cpu-check
-    enabled: true
-    interval: 30s
-    timeout: 10s
-    config:
-      warningLoadFactor: 0.8
-      criticalLoadFactor: 1.5
-      checkThermalEvents: true
-      thermalThreshold: 50  # percent of max frequency
+  - name: monitor-name               # Required, unique identifier
+    type: monitor-type               # Required, from monitor registry
+    enabled: true                    # Default: false
+    interval: 30s                    # Default: "30s"
+    timeout: 10s                     # Default: "10s"
+    dependsOn: []                    # Optional, list of monitor names this depends on
+    config:                          # Monitor-specific configuration
+      # Fields vary by monitor type
+    remediation:                     # Optional remediation config
+      # See Remediation section
+```
 
-  - name: memory-health
-    type: system-memory-check
-    enabled: true
-    interval: 30s
-    timeout: 10s
-    config:
-      warningThreshold: 20  # percent available
-      criticalThreshold: 10
-      swapThreshold: 50
-      checkOOMKills: true
-      checkPSI: true  # Pressure Stall Information
+### Monitor Dependencies
 
+**Source:** `pkg/types/config.go:169`
+
+Monitors can declare dependencies on other monitors using the `dependsOn` field. This allows you to enforce execution order and prevent circular dependencies:
+
+```yaml
+monitors:
   - name: disk-health
     type: system-disk-check
     enabled: true
-    interval: 5m
-    timeout: 30s
-    config:
-      paths:
-        - path: "/"
-          warningThreshold: 85
-          criticalThreshold: 95
-        - path: "/var/lib/docker"
-          warningThreshold: 80
-          criticalThreshold: 90
-        - path: "/var/lib/kubelet"
-          warningThreshold: 80
-          criticalThreshold: 90
-      checkInodes: true
-      inodeWarningThreshold: 90
-      checkReadonly: true
-      checkSMART: false
-    remediation:
-      enabled: true
-      strategies:
-        - strategy: disk
-          action: docker-logs
-          priority: 1
-          cooldown: 1h
-          maxAttempts: 1
-        - strategy: disk
-          action: docker-images
-          priority: 2
-          cooldown: 6h
-          maxAttempts: 1
-        - strategy: disk
-          action: system-logs
-          priority: 3
-          cooldown: 12h
-          maxAttempts: 1
-
-  # Network Health Monitors
-  - name: dns-health
-    type: network-dns-check
-    enabled: true
-    interval: 60s
-    timeout: 10s
-    config:
-      clusterDomains:
-        - kubernetes.default.svc.cluster.local
-        - kube-dns.kube-system.svc.cluster.local
-      externalDomains:
-        - google.com
-        - cloudflare.com
-      customQueries:
-        - domain: myservice.mynamespace.svc.cluster.local
-          recordType: A
-      latencyThreshold: 1s
-      retries: 3
-      nameservers:
-        - /etc/resolv.conf
-    remediation:
-      enabled: true
-      strategy: network
-      action: flush-dns
-      cooldown: 10m
-      maxAttempts: 2
-
-  - name: gateway-health
-    type: network-gateway-check
-    enabled: true
-    interval: 30s
-    timeout: 5s
-    config:
-      pingCount: 3
-      pingTimeout: 1s
-      latencyThreshold: 100ms
-      autoDetectGateway: true
-      manualGateway: ""  # Override auto-detection
-      packetLossThreshold: 50  # percent
-
-  - name: connectivity-health
-    type: network-connectivity-check
-    enabled: true
-    interval: 60s
-    timeout: 10s
-    config:
-      endpoints:
-        - url: https://google.com
-          method: HEAD
-          expectedStatusCode: 200
-          timeout: 5s
-        - url: https://kubernetes.io
-          method: GET
-          expectedStatusCode: 200
-          timeout: 5s
-      interfaces:
-        - name: eth0
-          expectUp: true
-        - name: docker0
-          expectUp: true
-
-  # Kubernetes Component Monitors
-  - name: kubelet-health
-    type: kubernetes-kubelet-check
-    enabled: true
-    interval: 30s
-    timeout: 10s
-    config:
-      healthzURL: http://127.0.0.1:10248/healthz
-      metricsURL: http://127.0.0.1:10255/metrics
-      checkSystemdStatus: true
-      checkLogs: true
-      plegThreshold: 5s
-      logErrorPatterns:
-        - "Failed to.*"
-        - "Error:.*"
-    remediation:
-      enabled: true
-      strategy: systemd-restart
-      service: kubelet
-      cooldown: 5m
-      maxAttempts: 3
-      gracefulStop: true
-      waitTimeout: 30s
-
-  - name: apiserver-health
-    type: kubernetes-apiserver-check
-    enabled: true
-    interval: 60s
-    timeout: 10s
-    config:
-      endpoint: https://kubernetes.default.svc.cluster.local
-      latencyThreshold: 2s
-      checkVersion: true
-      checkAuth: true
-      retries: 3
 
   - name: runtime-health
     type: kubernetes-runtime-check
     enabled: true
-    interval: 60s
-    timeout: 10s
-    config:
-      runtimeType: auto  # auto, docker, containerd, cri-o
-      dockerSocket: /var/run/docker.sock
-      containerdSocket: /run/containerd/containerd.sock
-      crioSocket: /var/run/crio/crio.sock
-      checkContainers: true
-      checkImages: true
-      checkSystemdStatus: true
-    remediation:
-      enabled: true
-      strategy: systemd-restart
-      cooldown: 15m
-      maxAttempts: 2
-      gracefulStop: true
+    dependsOn:
+      - disk-health          # Runtime check depends on disk check
 
-  - name: pod-capacity
-    type: kubernetes-capacity-check
+  - name: kubelet-health
+    type: kubernetes-kubelet-check
     enabled: true
-    interval: 5m
-    timeout: 30s
+    dependsOn:
+      - runtime-health       # Kubelet depends on runtime
+      - disk-health          # Kubelet also depends on disk
+```
+
+**Dependency Validation** (`pkg/types/config.go:1478-1539`):
+- All referenced monitors must exist in the configuration
+- Circular dependencies are detected using depth-first search
+- Self-dependencies are not allowed
+- Dependency chains can be arbitrarily deep (no limit)
+
+**Example Circular Dependency Detection:**
+```yaml
+# ❌ Invalid: Circular dependency
+monitors:
+  - name: monitor-a
+    dependsOn: [monitor-b]
+  - name: monitor-b
+    dependsOn: [monitor-c]
+  - name: monitor-c
+    dependsOn: [monitor-a]    # Creates cycle: A → B → C → A
+```
+
+Error message: `circular dependency detected in monitors: monitor-a → monitor-b → monitor-c → monitor-a`
+
+### Monitor Configuration Defaults
+
+**Source:** `pkg/types/config.go:26-27`
+
+| Field | Default | Validation |
+|-------|---------|------------|
+| `interval` | `30s` | Must be ≥ 1s (MinMonitorInterval) |
+| `timeout` | `10s` | Must be > 0 and < interval |
+
+### Monitor Interval Minimums
+
+**Source:** `pkg/types/config.go:75-78`
+
+To prevent system overload from excessive polling, Node Doctor enforces minimum interval thresholds:
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MinMonitorInterval` | 1 second | Minimum monitor check interval |
+| `MinHeartbeatInterval` | 5 seconds | Minimum heartbeat update interval |
+| `MinCooldownPeriod` | 10 seconds | Minimum remediation cooldown |
+
+These conservative minimums ensure Node Doctor doesn't overwhelm the system with excessive API calls, disk I/O, or remediation attempts.
+
+### Monitor Types
+
+See [docs/monitors.md](./monitors.md) for detailed configuration of all 11 monitor types:
+
+1. **System Monitors:** cpu-check, memory-check, disk-check
+2. **Network Monitors:** dns-check, gateway-check, connectivity-check
+3. **Kubernetes Monitors:** kubelet-check, apiserver-check, runtime-check, capacity-check
+4. **Custom Monitors:** plugin-check, log-pattern-check
+
+### Monitor Validation
+
+**Source:** `pkg/types/config.go:953-996`
+
+- ✅ `name` must not be empty and be unique across all monitors
+- ✅ `type` must not be empty and be registered in monitor registry
+- ✅ `interval` must be ≥ MinMonitorInterval (1 second)
+- ✅ `timeout` must be positive and less than `interval`
+- ✅ All `dependsOn` monitors must exist in configuration
+- ✅ No circular dependencies in monitor dependency graph
+- ✅ Threshold values must be in range 0-100 for percentage-based thresholds
+- ✅ Monitor-specific config validated by monitor factory
+
+### Threshold Validation
+
+**Source:** `pkg/types/config.go:1541-1589`
+
+Node Doctor validates all percentage-based threshold fields to ensure they are in the valid 0-100 range. The following threshold fields are automatically validated:
+
+**System Monitor Thresholds:**
+- `warningLoadFactor`, `criticalLoadFactor` - CPU load thresholds
+- `warningThreshold`, `criticalThreshold` - Memory/disk usage thresholds
+- `swapWarningThreshold`, `swapCriticalThreshold` - Swap usage thresholds
+- `inodeWarning`, `inodeCritical` - Inode usage thresholds
+
+**Example Validation:**
+```yaml
+monitors:
+  - name: cpu-health
+    type: system-cpu-check
     config:
-      warningThreshold: 80   # percent
-      criticalThreshold: 95
-      checkDaemonSets: true
-      checkAllocatable: true
+      warningLoadFactor: 80    # ✅ Valid: 0-100
+      criticalLoadFactor: 150  # ❌ Invalid: exceeds 100
+```
 
-  # Custom Plugin Monitors
-  - name: ntp-health
-    type: custom-plugin-check
-    enabled: true
-    interval: 5m
-    timeout: 10s
-    config:
-      path: /usr/local/bin/check_ntp.sh
-      args:
-        - --threshold
-        - "100"
-      env:
-        NTP_SERVER: pool.ntp.org
-      workingDir: /usr/local/bin
-      maxOutputLength: 4096
-      concurrency: 1
-      problem:
-        type: permanent
-        condition: NTPProblem
-        reason: NTPDown
-    remediation:
-      enabled: true
-      strategy: custom-script
-      scriptPath: /usr/local/bin/fix_ntp.sh
-      args: []
-      timeout: 5m
-      cooldown: 15m
-      maxAttempts: 2
+Error message: `monitor "cpu-health": threshold "criticalLoadFactor" value 150.00 must be in range 0-100`
 
-  # Log Pattern Monitors
-  - name: kernel-monitor
-    type: log-pattern-check
-    enabled: true
-    config:
-      source: kmsg
-      path: /dev/kmsg
-      lookback: 5m
-      bufferSize: 100
-      rules:
-        - type: temporary
-          reason: OOMKilling
-          pattern: "Killed process \\d+ .+ total-vm:\\d+kB"
-          rateLimit: 10m
-          severity: warning
+**Type-Safe Validation:**
+- Handles multiple numeric types: `int`, `int32`, `int64`, `float32`, `float64`
+- Non-threshold fields are ignored (e.g., strings, booleans)
+- Validation runs automatically during config parsing
 
-        - type: permanent
-          condition: KernelDeadlock
-          reason: TaskHung
-          pattern: "task .+ blocked for more than \\d+ seconds"
-          rateLimit: 5m
-          severity: error
+### ValidateWithRegistry
 
-        - type: permanent
-          condition: ReadonlyFilesystem
-          reason: FilesystemReadonly
-          pattern: "Remounting filesystem read-only"
-          rateLimit: 1h
-          severity: critical
+**Source:** `pkg/types/config.go:1591-1616`
 
-  - name: docker-monitor
-    type: log-pattern-check
-    enabled: true
-    config:
-      source: journald
-      unit: docker.service
-      lookback: 10m
-      bufferSize: 50
-      rules:
-        - type: temporary
-          reason: DockerError
-          pattern: "Error response from daemon"
-          rateLimit: 5m
-          severity: warning
+The `ValidateWithRegistry()` method performs enhanced validation that requires knowledge of registered monitor types:
 
-        - type: temporary
-          reason: DockerTimeout
-          pattern: "context deadline exceeded"
-          rateLimit: 5m
-          severity: warning
+```go
+// Validate with monitor registry
+err := config.ValidateWithRegistry(monitors.DefaultRegistry)
+```
 
-# Exporters configuration
+**Additional Validations:**
+- ✅ All monitor types are registered in the monitor registry
+- ✅ No circular dependencies exist in monitor dependency graph
+- ✅ All standard validations from `Validate()` method
+
+This is typically called during application startup after all monitors have self-registered via `func init()`.
+
+## Monitor Remediation Configuration
+
+**Source:** `pkg/types/config.go:168-207`
+
+```yaml
+remediation:
+  enabled: true                      # Default: false
+  strategy: systemd-restart          # Required if enabled
+
+  # Strategy-specific fields
+  service: kubelet                   # For systemd-restart
+  scriptPath: /path/to/script.sh     # For custom-script (absolute path)
+  args: []                           # Script arguments
+
+  # Timing and retry
+  cooldown: 5m                       # Default: "5m"
+  maxAttempts: 3                     # Default: 3
+
+  # Graceful stop configuration
+  gracefulStop: false                # Default: false
+  waitTimeout: 30s                   # Default: 0 (not set)
+
+  # Priority for multi-step remediation
+  priority: 1                        # Default: 0
+
+  # Nested strategies for complex remediation
+  strategies:                        # Optional, max depth: 10
+    - strategy: systemd-restart
+      # Same fields as above
+```
+
+### Remediation Strategy Types
+
+**Source:** `pkg/types/config.go:68-74`
+
+| Strategy | Required Fields | Description |
+|----------|----------------|-------------|
+| `systemd-restart` | `service` | Restart systemd service |
+| `custom-script` | `scriptPath`, `args` (optional) | Execute custom remediation script |
+| `node-reboot` | none | Reboot the node (use with caution) |
+| `pod-delete` | none | Delete problematic pods |
+
+### Remediation Validation
+
+**Source:** `pkg/types/config.go:966-1022`
+
+- ✅ `strategy` must be one of: systemd-restart, custom-script, node-reboot, pod-delete
+- ✅ `systemd-restart`: `service` field required
+- ✅ `custom-script`: `scriptPath` required, must be absolute path, cannot contain `..`
+- ✅ `cooldown` must be positive
+- ✅ `maxAttempts` must be positive
+- ✅ `waitTimeout` must be positive if specified
+- ✅ Nested `strategies` limited to 10 levels deep (prevents recursion issues)
+
+### Remediation Defaults
+
+**Source:** `pkg/types/config.go:28-29`
+
+| Field | Default |
+|-------|---------|
+| `cooldown` | `5m` |
+| `maxAttempts` | `3` |
+
+## Exporter Configuration
+
+### Kubernetes Exporter
+
+**Source:** `pkg/types/config.go:216-240`
+
+```yaml
 exporters:
-  # Kubernetes Exporter
   kubernetes:
-    enabled: true
-    updateInterval: 10s
-    resyncInterval: 60s
-    heartbeatInterval: 5m
-    namespace: default  # Namespace for events
+    enabled: true                    # Default: false
+
+    # Update intervals
+    updateInterval: 10s              # Default: "10s"
+    resyncInterval: 60s              # Default: "60s"
+    heartbeatInterval: 5m            # Default: "5m"
+
+    # Event namespace
+    namespace: default               # Default: "" (current namespace)
+
+    # Custom node conditions
     conditions:
-      # Define custom node conditions
-      - type: NodeDoctorHealthy
-        defaultStatus: "True"
-        defaultReason: "NodeDoctorRunning"
-        defaultMessage: "Node Doctor is running and monitoring node health"
+      - type: NodeDoctorHealthy      # Required
+        defaultStatus: "True"        # Optional
+        defaultReason: "Running"     # Optional
+        defaultMessage: "Healthy"    # Optional
+
+    # Node annotations to manage
     annotations:
-      # Node annotations to update
-      - key: node-doctor.io/status
-        value: "healthy"
-      - key: node-doctor.io/version
-        value: "${VERSION}"
-      - key: node-doctor.io/last-check
-        value: "${TIMESTAMP}"
+      - key: node-doctor.io/status  # Required
+        value: "healthy"             # Required
+
+    # Event configuration
     events:
-      # Event rate limiting
-      maxEventsPerMinute: 10
-      eventTTL: 1h
-      deduplicationWindow: 5m
+      maxEventsPerMinute: 10         # Default: 0 (unlimited)
+      eventTTL: 1h                   # Default: 0 (use K8s default)
+      deduplicationWindow: 5m        # Default: 0 (no deduplication)
+```
 
-  # HTTP Exporter
+#### Kubernetes Exporter Validation
+
+**Source:** `pkg/types/config.go:1024-1067`
+
+- ✅ All intervals must be positive
+- ✅ `conditions[].type` must not be empty
+- ✅ `annotations[].key` must not be empty
+- ✅ `events.maxEventsPerMinute` must be non-negative
+- ✅ `events.eventTTL` must be positive if specified
+- ✅ `events.deduplicationWindow` must be positive if specified
+
+### HTTP Exporter
+
+**Source:** `pkg/types/config.go:265-279`
+
+```yaml
+exporters:
   http:
-    enabled: true
-    bindAddress: "0.0.0.0"
-    hostPort: 8080
-    tlsEnabled: false
-    tlsCertFile: /etc/node-doctor/tls/tls.crt
-    tlsKeyFile: /etc/node-doctor/tls/tls.key
-    endpoints:
-      - path: /health
-        handler: overall-health
-        description: "Overall node health status (200=healthy, 503=unhealthy)"
-      - path: /ready
-        handler: readiness
-        description: "Node readiness status"
-      - path: /metrics
-        handler: prometheus-metrics
-        description: "Prometheus metrics"
-      - path: /status
-        handler: detailed-status
-        description: "Detailed status of all monitors (JSON)"
-      - path: /remediation/history
-        handler: remediation-history
-        description: "History of remediation actions (JSON)"
-      - path: /conditions
-        handler: node-conditions
-        description: "Current node conditions (JSON)"
+    enabled: true                    # Default: false
 
-  # Prometheus Exporter
+    # Worker pool configuration
+    workers: 5                       # Default: 5
+    queueSize: 100                   # Default: 100
+
+    # Default timeout for all webhooks
+    timeout: 30s                     # Default: "30s"
+
+    # Default retry configuration
+    retry:
+      maxAttempts: 3                 # Default: 3
+      baseDelay: 1s                  # Default: "1s"
+      maxDelay: 30s                  # Default: "30s"
+
+    # Default headers for all webhooks
+    headers:
+      User-Agent: node-doctor/v1
+      Content-Type: application/json
+
+    # Webhook endpoints
+    webhooks:
+      - name: slack                  # Optional, must be unique
+        url: https://hooks.slack.com/services/XXX  # Required
+
+        # Authentication
+        auth:
+          type: bearer               # Default: "none"
+          token: "${SLACK_TOKEN}"    # For bearer auth
+          # OR
+          type: basic
+          username: user
+          password: "${PASSWORD}"
+
+        # Per-webhook timeout (overrides default)
+        timeout: 10s                 # Optional
+
+        # Per-webhook retry config (overrides default)
+        retry:
+          maxAttempts: 5
+          baseDelay: 2s
+          maxDelay: 1m
+
+        # Per-webhook headers (merged with defaults)
+        headers:
+          X-Custom-Header: value
+
+        # Control what gets sent
+        sendStatus: true             # Default: true
+        sendProblems: true           # Default: true
+```
+
+#### HTTP Exporter Validation
+
+**Source:** `pkg/types/config.go:1069-1151`
+
+- ✅ `workers` must be positive
+- ✅ `queueSize` must be positive
+- ✅ `timeout` must be positive
+- ✅ `retry.maxAttempts` must be non-negative
+- ✅ `retry.baseDelay` must be positive and ≤ `maxDelay`
+- ✅ At least one webhook required when HTTP exporter enabled
+- ✅ Webhook names must be unique
+- ✅ `webhooks[].url` required and must start with http:// or https://
+- ✅ `webhooks[].auth.type` must be one of: none, bearer, basic
+- ✅ Bearer auth requires `token` field
+- ✅ Basic auth requires `username` and `password` fields
+- ✅ At least one of `sendStatus` or `sendProblems` must be true
+
+### Prometheus Exporter
+
+**Source:** `pkg/types/config.go:323-331`
+
+```yaml
+exporters:
   prometheus:
-    enabled: true
-    port: 9100
-    path: /metrics
-    namespace: node_doctor
-    subsystem: ""
+    enabled: true                    # Default: false
+    port: 9100                       # Default: 9100
+    path: /metrics                   # Default: "/metrics"
+    namespace: node_doctor           # Default: "node_doctor"
+    subsystem: ""                    # Default: ""
     labels:
       environment: production
-      cluster: my-cluster
+      cluster: main
+```
 
-# Remediation settings
+#### Prometheus Exporter Validation
+
+**Source:** `pkg/types/config.go:1192-1219`
+
+- ✅ `port` must be in range 1-65535
+- ✅ `path` must start with `/`
+- ✅ `namespace` must match pattern: `^[a-zA-Z_:][a-zA-Z0-9_:]*$`
+- ✅ `subsystem` must match pattern: `^[a-zA-Z_:][a-zA-Z0-9_:]*$`
+
+## Remediation Configuration
+
+**Source:** `pkg/types/config.go:333-377`
+
+```yaml
 remediation:
-  # Global remediation settings
-  enabled: true
-  dryRun: false
+  # Master switches
+  enabled: true                      # Default: false
+  dryRun: false                      # Default: false
 
   # Safety limits
-  maxRemediationsPerHour: 10
-  maxRemediationsPerMinute: 2
-  cooldownPeriod: 5m
-  maxAttemptsGlobal: 3
+  maxRemediationsPerHour: 10         # Default: 10
+  maxRemediationsPerMinute: 2        # Default: 2
+  cooldownPeriod: 5m                 # Default: "5m"
+  maxAttemptsGlobal: 3               # Default: 3
 
   # Circuit breaker settings
   circuitBreaker:
-    enabled: true
-    threshold: 5  # Open after N failures
-    timeout: 30m  # Try again after timeout
-    successThreshold: 2  # Close after N successes
+    enabled: true                    # Default: false
+    threshold: 5                     # Default: 5 (failures before open)
+    timeout: 30m                     # Default: "30m" (time before retry)
+    successThreshold: 2              # Default: 2 (successes before close)
 
-  # Remediation history
-  historySize: 100  # Keep last N remediation records
+  # Remediation history tracking
+  historySize: 100                   # Default: 100
 
   # Problem-specific overrides
   overrides:
-    - problem: KubeletUnhealthy
-      cooldown: 5m
-      maxAttempts: 3
-      circuitBreakerThreshold: 3
-
-    - problem: DiskPressure
-      cooldown: 1h
-      maxAttempts: 2
-      circuitBreakerThreshold: 2
-
-# Feature flags
-features:
-  enableMetrics: true
-  enableProfiling: false
-  profilingPort: 6060
-  enableTracing: false
-  tracingEndpoint: ""
+    - problem: kubelet-unhealthy    # Required, problem type name
+      cooldown: 3m                   # Optional
+      maxAttempts: 5                 # Optional
+      circuitBreakerThreshold: 10    # Optional
 ```
 
-## Configuration Sections
+### Remediation Defaults
 
-### Global Settings
+**Source:** `pkg/types/config.go:28-35`
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `cooldownPeriod` | `5m` | Minimum time between remediation attempts |
+| `maxAttemptsGlobal` | `3` | Maximum remediation attempts per problem |
+| `maxRemediationsPerHour` | `10` | Rate limit per hour |
+| `maxRemediationsPerMinute` | `2` | Rate limit per minute |
+| `circuitBreakerThreshold` | `5` | Failures before circuit opens |
+| `circuitBreakerTimeout` | `30m` | Wait time before retrying after circuit opens |
+| `historySize` | `100` | Number of remediation records to keep |
+
+### Circuit Breaker States
+
+The circuit breaker protects against cascading failures:
+
+- **Closed**: Normal operation, remediations allowed
+- **Open**: Too many failures, remediations blocked until timeout
+- **Half-Open**: Testing if system recovered, limited remediations allowed
+
+After `threshold` failures → Open state → Wait `timeout` → Half-Open state → After `successThreshold` successes → Closed state
+
+### Remediation Validation
+
+**Source:** `pkg/types/config.go:1221-1282`
+
+- ✅ `maxRemediationsPerHour` must be non-negative
+- ✅ `maxRemediationsPerMinute` must be non-negative
+- ✅ `cooldownPeriod` must be positive
+- ✅ `maxAttemptsGlobal` must be positive
+- ✅ `historySize` must be positive
+- ✅ If circuit breaker enabled:
+  - `threshold` must be positive
+  - `timeout` must be positive
+  - `successThreshold` must be positive
+- ✅ Override problem names must be unique
+- ✅ Override cooldown must be positive if specified
+- ✅ Override values must be non-negative
+
+## Feature Flags
+
+**Source:** `pkg/types/config.go:378-385`
+
+```yaml
+features:
+  enableMetrics: true                # Default: true
+  enableProfiling: false             # Default: false
+  profilingPort: 6060                # Default: 0
+  enableTracing: false               # Default: false
+  tracingEndpoint: ""                # Default: ""
+```
+
+## Environment Variable Substitution
+
+**Source:** `pkg/types/config.go:1287-1456`
+
+Node Doctor supports environment variable substitution using `${VAR}` or `$VAR` syntax. Substitution is performed recursively through all configuration fields.
+
+### Substitution Examples
 
 ```yaml
 settings:
-  nodeName: "${NODE_NAME}"
-  logLevel: info
-  logFormat: json
-  enableRemediation: true
-  dryRunMode: false
-```
+  nodeName: "${NODE_NAME}"           # ✅ Required pattern
+  logFile: "/var/log/${NAMESPACE}/node-doctor.log"
 
-**Fields**:
-- `nodeName`: Node name (usually from downward API `${NODE_NAME}`)
-- `logLevel`: Logging level (debug, info, warn, error)
-- `logFormat`: Log format (json, text)
-- `logOutput`: Where to write logs (stdout, stderr, file)
-- `logFile`: Log file path (if logOutput=file)
-- `updateInterval`: How often to update Kubernetes API
-- `resyncInterval`: Full resync interval
-- `heartbeatInterval`: Heartbeat interval for condition updates
-- `enableRemediation`: Master switch for remediation
-- `dryRunMode`: Test mode without actual changes
-
-### Monitor Configuration
-
-Each monitor has this structure:
-
-```yaml
-- name: monitor-name
-  type: monitor-type
-  enabled: true
-  interval: 30s
-  timeout: 10s
-  config:
-    # Monitor-specific configuration
-  remediation:
-    # Remediation configuration
-```
-
-**Common Fields**:
-- `name`: Unique monitor name
-- `type`: Monitor type (from registry)
-- `enabled`: Whether monitor is active
-- `interval`: Check interval
-- `timeout`: Check timeout
-- `config`: Monitor-specific configuration
-- `remediation`: Optional remediation configuration
-
-### Remediation Configuration
-
-```yaml
-remediation:
-  enabled: true
-  strategy: systemd-restart
-  service: kubelet
-  cooldown: 5m
-  maxAttempts: 3
-```
-
-**Fields**:
-- `enabled`: Enable remediation for this monitor
-- `strategy`: Remediation strategy type
-- Additional fields depend on strategy type
-
-**Strategy Types**:
-- `systemd-restart`: Restart systemd service
-- `network`: Network remediation (flush-dns, restart-interface)
-- `disk`: Disk cleanup (docker-logs, docker-images, system-logs)
-- `runtime`: Container runtime remediation
-- `custom-script`: Execute custom script
-
-### Exporter Configuration
-
-#### Kubernetes Exporter
-
-```yaml
 exporters:
   kubernetes:
-    enabled: true
-    updateInterval: 10s
-    namespace: default
-    conditions: [...]
-    annotations: [...]
-```
+    namespace: "${POD_NAMESPACE}"
+    annotations:
+      - key: node-doctor.io/version
+        value: "${VERSION}"
+      - key: node-doctor.io/build
+        value: "${BUILD_ID}"
 
-**Fields**:
-- `enabled`: Enable Kubernetes exporter
-- `updateInterval`: How often to update Kubernetes API
-- `resyncInterval`: Full resync interval
-- `namespace`: Namespace for events
-- `conditions`: Custom node conditions
-- `annotations`: Node annotations to manage
-
-#### HTTP Exporter
-
-```yaml
-exporters:
   http:
-    enabled: true
-    bindAddress: "0.0.0.0"
-    hostPort: 8080
-    tlsEnabled: false
+    webhooks:
+      - name: slack
+        url: "${SLACK_WEBHOOK_URL}"
+        auth:
+          type: bearer
+          token: "${SLACK_TOKEN}"
+
+monitors:
+  - name: custom-check
+    type: custom-plugin-check
+    config:
+      path: "${PLUGIN_DIR}/check.sh"
+      env:
+        API_KEY: "${API_KEY}"
+        ENDPOINT: "${ENDPOINT}"
+
+remediation:
+  - scriptPath: "${REMEDIATION_DIR}/fix.sh"
+    args:
+      - "--cluster=${CLUSTER_NAME}"
 ```
 
-**Fields**:
-- `enabled`: Enable HTTP exporter
-- `bindAddress`: Bind address (use 0.0.0.0 for hostPort)
-- `hostPort`: Host port to expose
-- `tlsEnabled`: Enable TLS
-- `tlsCertFile`: TLS certificate path
-- `tlsKeyFile`: TLS key path
-- `endpoints`: List of HTTP endpoints
+### Substitution Order
 
-#### Prometheus Exporter
+**Source:** `pkg/types/config.go:1289-1311`
 
-```yaml
-exporters:
-  prometheus:
-    enabled: true
-    port: 9100
-    namespace: node_doctor
-```
+Substitution is performed in this order:
 
-**Fields**:
-- `enabled`: Enable Prometheus exporter
-- `port`: Metrics port
-- `path`: Metrics path (default: /metrics)
-- `namespace`: Metric namespace
-- `labels`: Additional labels for all metrics
+1. Global settings
+2. Monitors (including nested config maps)
+3. Kubernetes exporter
+4. HTTP exporter (including webhooks)
+5. Prometheus exporter
+6. Remediation config
 
-## Environment Variable Overrides
+### Recursive Substitution
 
-Environment variables can override specific configuration values:
+**Source:** `pkg/types/config.go:1402-1456`
 
-```bash
-# Global settings
-NODE_DOCTOR_LOG_LEVEL=debug
-NODE_DOCTOR_DRY_RUN=true
-NODE_DOCTOR_ENABLE_REMEDIATION=false
+Environment variables are substituted recursively in:
 
-# Kubernetes client
-NODE_DOCTOR_QPS=100
-NODE_DOCTOR_BURST=200
+- ✅ All string fields
+- ✅ Map values (recursively)
+- ✅ Array elements (recursively)
+- ✅ Nested structures (monitors, webhooks, strategies)
 
-# HTTP exporter
-NODE_DOCTOR_HTTP_ENABLED=true
-NODE_DOCTOR_HTTP_PORT=8080
-
-# Prometheus exporter
-NODE_DOCTOR_PROMETHEUS_ENABLED=true
-NODE_DOCTOR_PROMETHEUS_PORT=9100
-
-# Remediation
-NODE_DOCTOR_REMEDIATION_ENABLED=true
-NODE_DOCTOR_REMEDIATION_DRY_RUN=false
-NODE_DOCTOR_REMEDIATION_MAX_PER_HOUR=10
-```
-
-## Command-Line Flags
-
-Override configuration via command-line flags:
-
-```bash
-node-doctor \
-  --config=/etc/node-doctor/config.yaml \
-  --log-level=debug \
-  --dry-run \
-  --enable-remediation=false \
-  --http-port=8080 \
-  --metrics-port=9100
-```
-
-**Common Flags**:
-- `--config`: Configuration file path
-- `--log-level`: Log level (debug, info, warn, error)
-- `--log-format`: Log format (json, text)
-- `--dry-run`: Enable dry-run mode
-- `--enable-remediation`: Enable/disable remediation
-- `--http-port`: HTTP exporter port
-- `--metrics-port`: Prometheus metrics port
-- `--node-name`: Override node name
-- `--kubeconfig`: Path to kubeconfig (for out-of-cluster)
+Non-string values (numbers, booleans) are preserved as-is.
 
 ## Configuration Validation
 
-Node Doctor validates configuration on startup:
+### Validation Process
+
+**Source:** `pkg/types/config.go:811-873`
+
+Validation occurs in this order:
+
+1. **Schema validation**: API version, kind, metadata
+2. **Settings validation**: Global settings, durations, ranges
+3. **Monitor validation**: Each monitor configuration
+4. **Exporter validation**: Kubernetes, HTTP, Prometheus
+5. **Remediation validation**: Global and per-monitor settings
 
 ### Required Fields
 
-- `settings.nodeName`
-- At least one monitor enabled
+- ✅ `apiVersion` must not be empty
+- ✅ `kind` must be "NodeDoctorConfig"
+- ✅ `metadata.name` must not be empty
+- ✅ `settings.nodeName` must not be empty
+- ✅ All monitor names must be unique
+- ✅ All webhook names must be unique (if specified)
 
-### Field Validation
-
-- Intervals must be positive durations
-- Thresholds must be within valid ranges
-- File paths must exist (for scripts, logs)
-- Ports must be valid (1-65535)
-- Service names must be valid systemd services
-
-### Validation Errors
-
-Configuration errors cause startup failure:
+### Common Validation Errors
 
 ```
-FATAL: Invalid configuration: interval must be positive (got: -1s)
-FATAL: Invalid configuration: threshold must be between 0 and 100 (got: 150)
-FATAL: Invalid configuration: script not found: /path/to/script.sh
+# Duration errors
+ERROR: Invalid configuration: interval must be positive (got: -1s)
+ERROR: Invalid configuration: timeout (15s) must be less than interval (10s)
+
+# Range errors
+ERROR: Invalid configuration: threshold must be between 0 and 100 (got: 150)
+ERROR: Invalid configuration: port must be in range 1-65535 (got: 70000)
+ERROR: Invalid configuration: qps exceeds maximum allowed value 10000 (got: 50000)
+
+# Path errors
+ERROR: Invalid configuration: scriptPath must be an absolute path (got: ../script.sh)
+ERROR: Invalid configuration: scriptPath cannot contain '..' path traversal
+
+# Field errors
+ERROR: Invalid configuration: nodeName is required
+ERROR: Invalid configuration: duplicate monitor name 'kubelet-health' found
+ERROR: Invalid configuration: at least one webhook must be configured when HTTP exporter is enabled
+
+# Strategy errors
+ERROR: Invalid configuration: service is required for systemd-restart strategy
+ERROR: Invalid configuration: scriptPath is required for custom-script strategy
+ERROR: Invalid configuration: invalid strategy "unknown", must be one of: systemd-restart, custom-script, node-reboot, pod-delete
+
+# Auth errors
+ERROR: Invalid configuration: token is required for bearer auth
+ERROR: Invalid configuration: username is required for basic auth
+ERROR: Invalid configuration: invalid auth type "digest", must be one of: none, bearer, basic
 ```
 
 ## Configuration Examples
@@ -660,94 +702,198 @@ monitors:
   - name: kubelet-health
     type: kubernetes-kubelet-check
     enabled: true
-    interval: 30s
     config:
       healthzURL: http://127.0.0.1:10248/healthz
 
 exporters:
   kubernetes:
     enabled: true
-  http:
-    enabled: true
-    hostPort: 8080
 ```
 
 ### Production Configuration
+
+**Source:** `config/node-doctor.yaml:168`
 
 ```yaml
 apiVersion: node-doctor.io/v1alpha1
 kind: NodeDoctorConfig
 metadata:
   name: production
+  namespace: kube-system
   labels:
+    app: node-doctor
     environment: production
 
 settings:
   nodeName: "${NODE_NAME}"
   logLevel: info
   logFormat: json
+  logOutput: stdout
+  updateInterval: 10s
+  resyncInterval: 60s
+  heartbeatInterval: 5m
   enableRemediation: true
   dryRunMode: false
+  qps: 50
+  burst: 100
 
 monitors:
-  # Essential health checks
+  # Kubernetes health
   - name: kubelet-health
     type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
+    timeout: 10s
     config:
       healthzURL: http://127.0.0.1:10248/healthz
+      checkSystemdStatus: true
     remediation:
       enabled: true
       strategy: systemd-restart
       service: kubelet
       cooldown: 5m
       maxAttempts: 3
+      gracefulStop: true
+      waitTimeout: 30s
 
+  # Disk health with multi-step remediation
   - name: disk-health
     type: system-disk-check
     enabled: true
     interval: 5m
+    timeout: 30s
     config:
       paths:
         - path: "/"
+          warningThreshold: 85
           criticalThreshold: 95
         - path: "/var/lib/docker"
+          warningThreshold: 80
+          criticalThreshold: 90
+        - path: "/var/lib/kubelet"
+          warningThreshold: 80
           criticalThreshold: 90
     remediation:
       enabled: true
-      strategies:
-        - strategy: disk
-          action: docker-logs
+      strategy: custom-script
+      scriptPath: /usr/local/bin/cleanup-docker-logs.sh
+      cooldown: 1h
+      maxAttempts: 1
 
-  - name: dns-health
-    type: network-dns-check
+  # Container runtime
+  - name: containerd-health
+    type: kubernetes-runtime-check
     enabled: true
-    interval: 60s
+    interval: 1m
+    timeout: 15s
     config:
-      clusterDomains:
-        - kubernetes.default.svc.cluster.local
+      runtimeType: auto
+      checkSocketConnectivity: true
+      checkSystemdStatus: true
+      checkRuntimeInfo: true
     remediation:
       enabled: true
-      strategy: network
-      action: flush-dns
+      strategy: systemd-restart
+      service: containerd
+      cooldown: 10m
+      maxAttempts: 2
 
 exporters:
   kubernetes:
     enabled: true
+    updateInterval: 10s
+    resyncInterval: 60s
+    heartbeatInterval: 5m
+    namespace: default
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor is running and monitoring the node"
+      - type: KubeletHealthy
+        defaultStatus: "Unknown"
+        defaultReason: "NotYetChecked"
+        defaultMessage: "Kubelet health not yet verified"
+    annotations:
+      - key: node-doctor.io/status
+        value: "healthy"
+      - key: node-doctor.io/version
+        value: "${VERSION}"
+    events:
+      maxEventsPerMinute: 10
+      eventTTL: 1h
+      deduplicationWindow: 5m
+
   http:
     enabled: true
-    hostPort: 8080
+    workers: 5
+    queueSize: 100
+    timeout: 30s
+    retry:
+      maxAttempts: 3
+      baseDelay: 1s
+      maxDelay: 30s
+    headers:
+      User-Agent: node-doctor/v1
+    webhooks:
+      - name: slack-alerts
+        url: "${SLACK_WEBHOOK_URL}"
+        auth:
+          type: bearer
+          token: "${SLACK_TOKEN}"
+        timeout: 10s
+        sendStatus: false
+        sendProblems: true
+
+      - name: monitoring-system
+        url: "https://monitoring.example.com/webhook"
+        auth:
+          type: basic
+          username: "${WEBHOOK_USER}"
+          password: "${WEBHOOK_PASSWORD}"
+        headers:
+          X-Cluster-ID: "${CLUSTER_ID}"
+        sendStatus: true
+        sendProblems: true
+
   prometheus:
     enabled: true
     port: 9100
+    path: /metrics
+    namespace: node_doctor
+    subsystem: monitor
+    labels:
+      environment: production
+      cluster: main
 
 remediation:
   enabled: true
+  dryRun: false
   maxRemediationsPerHour: 10
+  maxRemediationsPerMinute: 2
+  cooldownPeriod: 5m
+  maxAttemptsGlobal: 3
   circuitBreaker:
     enabled: true
     threshold: 5
+    timeout: 30m
+    successThreshold: 2
+  historySize: 100
+  overrides:
+    - problem: kubelet-unhealthy
+      cooldown: 3m
+      maxAttempts: 5
+      circuitBreakerThreshold: 10
+    - problem: disk-pressure
+      cooldown: 30m
+      maxAttempts: 2
+      circuitBreakerThreshold: 3
+
+features:
+  enableMetrics: true
+  enableProfiling: false
+  profilingPort: 6060
+  enableTracing: false
 ```
 
 ### Development Configuration
@@ -762,33 +908,143 @@ settings:
   nodeName: "${NODE_NAME}"
   logLevel: debug
   logFormat: text
+  logOutput: stdout
   enableRemediation: true
-  dryRunMode: true  # Dry-run for development
+  dryRunMode: true              # ✅ Dry-run for testing
 
 monitors:
   - name: kubelet-health
     type: kubernetes-kubelet-check
     enabled: true
-    interval: 10s  # More frequent checks
+    interval: 10s               # ✅ More frequent checks
+    timeout: 5s
     config:
       healthzURL: http://127.0.0.1:10248/healthz
+    remediation:
+      enabled: true
+      strategy: systemd-restart
+      service: kubelet
+      cooldown: 1m              # ✅ Shorter cooldown for testing
 
 exporters:
   kubernetes:
     enabled: true
   http:
+    enabled: false              # ✅ Disable webhooks in dev
+  prometheus:
     enabled: true
-    hostPort: 8080
+    port: 9100
 
 remediation:
-  dryRun: true  # Test remediation without execution
+  enabled: true
+  dryRun: true                  # ✅ Test without execution
+  maxRemediationsPerHour: 100   # ✅ Higher limits for testing
+  maxRemediationsPerMinute: 10
+
+features:
+  enableMetrics: true
+  enableProfiling: true         # ✅ Enable profiling
+  profilingPort: 6060
+```
+
+### Webhook Integration Examples
+
+#### Slack Webhook
+
+```yaml
+exporters:
+  http:
+    enabled: true
+    webhooks:
+      - name: slack
+        url: "https://hooks.slack.com/services/${SLACK_WORKSPACE}/${SLACK_CHANNEL}/${SLACK_TOKEN}"
+        auth:
+          type: none
+        timeout: 5s
+        retry:
+          maxAttempts: 3
+          baseDelay: 1s
+          maxDelay: 10s
+        headers:
+          Content-Type: application/json
+        sendStatus: false
+        sendProblems: true
+```
+
+#### PagerDuty Integration
+
+```yaml
+exporters:
+  http:
+    enabled: true
+    webhooks:
+      - name: pagerduty
+        url: "https://events.pagerduty.com/v2/enqueue"
+        auth:
+          type: bearer
+          token: "${PAGERDUTY_ROUTING_KEY}"
+        timeout: 10s
+        retry:
+          maxAttempts: 5
+          baseDelay: 2s
+          maxDelay: 30s
+        sendStatus: false
+        sendProblems: true
+```
+
+#### Custom Monitoring System
+
+```yaml
+exporters:
+  http:
+    enabled: true
+    timeout: 30s
+    retry:
+      maxAttempts: 3
+      baseDelay: 1s
+      maxDelay: 30s
+    headers:
+      User-Agent: node-doctor/v1
+      X-Cluster-ID: "${CLUSTER_ID}"
+    webhooks:
+      - name: custom-monitoring
+        url: "https://monitoring.internal.example.com/api/v1/events"
+        auth:
+          type: basic
+          username: "${MONITORING_USER}"
+          password: "${MONITORING_PASSWORD}"
+        timeout: 15s
+        headers:
+          X-Node-Name: "${NODE_NAME}"
+          X-Environment: production
+        sendStatus: true
+        sendProblems: true
 ```
 
 ## Dynamic Configuration Updates
 
-Node Doctor can watch for configuration changes and reload:
+### Hot Reload Support
 
-### ConfigMap Watch
+**Not fully implemented** - The configuration structure supports hot reload, but implementation may require restart for some changes.
+
+#### Reloadable Without Restart
+
+- Monitor intervals and timeouts
+- Logging levels and formats
+- Rate limits and thresholds
+- Cooldown periods
+
+#### Requires Restart
+
+- Adding/removing monitors
+- Changing monitor types
+- Exporter enable/disable
+- Authentication credentials
+- Webhook URLs
+
+### ConfigMap Updates
+
+Deploy configuration via ConfigMap:
 
 ```yaml
 apiVersion: v1
@@ -798,76 +1054,353 @@ metadata:
   namespace: kube-system
 data:
   config.yaml: |
-    # Configuration here
+    apiVersion: node-doctor.io/v1alpha1
+    kind: NodeDoctorConfig
+    # ... configuration here
 ```
 
-Node Doctor watches this ConfigMap and reloads on changes.
+Mount in DaemonSet:
 
-### Reload Behavior
-
-- **Hot-reloadable**: Monitor intervals, thresholds, log levels
-- **Requires restart**: New monitors, exporter changes, remediation strategies
-
-### Reload Signal
-
-Send SIGHUP to reload configuration:
-
-```bash
-kill -HUP $(pidof node-doctor)
+```yaml
+volumes:
+  - name: config
+    configMap:
+      name: node-doctor-config
+volumeMounts:
+  - name: config
+    mountPath: /etc/node-doctor
+    readOnly: true
 ```
 
 ## Best Practices
 
-1. **Use ConfigMaps**: Store configuration in ConfigMaps for easy updates
-2. **Version Control**: Keep configuration in version control
-3. **Environment-Specific**: Use different configs for dev/staging/prod
-4. **Start Conservative**: Begin with monitoring only, enable remediation gradually
-5. **Document Changes**: Comment configuration changes
-6. **Validate Before Deploy**: Test configuration in non-production first
-7. **Monitor Configuration**: Track configuration changes via GitOps
-8. **Use Secrets**: Store sensitive data (TLS certs) in Secrets
-9. **Set Appropriate Intervals**: Balance monitoring frequency with resource usage
-10. **Enable Dry-Run First**: Test remediation in dry-run before enabling
+### Security
+
+1. **Use Secrets for Sensitive Data**
+   ```yaml
+   # ❌ Bad: Hardcoded credentials
+   auth:
+     token: "xoxb-1234-5678-abcd"
+
+   # ✅ Good: Environment variables from secrets
+   auth:
+     token: "${SLACK_TOKEN}"
+   ```
+
+2. **Absolute Paths for Scripts**
+   ```yaml
+   # ❌ Bad: Relative or traversal paths
+   scriptPath: ../scripts/fix.sh
+
+   # ✅ Good: Absolute paths
+   scriptPath: /usr/local/bin/remediation/fix.sh
+   ```
+
+3. **Validate Scripts Exist**
+   - Ensure all script paths exist before deployment
+   - Test scripts independently before enabling remediation
+
+### Configuration Management
+
+1. **Version Control**: Store configs in Git
+2. **Environment-Specific**: Separate configs for dev/staging/prod
+3. **Incremental Deployment**: Test in dev → staging → production
+4. **Documentation**: Comment complex configurations
+5. **Validation**: Use `--validate-only` flag before deployment
+
+### Monitoring and Remediation
+
+1. **Start Conservative**
+   ```yaml
+   # Phase 1: Monitoring only
+   settings:
+     enableRemediation: false
+
+   # Phase 2: Dry-run mode
+   remediation:
+     enabled: true
+     dryRun: true
+
+   # Phase 3: Limited remediation
+   remediation:
+     enabled: true
+     dryRun: false
+     maxRemediationsPerHour: 5
+
+   # Phase 4: Full remediation
+   remediation:
+     maxRemediationsPerHour: 10
+   ```
+
+2. **Circuit Breaker Protection**
+   ```yaml
+   # Always enable circuit breaker
+   circuitBreaker:
+     enabled: true
+     threshold: 5      # Conservative threshold
+     timeout: 30m      # Long enough to investigate
+     successThreshold: 2
+   ```
+
+3. **Problem-Specific Tuning**
+   ```yaml
+   # Override defaults for critical problems
+   overrides:
+     - problem: kubelet-unhealthy
+       cooldown: 5m
+       maxAttempts: 3
+       circuitBreakerThreshold: 3
+
+     # More conservative for disk operations
+     - problem: disk-pressure
+       cooldown: 1h
+       maxAttempts: 1
+       circuitBreakerThreshold: 2
+   ```
+
+### Performance Tuning
+
+1. **Adjust Intervals Based on Load**
+   ```yaml
+   # High-priority checks
+   - name: kubelet-health
+     interval: 30s
+
+   # Medium-priority checks
+   - name: disk-health
+     interval: 5m
+
+   # Low-priority checks
+   - name: connectivity-health
+     interval: 10m
+   ```
+
+2. **Kubernetes API Rate Limits**
+   ```yaml
+   settings:
+     # High-traffic clusters
+     qps: 100
+     burst: 200
+
+     # Low-traffic clusters
+     qps: 20
+     burst: 50
+   ```
+
+3. **HTTP Worker Pool Sizing**
+   ```yaml
+   http:
+     workers: 10        # More workers for high webhook volume
+     queueSize: 500     # Larger queue for burst traffic
+   ```
 
 ## Troubleshooting
 
-### Configuration Not Loading
+### Configuration Loading Issues
 
-1. Check ConfigMap exists and is mounted
-2. Verify file permissions
-3. Check for YAML syntax errors
-4. Review startup logs
+```bash
+# Verify ConfigMap exists
+kubectl get configmap node-doctor-config -n kube-system
 
-### Overrides Not Working
+# Check ConfigMap contents
+kubectl describe configmap node-doctor-config -n kube-system
 
-1. Verify precedence order (flags > env > ConfigMap > defaults)
-2. Check environment variable names
-3. Verify flag syntax
+# Verify mount in pod
+kubectl exec -n kube-system node-doctor-xxxxx -- ls -la /etc/node-doctor/
+
+# Check configuration file
+kubectl exec -n kube-system node-doctor-xxxxx -- cat /etc/node-doctor/config.yaml
+```
 
 ### Validation Errors
 
-1. Read error message carefully
-2. Check field types and ranges
-3. Verify file paths exist
-4. Test configuration with `--validate-only` flag
+```bash
+# Validate configuration before deployment
+node-doctor --config=config.yaml --validate-only
 
-## Configuration Schema
+# Check for YAML syntax errors
+yamllint config.yaml
 
-Full JSON Schema available at: `https://node-doctor.io/schema/v1alpha1`
+# Validate against JSON schema (if available)
+# yq eval -o=json config.yaml | jq -s '.[0]'
+```
 
-Validate configuration:
+### Environment Variable Issues
 
 ```bash
-node-doctor --config=config.yaml --validate-only
+# Check environment variables in pod
+kubectl exec -n kube-system node-doctor-xxxxx -- env | grep NODE_
+
+# Verify substitution
+kubectl exec -n kube-system node-doctor-xxxxx -- \
+  node-doctor --config=/etc/node-doctor/config.yaml --dump-config
+```
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "nodeName is required" | Missing NODE_NAME env var | Add downward API env var |
+| "timeout must be less than interval" | Invalid values | Ensure timeout < interval |
+| "duplicate monitor name" | Copy-paste error | Make monitor names unique |
+| "script not found" | Wrong path | Use absolute paths, verify files exist |
+| "invalid auth type" | Typo in auth config | Use: none, bearer, or basic |
+| "at least one webhook required" | HTTP exporter enabled, no webhooks | Add webhook or disable exporter |
+
+## Configuration Reference Summary
+
+### Complete Field Reference
+
+```yaml
+# Top-level (pkg/types/config.go:76-101)
+apiVersion: string (required)
+kind: string (required, must be "NodeDoctorConfig")
+metadata:
+  name: string (required)
+  namespace: string
+  labels: map[string]string
+
+# Settings (pkg/types/config.go:110-139)
+settings:
+  nodeName: string (required)
+  logLevel: string (default: "info")
+  logFormat: string (default: "json")
+  logOutput: string (default: "stdout")
+  logFile: string
+  updateInterval: duration (default: "10s")
+  resyncInterval: duration (default: "60s")
+  heartbeatInterval: duration (default: "5m")
+  enableRemediation: bool (default: false)
+  dryRunMode: bool (default: false)
+  kubeconfig: string
+  qps: float32 (default: 50)
+  burst: int (default: 100)
+
+# Monitors (pkg/types/config.go:141-166)
+monitors:
+  - name: string (required)
+    type: string (required)
+    enabled: bool (default: false)
+    interval: duration (default: "30s")
+    timeout: duration (default: "10s")
+    config: map[string]interface{}
+    remediation: # See remediation section
+
+# Monitor Remediation (pkg/types/config.go:168-207)
+remediation:
+  enabled: bool
+  strategy: string (required if enabled)
+  service: string
+  scriptPath: string
+  args: []string
+  cooldown: duration (default: "5m")
+  maxAttempts: int (default: 3)
+  priority: int
+  gracefulStop: bool
+  waitTimeout: duration
+  strategies: []MonitorRemediationConfig
+
+# Exporters (pkg/types/config.go:209-214)
+exporters:
+  kubernetes: # KubernetesExporterConfig
+  http: # HTTPExporterConfig
+  prometheus: # PrometheusExporterConfig
+
+# Kubernetes Exporter (pkg/types/config.go:216-240)
+exporters.kubernetes:
+  enabled: bool
+  updateInterval: duration (default: "10s")
+  resyncInterval: duration (default: "60s")
+  heartbeatInterval: duration (default: "5m")
+  namespace: string
+  conditions:
+    - type: string (required)
+      defaultStatus: string
+      defaultReason: string
+      defaultMessage: string
+  annotations:
+    - key: string (required)
+      value: string (required)
+  events:
+    maxEventsPerMinute: int
+    eventTTL: duration
+    deduplicationWindow: duration
+
+# HTTP Exporter (pkg/types/config.go:265-279)
+exporters.http:
+  enabled: bool
+  workers: int (default: 5)
+  queueSize: int (default: 100)
+  timeout: duration (default: "30s")
+  retry:
+    maxAttempts: int (default: 3)
+    baseDelay: duration (default: "1s")
+    maxDelay: duration (default: "30s")
+  headers: map[string]string
+  webhooks:
+    - name: string
+      url: string (required)
+      auth:
+        type: string (default: "none")
+        token: string
+        username: string
+        password: string
+      timeout: duration
+      retry: RetryConfig
+      headers: map[string]string
+      sendStatus: bool (default: true)
+      sendProblems: bool (default: true)
+
+# Prometheus Exporter (pkg/types/config.go:323-331)
+exporters.prometheus:
+  enabled: bool
+  port: int (default: 9100)
+  path: string (default: "/metrics")
+  namespace: string (default: "node_doctor")
+  subsystem: string
+  labels: map[string]string
+
+# Remediation (pkg/types/config.go:333-377)
+remediation:
+  enabled: bool
+  dryRun: bool
+  maxRemediationsPerHour: int (default: 10)
+  maxRemediationsPerMinute: int (default: 2)
+  cooldownPeriod: duration (default: "5m")
+  maxAttemptsGlobal: int (default: 3)
+  circuitBreaker:
+    enabled: bool
+    threshold: int (default: 5)
+    timeout: duration (default: "30m")
+    successThreshold: int (default: 2)
+  historySize: int (default: 100)
+  overrides:
+    - problem: string (required)
+      cooldown: duration
+      maxAttempts: int
+      circuitBreakerThreshold: int
+
+# Features (pkg/types/config.go:378-385)
+features:
+  enableMetrics: bool (default: true)
+  enableProfiling: bool (default: false)
+  profilingPort: int (default: 0)
+  enableTracing: bool (default: false)
+  tracingEndpoint: string
 ```
 
 ## Summary
 
 Node Doctor's configuration system provides:
-- **Flexible**: Multiple configuration sources
-- **Validated**: Strict validation on startup
-- **Dynamic**: Hot-reload for many settings
-- **Documented**: Clear schema and examples
-- **Safe**: Defaults for all optional fields
 
-Start with a minimal configuration and expand as needed, always testing in non-production environments first.
+- ✅ **Type-safe schema** defined in `pkg/types/config.go`
+- ✅ **Comprehensive validation** at startup with clear error messages
+- ✅ **Environment variable substitution** for all string fields
+- ✅ **Sensible defaults** for all optional fields
+- ✅ **Multiple configuration sources** with clear precedence
+- ✅ **Webhook support** with authentication and retry logic
+- ✅ **Circuit breaker protection** for remediation safety
+- ✅ **Problem-specific overrides** for fine-tuned control
+- ✅ **Extensive examples** for common scenarios
+
+Start with a minimal configuration and expand incrementally. Always test in non-production environments first, use dry-run mode before enabling remediation, and leverage the circuit breaker for safety.

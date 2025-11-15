@@ -202,10 +202,13 @@ func main() {
 
 	log.Printf("[INFO] Created %d exporters", len(exporters))
 
+	// Create monitor factory for hot reload
+	monitorFactory := &monitorFactoryAdapter{ctx: ctx}
+
 	// Create the detector with configured monitors and exporters
 	log.Printf("[INFO] Creating detector...")
 
-	det, err := detector.NewProblemDetector(config, monitorInstances, exporterInterfaces)
+	det, err := detector.NewProblemDetector(config, monitorInstances, exporterInterfaces, *configFile, monitorFactory)
 	if err != nil {
 		log.Fatalf("Failed to create detector: %v", err)
 	}
@@ -382,4 +385,14 @@ func dumpConfiguration(config *types.NodeDoctorConfig) {
 // ExporterLifecycle interface for exporters that need lifecycle management
 type ExporterLifecycle interface {
 	Stop() error
+}
+
+// monitorFactoryAdapter adapts the monitors package to the detector.MonitorFactory interface
+type monitorFactoryAdapter struct {
+	ctx context.Context
+}
+
+// CreateMonitor implements the detector.MonitorFactory interface
+func (mfa *monitorFactoryAdapter) CreateMonitor(config types.MonitorConfig) (types.Monitor, error) {
+	return monitors.CreateMonitor(mfa.ctx, config)
 }

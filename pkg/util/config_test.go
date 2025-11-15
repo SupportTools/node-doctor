@@ -38,18 +38,23 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 // TestDefaultConfigMissingNodeName tests default config without NODE_NAME
+// Updated to test lenient config parsing - should use hostname or fallback
 func TestDefaultConfigMissingNodeName(t *testing.T) {
 	// Ensure NODE_NAME is not set
 	os.Unsetenv("NODE_NAME")
 
-	_, err := DefaultConfig()
-	if err == nil {
-		t.Error("DefaultConfig() should fail without NODE_NAME")
+	config, err := DefaultConfig()
+	if err != nil {
+		t.Errorf("DefaultConfig() should not fail without NODE_NAME (lenient parsing), got error: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "nodeName is required") {
-		t.Errorf("Error should mention nodeName is required, got: %v", err)
+	// Should use hostname or fallback value
+	if config.Settings.NodeName == "" {
+		t.Error("NodeName should not be empty even without NODE_NAME env var")
 	}
+
+	// Log what value was used for debugging
+	t.Logf("Node name set to: %s", config.Settings.NodeName)
 }
 
 // TestLoadConfigYAML tests loading YAML configuration

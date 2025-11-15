@@ -21,6 +21,10 @@ func LoadConfig(path string) (*types.NodeDoctorConfig, error) {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
+	// Substitute environment variables in raw data BEFORE parsing
+	// This allows env vars to work in non-string fields (e.g., port: ${PORT})
+	data = []byte(os.ExpandEnv(string(data)))
+
 	// Determine format by extension
 	ext := filepath.Ext(path)
 
@@ -43,7 +47,7 @@ func LoadConfig(path string) (*types.NodeDoctorConfig, error) {
 		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
 
-	// Substitute environment variables
+	// Substitute environment variables in string fields (for dynamic map values)
 	config.SubstituteEnvVars()
 
 	// Apply defaults
@@ -69,6 +73,18 @@ func LoadConfigOrDefault(path string) (*types.NodeDoctorConfig, error) {
 
 // DefaultConfig returns a default configuration suitable for basic monitoring.
 func DefaultConfig() (*types.NodeDoctorConfig, error) {
+	// Get node name from environment, fallback to hostname if not set
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			// Last resort: use a generic name
+			nodeName = "node-doctor-node"
+		} else {
+			nodeName = hostname
+		}
+	}
+
 	config := &types.NodeDoctorConfig{
 		APIVersion: "node-doctor.io/v1alpha1",
 		Kind:       "NodeDoctorConfig",
@@ -76,7 +92,7 @@ func DefaultConfig() (*types.NodeDoctorConfig, error) {
 			Name: "default",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: os.Getenv("NODE_NAME"),
+			NodeName: nodeName,
 		},
 		Monitors: []types.MonitorConfig{
 			{

@@ -1814,3 +1814,739 @@ func TestComplexConfigurationValidation(t *testing.T) {
 		t.Errorf("Nested remediation max attempts = %v, want 1", nestedRemediation.MaxAttempts)
 	}
 }
+
+// TestDetectCircularDependencies tests circular dependency detection in monitors
+func TestDetectCircularDependencies(t *testing.T) {
+	tests := []struct {
+		name     string
+		monitors []MonitorConfig
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name: "no dependencies",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a"},
+				{Name: "monitor-b"},
+				{Name: "monitor-c"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid linear dependency chain",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-b"}},
+				{Name: "monitor-b", DependsOn: []string{"monitor-c"}},
+				{Name: "monitor-c"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "simple circular dependency (A -> B -> A)",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-b"}},
+				{Name: "monitor-b", DependsOn: []string{"monitor-a"}},
+			},
+			wantErr: true,
+			errMsg:  "circular dependency detected",
+		},
+		{
+			name: "complex circular dependency (A -> B -> C -> A)",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-b"}},
+				{Name: "monitor-b", DependsOn: []string{"monitor-c"}},
+				{Name: "monitor-c", DependsOn: []string{"monitor-a"}},
+			},
+			wantErr: true,
+			errMsg:  "circular dependency detected",
+		},
+		{
+			name: "self-dependency",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-a"}},
+			},
+			wantErr: true,
+			errMsg:  "circular dependency detected",
+		},
+		{
+			name: "dependency on non-existent monitor",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-nonexistent"}},
+			},
+			wantErr: true,
+			errMsg:  "depends on non-existent monitor",
+		},
+		{
+			name: "complex valid dependency tree",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-b", "monitor-c"}},
+				{Name: "monitor-b", DependsOn: []string{"monitor-d"}},
+				{Name: "monitor-c", DependsOn: []string{"monitor-d"}},
+				{Name: "monitor-d"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "cycle in complex tree (A -> B -> D, C -> D -> A)",
+			monitors: []MonitorConfig{
+				{Name: "monitor-a", DependsOn: []string{"monitor-b"}},
+				{Name: "monitor-b", DependsOn: []string{"monitor-d"}},
+				{Name: "monitor-c", DependsOn: []string{"monitor-d"}},
+				{Name: "monitor-d", DependsOn: []string{"monitor-a"}},
+			},
+			wantErr: true,
+			errMsg:  "circular dependency detected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := detectCircularDependencies(tt.monitors)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("detectCircularDependencies() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("detectCircularDependencies() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateMonitorThresholds tests threshold range validation (0-100)
+func TestValidateMonitorThresholds(t *testing.T) {
+	tests := []struct {
+		name        string
+		monitorName string
+		config      map[string]interface{}
+		wantErr     bool
+		errMsg      string
+	}{
+		{
+			name:        "valid thresholds",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"warningThreshold":  80.0,
+				"criticalThreshold": 95.0,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "threshold at boundary (0)",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"warningThreshold": 0.0,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "threshold at boundary (100)",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"criticalThreshold": 100.0,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "threshold below range",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"warningThreshold": -10.0,
+			},
+			wantErr: true,
+			errMsg:  "must be in range 0-100",
+		},
+		{
+			name:        "threshold above range",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"criticalThreshold": 150.0,
+			},
+			wantErr: true,
+			errMsg:  "must be in range 0-100",
+		},
+		{
+			name:        "integer thresholds (valid)",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"warningThreshold":  80,
+				"criticalThreshold": 95,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "integer threshold out of range",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"warningThreshold": 200,
+			},
+			wantErr: true,
+			errMsg:  "must be in range 0-100",
+		},
+		{
+			name:        "CPU load factor thresholds",
+			monitorName: "cpu-monitor",
+			config: map[string]interface{}{
+				"warningLoadFactor":  0.7,
+				"criticalLoadFactor": 0.9,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "disk inode thresholds",
+			monitorName: "disk-monitor",
+			config: map[string]interface{}{
+				"inodeWarning":  80.0,
+				"inodeCritical": 95.0,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "memory swap thresholds",
+			monitorName: "memory-monitor",
+			config: map[string]interface{}{
+				"swapWarningThreshold":  50.0,
+				"swapCriticalThreshold": 80.0,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "non-threshold fields ignored",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"somePath":    "/var/log",
+				"someCount":   1000,
+				"someBoolean": true,
+			},
+			wantErr: false,
+		},
+		{
+			name:        "mixed valid and invalid",
+			monitorName: "test-monitor",
+			config: map[string]interface{}{
+				"warningThreshold":  80.0,  // valid
+				"criticalThreshold": 150.0, // invalid
+			},
+			wantErr: true,
+			errMsg:  "must be in range 0-100",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMonitorThresholds(tt.monitorName, tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMonitorThresholds() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("validateMonitorThresholds() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestMonitorConfigValidation_IntervalMinimums tests minimum interval validation
+func TestMonitorConfigValidation_IntervalMinimums(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   MonitorConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "interval meets minimum (1s)",
+			input: MonitorConfig{
+				Name:     "test-monitor",
+				Type:     "test-type",
+				Interval: 1 * time.Second,
+				Timeout:  500 * time.Millisecond,
+			},
+			wantErr: false,
+		},
+		{
+			name: "interval exceeds minimum",
+			input: MonitorConfig{
+				Name:     "test-monitor",
+				Type:     "test-type",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "interval below minimum (500ms)",
+			input: MonitorConfig{
+				Name:     "test-monitor",
+				Type:     "test-type",
+				Interval: 500 * time.Millisecond,
+				Timeout:  100 * time.Millisecond,
+			},
+			wantErr: true,
+			errMsg:  "below minimum threshold",
+		},
+		{
+			name: "interval below minimum (100ms)",
+			input: MonitorConfig{
+				Name:     "test-monitor",
+				Type:     "test-type",
+				Interval: 100 * time.Millisecond,
+				Timeout:  50 * time.Millisecond,
+			},
+			wantErr: true,
+			errMsg:  "below minimum threshold",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestGlobalSettingsValidation_HeartbeatMinimum tests heartbeat interval minimum
+func TestGlobalSettingsValidation_HeartbeatMinimum(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   GlobalSettings
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "heartbeat meets minimum (5s)",
+			input: GlobalSettings{
+				NodeName:          "test-node",
+				LogLevel:          "info",
+				LogFormat:         "json",
+				LogOutput:         "stdout",
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 5 * time.Second,
+				QPS:               50,
+				Burst:             100,
+			},
+			wantErr: false,
+		},
+		{
+			name: "heartbeat exceeds minimum",
+			input: GlobalSettings{
+				NodeName:          "test-node",
+				LogLevel:          "info",
+				LogFormat:         "json",
+				LogOutput:         "stdout",
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 5 * time.Minute,
+				QPS:               50,
+				Burst:             100,
+			},
+			wantErr: false,
+		},
+		{
+			name: "heartbeat below minimum (3s)",
+			input: GlobalSettings{
+				NodeName:          "test-node",
+				LogLevel:          "info",
+				LogFormat:         "json",
+				LogOutput:         "stdout",
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 3 * time.Second,
+				QPS:               50,
+				Burst:             100,
+			},
+			wantErr: true,
+			errMsg:  "below minimum threshold",
+		},
+		{
+			name: "heartbeat below minimum (1s)",
+			input: GlobalSettings{
+				NodeName:          "test-node",
+				LogLevel:          "info",
+				LogFormat:         "json",
+				LogOutput:         "stdout",
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 1 * time.Second,
+				QPS:               50,
+				Burst:             100,
+			},
+			wantErr: true,
+			errMsg:  "below minimum threshold",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestMonitorRemediationConfigValidation_CooldownMinimum tests cooldown minimum
+func TestMonitorRemediationConfigValidation_CooldownMinimum(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   MonitorRemediationConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "cooldown meets minimum (10s)",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "systemd-restart",
+				Service:     "kubelet",
+				Cooldown:    10 * time.Second,
+				MaxAttempts: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "cooldown exceeds minimum",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "systemd-restart",
+				Service:     "kubelet",
+				Cooldown:    5 * time.Minute,
+				MaxAttempts: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "cooldown below minimum (5s)",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "systemd-restart",
+				Service:     "kubelet",
+				Cooldown:    5 * time.Second,
+				MaxAttempts: 3,
+			},
+			wantErr: true,
+			errMsg:  "below minimum threshold",
+		},
+		{
+			name: "cooldown below minimum (1s)",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "systemd-restart",
+				Service:     "kubelet",
+				Cooldown:    1 * time.Second,
+				MaxAttempts: 3,
+			},
+			wantErr: true,
+			errMsg:  "below minimum threshold",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// mockMonitorRegistry is a mock implementation of MonitorRegistryValidator for testing
+type mockMonitorRegistry struct {
+	registeredTypes map[string]bool
+}
+
+func (m *mockMonitorRegistry) IsRegistered(monitorType string) bool {
+	return m.registeredTypes[monitorType]
+}
+
+func (m *mockMonitorRegistry) GetRegisteredTypes() []string {
+	types := make([]string, 0, len(m.registeredTypes))
+	for t := range m.registeredTypes {
+		types = append(types, t)
+	}
+	return types
+}
+
+// TestValidateWithRegistry tests configuration validation with monitor registry
+func TestValidateWithRegistry(t *testing.T) {
+	// Create a mock registry with some registered types
+	mockRegistry := &mockMonitorRegistry{
+		registeredTypes: map[string]bool{
+			"system-cpu-check":    true,
+			"system-memory-check": true,
+			"system-disk-check":   true,
+		},
+	}
+
+	tests := []struct {
+		name     string
+		config   NodeDoctorConfig
+		registry MonitorRegistryValidator
+		wantErr  bool
+		errMsg   string
+	}{
+		{
+			name: "valid config with registered monitor types",
+			config: NodeDoctorConfig{
+				APIVersion: "v1",
+				Kind:       "NodeDoctorConfig",
+				Metadata:   ConfigMetadata{Name: "test-config"},
+				Settings: GlobalSettings{
+					NodeName:          "test-node",
+					LogLevel:          "info",
+					LogFormat:         "json",
+					LogOutput:         "stdout",
+					UpdateInterval:    10 * time.Second,
+					ResyncInterval:    60 * time.Second,
+					HeartbeatInterval: 5 * time.Second,
+					QPS:               50,
+					Burst:             100,
+				},
+				Monitors: []MonitorConfig{
+					{
+						Name:     "cpu-monitor",
+						Type:     "system-cpu-check",
+						Interval: 30 * time.Second,
+						Timeout:  10 * time.Second,
+					},
+				},
+				Remediation: RemediationConfig{
+					CooldownPeriod:           5 * time.Minute,
+					MaxAttemptsGlobal:        3,
+					MaxRemediationsPerHour:   10,
+					MaxRemediationsPerMinute: 2,
+					HistorySize:              100,
+				},
+			},
+			registry: mockRegistry,
+			wantErr:  false,
+		},
+		{
+			name: "unregistered monitor type",
+			config: NodeDoctorConfig{
+				APIVersion: "v1",
+				Kind:       "NodeDoctorConfig",
+				Metadata:   ConfigMetadata{Name: "test-config"},
+				Settings: GlobalSettings{
+					NodeName:          "test-node",
+					LogLevel:          "info",
+					LogFormat:         "json",
+					LogOutput:         "stdout",
+					UpdateInterval:    10 * time.Second,
+					ResyncInterval:    60 * time.Second,
+					HeartbeatInterval: 5 * time.Second,
+					QPS:               50,
+					Burst:             100,
+				},
+				Monitors: []MonitorConfig{
+					{
+						Name:     "unknown-monitor",
+						Type:     "unknown-type",
+						Interval: 30 * time.Second,
+						Timeout:  10 * time.Second,
+					},
+				},
+				Remediation: RemediationConfig{
+					CooldownPeriod:           5 * time.Minute,
+					MaxAttemptsGlobal:        3,
+					MaxRemediationsPerHour:   10,
+					MaxRemediationsPerMinute: 2,
+					HistorySize:              100,
+				},
+			},
+			registry: mockRegistry,
+			wantErr:  true,
+			errMsg:   "unknown monitor type",
+		},
+		{
+			name: "circular dependency detected",
+			config: NodeDoctorConfig{
+				APIVersion: "v1",
+				Kind:       "NodeDoctorConfig",
+				Metadata:   ConfigMetadata{Name: "test-config"},
+				Settings: GlobalSettings{
+					NodeName:          "test-node",
+					LogLevel:          "info",
+					LogFormat:         "json",
+					LogOutput:         "stdout",
+					UpdateInterval:    10 * time.Second,
+					ResyncInterval:    60 * time.Second,
+					HeartbeatInterval: 5 * time.Second,
+					QPS:               50,
+					Burst:             100,
+				},
+				Monitors: []MonitorConfig{
+					{
+						Name:       "cpu-monitor",
+						Type:       "system-cpu-check",
+						Interval:   30 * time.Second,
+						Timeout:    10 * time.Second,
+						DependsOn:  []string{"memory-monitor"},
+					},
+					{
+						Name:       "memory-monitor",
+						Type:       "system-memory-check",
+						Interval:   30 * time.Second,
+						Timeout:    10 * time.Second,
+						DependsOn:  []string{"cpu-monitor"},
+					},
+				},
+				Remediation: RemediationConfig{
+					CooldownPeriod:           5 * time.Minute,
+					MaxAttemptsGlobal:        3,
+					MaxRemediationsPerHour:   10,
+					MaxRemediationsPerMinute: 2,
+					HistorySize:              100,
+				},
+			},
+			registry: mockRegistry,
+			wantErr:  true,
+			errMsg:   "circular dependency",
+		},
+		{
+			name: "nil registry still validates structure and dependencies",
+			config: NodeDoctorConfig{
+				APIVersion: "v1",
+				Kind:       "NodeDoctorConfig",
+				Metadata:   ConfigMetadata{Name: "test-config"},
+				Settings: GlobalSettings{
+					NodeName:          "test-node",
+					LogLevel:          "info",
+					LogFormat:         "json",
+					LogOutput:         "stdout",
+					UpdateInterval:    10 * time.Second,
+					ResyncInterval:    60 * time.Second,
+					HeartbeatInterval: 5 * time.Second,
+					QPS:               50,
+					Burst:             100,
+				},
+				Monitors: []MonitorConfig{
+					{
+						Name:     "test-monitor",
+						Type:     "any-type",
+						Interval: 30 * time.Second,
+						Timeout:  10 * time.Second,
+					},
+				},
+				Remediation: RemediationConfig{
+					CooldownPeriod:           5 * time.Minute,
+					MaxAttemptsGlobal:        3,
+					MaxRemediationsPerHour:   10,
+					MaxRemediationsPerMinute: 2,
+					HistorySize:              100,
+				},
+			},
+			registry: nil,
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.ValidateWithRegistry(tt.registry)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateWithRegistry() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ValidateWithRegistry() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestMonitorConfigValidation_WithThresholds tests threshold validation in MonitorConfig
+func TestMonitorConfigValidation_WithThresholds(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   MonitorConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid monitor with valid thresholds",
+			input: MonitorConfig{
+				Name:     "cpu-monitor",
+				Type:     "system-cpu-check",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Config: map[string]interface{}{
+					"warningThreshold":  80.0,
+					"criticalThreshold": 95.0,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "monitor with threshold out of range",
+			input: MonitorConfig{
+				Name:     "memory-monitor",
+				Type:     "system-memory-check",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Config: map[string]interface{}{
+					"warningThreshold":  150.0,
+					"criticalThreshold": 95.0,
+				},
+			},
+			wantErr: true,
+			errMsg:  "must be in range 0-100",
+		},
+		{
+			name: "monitor without threshold config",
+			input: MonitorConfig{
+				Name:     "test-monitor",
+				Type:     "test-type",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Config:   map[string]interface{}{},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}

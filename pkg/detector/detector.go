@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/supporttools/node-doctor/pkg/reload"
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
@@ -17,6 +18,7 @@ import (
 // deduplicates issues, and distributes results to exporters.
 type ProblemDetector struct {
 	config          *types.NodeDoctorConfig
+	configPath      string                   // Path to configuration file (for reload)
 	monitors        []types.Monitor
 	exporters       []types.Exporter
 	statusChan      chan *types.Status       // Buffered channel for status updates
@@ -29,6 +31,12 @@ type ProblemDetector struct {
 	stats           Statistics               // Thread-safe statistics
 	problemTTL      time.Duration            // TTL for problem entries
 	cleanupInterval time.Duration            // Cleanup interval
+
+	// Hot reload components
+	configWatcher      *reload.ConfigWatcher      // Watches config file for changes
+	reloadCoordinator  *reload.ReloadCoordinator  // Coordinates reload operations
+	reloadMutex        sync.Mutex                 // Prevents concurrent reloads
+	monitorFactory     MonitorFactory             // Factory for creating monitors dynamically
 }
 
 // problemEntry wraps a problem with TTL tracking
@@ -37,9 +45,16 @@ type problemEntry struct {
 	lastSeen time.Time
 }
 
+// MonitorFactory creates monitors from configuration.
+// This interface allows hot reload to dynamically create new monitors.
+type MonitorFactory interface {
+	CreateMonitor(config types.MonitorConfig) (types.Monitor, error)
+}
+
 // NewProblemDetector creates a new ProblemDetector instance.
 // It validates the configuration and initializes all internal structures.
-func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor, exporters []types.Exporter) (*ProblemDetector, error) {
+// If configPath is provided and reload is enabled, hot reload will be configured.
+func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor, exporters []types.Exporter, configPath string, monitorFactory MonitorFactory) (*ProblemDetector, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -50,17 +65,49 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 		return nil, fmt.Errorf("at least one exporter is required")
 	}
 
-	return &ProblemDetector{
+	pd := &ProblemDetector{
 		config:          config,
+		configPath:      configPath,
 		monitors:        monitors,
 		exporters:       exporters,
+		monitorFactory:  monitorFactory,
 		statusChan:      make(chan *types.Status, 1000), // Buffered to prevent blocking
 		stopChan:        make(chan struct{}),
 		problems:        make(map[string]*problemEntry),
 		stats:           NewStatistics(),
 		problemTTL:      1 * time.Hour,    // Problems expire after 1 hour
 		cleanupInterval: 10 * time.Minute, // Cleanup every 10 minutes
-	}, nil
+	}
+
+	// Initialize hot reload if enabled
+	if config.Reload.Enabled && configPath != "" {
+		if err := pd.initializeReload(); err != nil {
+			return nil, fmt.Errorf("failed to initialize hot reload: %w", err)
+		}
+		log.Printf("[INFO] Hot reload enabled for config file: %s (debounce: %v)", configPath, config.Reload.DebounceInterval)
+	}
+
+	return pd, nil
+}
+
+// initializeReload sets up the configuration hot reload components.
+func (pd *ProblemDetector) initializeReload() error {
+	// Create config watcher
+	watcher, err := reload.NewConfigWatcher(pd.configPath, pd.config.Reload.DebounceInterval)
+	if err != nil {
+		return fmt.Errorf("failed to create config watcher: %w", err)
+	}
+	pd.configWatcher = watcher
+
+	// Create reload coordinator
+	pd.reloadCoordinator = reload.NewReloadCoordinator(
+		pd.configPath,
+		pd.config,
+		pd.applyConfigReload,
+		pd.emitReloadEvent,
+	)
+
+	return nil
 }
 
 // Run starts the problem detector orchestrator.
@@ -100,18 +147,38 @@ func (pd *ProblemDetector) Run(ctx context.Context) error {
 		pd.cleanupExpiredProblems(ctx)
 	}()
 
-	log.Printf("[INFO] Problem Detector started successfully")
-
-	// Wait for context cancellation or stop signal
-	select {
-	case <-ctx.Done():
-		log.Printf("[INFO] Problem Detector stopping due to context cancellation")
-	case <-pd.stopChan:
-		log.Printf("[INFO] Problem Detector stopping due to stop signal")
+	// Start config watcher if hot reload is enabled
+	var reloadCh <-chan struct{}
+	if pd.configWatcher != nil {
+		ch, err := pd.configWatcher.Start(ctx)
+		if err != nil {
+			log.Printf("[ERROR] Failed to start config watcher: %v", err)
+		} else {
+			reloadCh = ch
+			log.Printf("[INFO] Config watcher started")
+		}
 	}
 
-	// Perform graceful shutdown
-	return pd.shutdown()
+	log.Printf("[INFO] Problem Detector started successfully")
+
+	// Wait for context cancellation, stop signal, or reload events
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[INFO] Problem Detector stopping due to context cancellation")
+			return pd.shutdown()
+		case <-pd.stopChan:
+			log.Printf("[INFO] Problem Detector stopping due to stop signal")
+			return pd.shutdown()
+		case <-reloadCh:
+			if reloadCh != nil {
+				log.Printf("[INFO] Config file change detected, triggering reload")
+				if err := pd.reloadCoordinator.TriggerReload(ctx); err != nil {
+					log.Printf("[WARN] Config reload failed: %v", err)
+				}
+			}
+		}
+	}
 }
 
 // startMonitors starts all monitors and sets up fan-in from their status channels.
@@ -483,6 +550,12 @@ func (pd *ProblemDetector) shutdown() error {
 	// Signal all goroutines to stop
 	close(pd.stopChan)
 
+	// Stop config watcher if enabled
+	if pd.configWatcher != nil {
+		pd.configWatcher.Stop()
+		log.Printf("[INFO] Stopped config watcher")
+	}
+
 	// Stop all monitors
 	for i, monitor := range pd.monitors {
 		monitor.Stop()
@@ -516,4 +589,152 @@ func (pd *ProblemDetector) IsRunning() bool {
 	pd.mu.RLock()
 	defer pd.mu.RUnlock()
 	return pd.running
+}
+
+// applyConfigReload applies configuration changes during hot reload.
+// This is called by the ReloadCoordinator after validation succeeds.
+func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *reload.ConfigDiff) error {
+	pd.reloadMutex.Lock()
+	defer pd.reloadMutex.Unlock()
+
+	log.Printf("[INFO] Applying configuration reload")
+
+	// Step 1: Stop monitors that were removed
+	for _, removedConfig := range diff.MonitorsRemoved {
+		if err := pd.stopMonitorByName(removedConfig.Name); err != nil {
+			log.Printf("[WARN] Failed to stop removed monitor %s: %v", removedConfig.Name, err)
+		}
+	}
+
+	// Step 2: Restart modified monitors
+	for _, change := range diff.MonitorsModified {
+		// Stop old monitor
+		if err := pd.stopMonitorByName(change.Old.Name); err != nil {
+			log.Printf("[WARN] Failed to stop monitor %s for restart: %v", change.Old.Name, err)
+			continue
+		}
+
+		// Create and start new monitor with updated config
+		if pd.monitorFactory != nil {
+			newMonitor, err := pd.monitorFactory.CreateMonitor(change.New)
+			if err != nil {
+				log.Printf("[ERROR] Failed to create modified monitor %s: %v", change.New.Name, err)
+				continue
+			}
+
+			statusCh, err := newMonitor.Start()
+			if err != nil {
+				log.Printf("[ERROR] Failed to start modified monitor %s: %v", change.New.Name, err)
+				continue
+			}
+
+			// Replace in monitors array and start fan-in
+			pd.replaceMonitor(change.Old.Name, newMonitor)
+			pd.wg.Add(1)
+			go func(ch <-chan *types.Status, name string) {
+				defer pd.wg.Done()
+				pd.fanInFromMonitor(ctx, ch, pd.getMonitorIndex(name))
+			}(statusCh, change.New.Name)
+
+			log.Printf("[INFO] Restarted monitor %s with new configuration", change.New.Name)
+		}
+	}
+
+	// Step 3: Start new monitors
+	for _, addedConfig := range diff.MonitorsAdded {
+		if pd.monitorFactory != nil {
+			newMonitor, err := pd.monitorFactory.CreateMonitor(addedConfig)
+			if err != nil {
+				log.Printf("[ERROR] Failed to create new monitor %s: %v", addedConfig.Name, err)
+				continue
+			}
+
+			statusCh, err := newMonitor.Start()
+			if err != nil {
+				log.Printf("[ERROR] Failed to start new monitor %s: %v", addedConfig.Name, err)
+				continue
+			}
+
+			// Add to monitors array and start fan-in
+			pd.monitors = append(pd.monitors, newMonitor)
+			pd.wg.Add(1)
+			go func(ch <-chan *types.Status, idx int) {
+				defer pd.wg.Done()
+				pd.fanInFromMonitor(ctx, ch, idx)
+			}(statusCh, len(pd.monitors)-1)
+
+			log.Printf("[INFO] Started new monitor %s", addedConfig.Name)
+		}
+	}
+
+	// Step 4: Update configuration
+	// Note: Exporters and remediation changes don't require restarts,
+	// they just need the updated config reference
+	pd.mu.Lock()
+	pd.config = newConfig
+	pd.mu.Unlock()
+
+	log.Printf("[INFO] Configuration reload completed successfully")
+	return nil
+}
+
+// stopMonitorByName stops a monitor by its name.
+func (pd *ProblemDetector) stopMonitorByName(name string) error {
+	for i, monitor := range pd.monitors {
+		// Try to get monitor name from config (this requires monitors to store their config)
+		// For now, we'll match by index - production would need better monitor identification
+		if i < len(pd.config.Monitors) && pd.config.Monitors[i].Name == name {
+			monitor.Stop()
+			log.Printf("[INFO] Stopped monitor %s", name)
+			return nil
+		}
+	}
+	return fmt.Errorf("monitor %s not found", name)
+}
+
+// replaceMonitor replaces a monitor in the monitors array.
+func (pd *ProblemDetector) replaceMonitor(name string, newMonitor types.Monitor) {
+	for i := range pd.monitors {
+		if i < len(pd.config.Monitors) && pd.config.Monitors[i].Name == name {
+			pd.monitors[i] = newMonitor
+			return
+		}
+	}
+}
+
+// getMonitorIndex returns the index of a monitor by name.
+func (pd *ProblemDetector) getMonitorIndex(name string) int {
+	for i := range pd.config.Monitors {
+		if pd.config.Monitors[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// emitReloadEvent emits a reload status event.
+func (pd *ProblemDetector) emitReloadEvent(severity types.EventSeverity, reason, message string) {
+	// Create a reload event
+	status := &types.Status{
+		Source:    "config-reload",
+		Timestamp: time.Now(),
+		Events: []types.Event{
+			{
+				Severity:  severity,
+				Timestamp: time.Now(),
+				Reason:    reason,
+				Message:   message,
+			},
+		},
+		Conditions: []types.Condition{},
+	}
+
+	// Send to status channel for export
+	select {
+	case pd.statusChan <- status:
+		// Event sent
+	default:
+		// Channel full, log warning
+		log.Printf("[WARN] Status channel full, reload event dropped: %s", reason)
+	}
 }

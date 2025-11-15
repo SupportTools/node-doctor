@@ -71,7 +71,23 @@ var (
 		"node-reboot":     true,
 		"pod-delete":      true,
 	}
+
+	// Minimum interval thresholds (conservative settings to prevent system overload)
+	MinMonitorInterval    = 1 * time.Second  // Minimum time between monitor polls
+	MinHeartbeatInterval  = 5 * time.Second  // Minimum heartbeat check interval
+	MinCooldownPeriod     = 10 * time.Second // Minimum cooldown between remediation attempts
 )
+
+// MonitorRegistryValidator provides an interface for validating monitor types
+// without creating an import cycle between config and monitors packages.
+// This interface is implemented by monitors.Registry.
+type MonitorRegistryValidator interface {
+	// IsRegistered returns true if the given monitor type is registered
+	IsRegistered(monitorType string) bool
+
+	// GetRegisteredTypes returns a sorted list of all registered monitor types
+	GetRegisteredTypes() []string
+}
 
 // NodeDoctorConfig is the top-level configuration structure.
 type NodeDoctorConfig struct {
@@ -98,6 +114,9 @@ type NodeDoctorConfig struct {
 
 	// Features contains feature flags
 	Features FeatureFlags `json:"features,omitempty" yaml:"features,omitempty"`
+
+	// Reload contains configuration hot reload settings
+	Reload ReloadConfig `json:"reload,omitempty" yaml:"reload,omitempty"`
 }
 
 // ConfigMetadata contains metadata about the configuration.
@@ -163,6 +182,10 @@ type MonitorConfig struct {
 
 	// Remediation contains optional remediation configuration for this monitor
 	Remediation *MonitorRemediationConfig `json:"remediation,omitempty" yaml:"remediation,omitempty"`
+
+	// DependsOn specifies monitors that must complete successfully before this monitor starts
+	// Used for dependency ordering and circular dependency detection during validation
+	DependsOn []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
 }
 
 // MonitorRemediationConfig contains remediation settings for a monitor.
@@ -384,6 +407,35 @@ type FeatureFlags struct {
 	TracingEndpoint string `json:"tracingEndpoint,omitempty" yaml:"tracingEndpoint,omitempty"`
 }
 
+// ReloadConfig contains configuration hot reload settings.
+type ReloadConfig struct {
+	// Enabled indicates whether hot reload is enabled
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// DebounceIntervalString is the debounce interval as a string (e.g., "500ms")
+	DebounceIntervalString string `json:"debounceInterval,omitempty" yaml:"debounceInterval,omitempty"`
+
+	// DebounceInterval is the parsed debounce duration
+	DebounceInterval time.Duration `json:"-" yaml:"-"`
+}
+
+// ApplyDefaults applies default values to reload configuration.
+func (r *ReloadConfig) ApplyDefaults() error {
+	// Default debounce interval
+	if r.DebounceIntervalString == "" {
+		r.DebounceIntervalString = "500ms"
+	}
+
+	// Parse debounce interval
+	duration, err := time.ParseDuration(r.DebounceIntervalString)
+	if err != nil {
+		return fmt.Errorf("invalid debounceInterval %q: %w", r.DebounceIntervalString, err)
+	}
+	r.DebounceInterval = duration
+
+	return nil
+}
+
 // ApplyDefaults applies default values to the configuration.
 func (c *NodeDoctorConfig) ApplyDefaults() error {
 	// Apply defaults to global settings
@@ -422,6 +474,11 @@ func (c *NodeDoctorConfig) ApplyDefaults() error {
 
 	// Apply defaults to features
 	c.Features.ApplyDefaults()
+
+	// Apply defaults to reload configuration
+	if err := c.Reload.ApplyDefaults(); err != nil {
+		return fmt.Errorf("failed to apply defaults to reload: %w", err)
+	}
 
 	return nil
 }
@@ -910,6 +967,11 @@ func (s *GlobalSettings) Validate() error {
 		return fmt.Errorf("heartbeatInterval must be positive, got %v", s.HeartbeatInterval)
 	}
 
+	// Validate minimum interval thresholds (conservative settings to prevent system overload)
+	if s.HeartbeatInterval < MinHeartbeatInterval {
+		return fmt.Errorf("heartbeatInterval %v is below minimum threshold of %v", s.HeartbeatInterval, MinHeartbeatInterval)
+	}
+
 	// Validate QPS and burst with bounds checking
 	if s.QPS <= 0 {
 		return fmt.Errorf("qps must be positive, got %f", s.QPS)
@@ -948,9 +1010,21 @@ func (m *MonitorConfig) Validate() error {
 		return fmt.Errorf("timeout must be positive, got %v", m.Timeout)
 	}
 
+	// Validate minimum interval thresholds (conservative settings)
+	if m.Interval < MinMonitorInterval {
+		return fmt.Errorf("monitor %q: interval %v is below minimum threshold of %v", m.Name, m.Interval, MinMonitorInterval)
+	}
+
 	// Validate timeout < interval
 	if m.Timeout >= m.Interval {
 		return fmt.Errorf("timeout (%v) must be less than interval (%v)", m.Timeout, m.Interval)
+	}
+
+	// Validate threshold ranges (0-100) for monitor-specific config
+	if m.Config != nil {
+		if err := validateMonitorThresholds(m.Name, m.Config); err != nil {
+			return err
+		}
 	}
 
 	// Validate remediation if present
@@ -1001,6 +1075,11 @@ func (r *MonitorRemediationConfig) Validate() error {
 	// Validate cooldown is positive
 	if r.Cooldown <= 0 {
 		return fmt.Errorf("cooldown must be positive, got %v", r.Cooldown)
+	}
+
+	// Validate minimum cooldown threshold (conservative setting to prevent remediation storms)
+	if r.Cooldown < MinCooldownPeriod {
+		return fmt.Errorf("cooldown %v is below minimum threshold of %v", r.Cooldown, MinCooldownPeriod)
 	}
 
 	// Validate max attempts
@@ -1453,4 +1532,144 @@ func substituteEnvInSlice(s []interface{}) []interface{} {
 		}
 	}
 	return result
+}
+
+// detectCircularDependencies uses depth-first search to detect circular dependencies
+// in monitor configurations. Returns an error if a cycle is detected.
+func detectCircularDependencies(monitors []MonitorConfig) error {
+	// Build adjacency list for dependency graph
+	graph := make(map[string][]string)
+	monitorExists := make(map[string]bool)
+
+	for _, monitor := range monitors {
+		monitorExists[monitor.Name] = true
+		graph[monitor.Name] = monitor.DependsOn
+	}
+
+	// Validate all dependencies reference existing monitors
+	for _, monitor := range monitors {
+		for _, dep := range monitor.DependsOn {
+			if !monitorExists[dep] {
+				return fmt.Errorf("monitor %q depends on non-existent monitor %q", monitor.Name, dep)
+			}
+		}
+	}
+
+	// State tracking: 0=white (unvisited), 1=gray (visiting), 2=black (visited)
+	state := make(map[string]int)
+	var path []string
+
+	var dfs func(name string) error
+	dfs = func(name string) error {
+		if state[name] == 2 { // Already fully processed
+			return nil
+		}
+		if state[name] == 1 { // Currently being processed - cycle detected!
+			cyclePath := append(path, name)
+			return fmt.Errorf("circular dependency detected in monitors: %s", strings.Join(cyclePath, " → "))
+		}
+
+		state[name] = 1 // Mark as being processed
+		path = append(path, name)
+
+		// Visit all dependencies
+		for _, dep := range graph[name] {
+			if err := dfs(dep); err != nil {
+				return err
+			}
+		}
+
+		state[name] = 2 // Mark as fully processed
+		path = path[:len(path)-1]
+		return nil
+	}
+
+	// Check all monitors for cycles
+	for _, monitor := range monitors {
+		if state[monitor.Name] == 0 {
+			path = []string{} // Reset path for each new DFS
+			if err := dfs(monitor.Name); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateMonitorThresholds validates that threshold values are in the 0-100 range.
+// This handles monitor-specific configuration in the Config map[string]interface{} field.
+// Returns an error if any threshold is outside the valid range.
+func validateMonitorThresholds(monitorName string, config map[string]interface{}) error {
+	// Known threshold field names that should be in 0-100 range
+	thresholdFields := []string{
+		// CPU thresholds
+		"warningLoadFactor",
+		"criticalLoadFactor",
+		// Memory thresholds
+		"warningThreshold",
+		"criticalThreshold",
+		"swapWarningThreshold",
+		"swapCriticalThreshold",
+		// Disk thresholds
+		"inodeWarning",
+		"inodeCritical",
+		// Add more threshold fields as needed
+	}
+
+	for _, field := range thresholdFields {
+		if val, exists := config[field]; exists {
+			// Try to convert to float64 (handles both int and float YAML/JSON values)
+			var floatVal float64
+			switch v := val.(type) {
+			case float64:
+				floatVal = v
+			case float32:
+				floatVal = float64(v)
+			case int:
+				floatVal = float64(v)
+			case int64:
+				floatVal = float64(v)
+			case int32:
+				floatVal = float64(v)
+			default:
+				// Not a numeric type, skip validation
+				continue
+			}
+
+			// Validate range
+			if floatVal < 0 || floatVal > 100 {
+				return fmt.Errorf("monitor %q: threshold %q value %.2f must be in range 0-100", monitorName, field, floatVal)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ValidateWithRegistry validates the entire configuration including monitor type registration.
+// This method should be called instead of Validate() when a monitor registry is available,
+// as it performs additional validation that requires checking against registered monitor types.
+func (c *NodeDoctorConfig) ValidateWithRegistry(registry MonitorRegistryValidator) error {
+	// First run standard validation
+	if err := c.Validate(); err != nil {
+		return err
+	}
+
+	// Validate monitor types are registered
+	if registry != nil {
+		for _, monitor := range c.Monitors {
+			if !registry.IsRegistered(monitor.Type) {
+				return fmt.Errorf("unknown monitor type %q for monitor %q, available types: %v",
+					monitor.Type, monitor.Name, registry.GetRegisteredTypes())
+			}
+		}
+	}
+
+	// Detect circular dependencies
+	if err := detectCircularDependencies(c.Monitors); err != nil {
+		return err
+	}
+
+	return nil
 }

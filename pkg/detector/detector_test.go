@@ -58,7 +58,7 @@ func TestNewProblemDetector(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			detector, err := NewProblemDetector(tt.config, tt.monitors, tt.exporters)
+			detector, err := NewProblemDetector(tt.config, tt.monitors, tt.exporters, "", nil)
 
 			if tt.wantError {
 				if err == nil {
@@ -94,7 +94,7 @@ func TestProblemDetector_NoMonitors(t *testing.T) {
 	failingMonitor := NewMockMonitor("failing-monitor").SetStartError(fmt.Errorf("start failed"))
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{failingMonitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{failingMonitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -117,7 +117,7 @@ func TestProblemDetector_AllMonitorsFail(t *testing.T) {
 	monitor2 := NewMockMonitor("monitor2").SetStartError(fmt.Errorf("failed to start"))
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor1, monitor2}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor1, monitor2}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -149,7 +149,7 @@ func TestProblemDetector_SomeMonitorsFail(t *testing.T) {
 	failMonitor := NewMockMonitor("fail-monitor").SetStartError(fmt.Errorf("failed to start"))
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{successMonitor, failMonitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{successMonitor, failMonitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -180,7 +180,7 @@ func TestProblemDetector_StatusProcessing(t *testing.T) {
 	monitor := NewMockMonitor("test-monitor").AddStatusUpdate(helper.CreateTestStatus("test-monitor"))
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -212,7 +212,7 @@ func TestProblemDetector_StatusProcessing(t *testing.T) {
 func TestStatusToProblems_Events(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()
-	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")})
+	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")}, "", nil)
 
 	tests := []struct {
 		name               string
@@ -270,7 +270,7 @@ func TestStatusToProblems_Events(t *testing.T) {
 func TestStatusToProblems_Conditions(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()
-	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")})
+	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")}, "", nil)
 
 	status := types.NewStatus("test-source")
 	status.AddCondition(types.NewCondition("DiskPressure", types.ConditionFalse, "DiskFull", "Disk is full"))
@@ -292,7 +292,7 @@ func TestStatusToProblems_Conditions(t *testing.T) {
 func TestDeduplicateProblems(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()
-	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")})
+	detector, _ := NewProblemDetector(config, []types.Monitor{NewMockMonitor("test")}, []types.Exporter{NewMockExporter("test")}, "", nil)
 
 	// First set of problems
 	problem1 := types.NewProblem("disk-full", "node1", types.ProblemCritical, "Disk is full")
@@ -329,7 +329,7 @@ func TestExportDistribution(t *testing.T) {
 
 	monitor := NewMockMonitor("test-monitor").AddStatusUpdate(helper.CreateErrorStatus("test-monitor"))
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter1, exporter2, exporter3})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter1, exporter2, exporter3}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -367,7 +367,7 @@ func TestGracefulShutdown(t *testing.T) {
 	monitor := NewMockMonitor("test-monitor")
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -420,7 +420,7 @@ func TestShutdownTimeout(t *testing.T) {
 	exporter := NewMockExporter("slow-exporter").SetExportDelay(2 * time.Second)
 	monitor := NewMockMonitor("test-monitor").AddStatusUpdate(helper.CreateTestStatus("test-monitor"))
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -461,7 +461,7 @@ func TestConcurrencySafety(t *testing.T) {
 
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, monitors, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, monitors, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -497,7 +497,7 @@ func TestChannelOverflow(t *testing.T) {
 
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -529,7 +529,7 @@ func TestExportFailureIsolation(t *testing.T) {
 
 	monitor := NewMockMonitor("test-monitor").AddStatusUpdate(helper.CreateErrorStatus("test-monitor"))
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{successExporter, failStatusExporter, failProblemExporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{successExporter, failStatusExporter, failProblemExporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -567,7 +567,7 @@ func TestMonitorChannelClosure(t *testing.T) {
 	monitor := NewMockMonitor("test-monitor").AddStatusUpdate(helper.CreateTestStatus("test-monitor"))
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{monitor}, []types.Exporter{exporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -609,7 +609,7 @@ func TestStatisticsTracking(t *testing.T) {
 	successExporter := NewMockExporter("success-exp")
 	failExporter := NewMockExporter("fail-exp").SetProblemExportError(fmt.Errorf("export failed"))
 
-	detector, err := NewProblemDetector(config, []types.Monitor{successMonitor, failMonitor}, []types.Exporter{successExporter, failExporter})
+	detector, err := NewProblemDetector(config, []types.Monitor{successMonitor, failMonitor}, []types.Exporter{successExporter, failExporter}, "", nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
