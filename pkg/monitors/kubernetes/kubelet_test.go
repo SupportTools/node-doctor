@@ -1238,3 +1238,226 @@ func TestKubeletMonitor_CircuitBreakerExponentialBackoff(t *testing.T) {
 		t.Error("Should allow attempt after doubled timeout")
 	}
 }
+// TestParseCircuitBreakerConfig tests the parseCircuitBreakerConfig function.
+func TestParseCircuitBreakerConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		configMap map[string]interface{}
+		want      *CircuitBreakerConfig
+		wantErr   bool
+		errMsg    string
+	}{
+		{
+			name:      "nil config map",
+			configMap: nil,
+			want:      nil,
+			wantErr:   false,
+		},
+		{
+			name: "valid config with all fields",
+			configMap: map[string]interface{}{
+				"enabled":                true,
+				"failureThreshold":       5,
+				"openTimeout":            "30s",
+				"halfOpenMaxRequests":    3,
+				"useExponentialBackoff":  true,
+				"maxBackoffTimeout":      "5m",
+			},
+			want: &CircuitBreakerConfig{
+				Enabled:                true,
+				FailureThreshold:       5,
+				OpenTimeout:            30 * time.Second,
+				HalfOpenMaxRequests:    3,
+				UseExponentialBackoff:  true,
+				MaxBackoffTimeout:      5 * time.Minute,
+			},
+			wantErr: false,
+		},
+		{
+			name: "failureThreshold as float64",
+			configMap: map[string]interface{}{
+				"failureThreshold": float64(10),
+			},
+			want: &CircuitBreakerConfig{
+				FailureThreshold: 10,
+			},
+			wantErr: false,
+		},
+		{
+			name: "openTimeout as float64 seconds",
+			configMap: map[string]interface{}{
+				"openTimeout": float64(15),
+			},
+			want: &CircuitBreakerConfig{
+				OpenTimeout: 15 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "openTimeout as int seconds",
+			configMap: map[string]interface{}{
+				"openTimeout": 20,
+			},
+			want: &CircuitBreakerConfig{
+				OpenTimeout: 20 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "maxBackoffTimeout as float64 seconds",
+			configMap: map[string]interface{}{
+				"maxBackoffTimeout": float64(300),
+			},
+			want: &CircuitBreakerConfig{
+				MaxBackoffTimeout: 300 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "maxBackoffTimeout as int seconds",
+			configMap: map[string]interface{}{
+				"maxBackoffTimeout": 600,
+			},
+			want: &CircuitBreakerConfig{
+				MaxBackoffTimeout: 600 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "halfOpenMaxRequests as float64",
+			configMap: map[string]interface{}{
+				"halfOpenMaxRequests": float64(5),
+			},
+			want: &CircuitBreakerConfig{
+				HalfOpenMaxRequests: 5,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid enabled type",
+			configMap: map[string]interface{}{
+				"enabled": "true",
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "enabled must be a boolean",
+		},
+		{
+			name: "invalid failureThreshold type",
+			configMap: map[string]interface{}{
+				"failureThreshold": "5",
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "failureThreshold must be an integer",
+		},
+		{
+			name: "invalid openTimeout type",
+			configMap: map[string]interface{}{
+				"openTimeout": true,
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "openTimeout must be a duration string or number",
+		},
+		{
+			name: "invalid openTimeout duration string",
+			configMap: map[string]interface{}{
+				"openTimeout": "invalid",
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "invalid openTimeout duration",
+		},
+		{
+			name: "invalid halfOpenMaxRequests type",
+			configMap: map[string]interface{}{
+				"halfOpenMaxRequests": "3",
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "halfOpenMaxRequests must be an integer",
+		},
+		{
+			name: "invalid useExponentialBackoff type",
+			configMap: map[string]interface{}{
+				"useExponentialBackoff": "true",
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "useExponentialBackoff must be a boolean",
+		},
+		{
+			name: "invalid maxBackoffTimeout type",
+			configMap: map[string]interface{}{
+				"maxBackoffTimeout": true,
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "maxBackoffTimeout must be a duration string or number",
+		},
+		{
+			name: "invalid maxBackoffTimeout duration string",
+			configMap: map[string]interface{}{
+				"maxBackoffTimeout": "bad-duration",
+			},
+			want:    nil,
+			wantErr: true,
+			errMsg:  "invalid maxBackoffTimeout duration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCircuitBreakerConfig(tt.configMap)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseCircuitBreakerConfig() expected error containing %q, got nil", tt.errMsg)
+					return
+				}
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("parseCircuitBreakerConfig() error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("parseCircuitBreakerConfig() unexpected error: %v", err)
+				return
+			}
+
+			// Compare results
+			if tt.want == nil && got != nil {
+				t.Errorf("parseCircuitBreakerConfig() = %+v, want nil", got)
+				return
+			}
+			if tt.want != nil && got == nil {
+				t.Errorf("parseCircuitBreakerConfig() = nil, want %+v", tt.want)
+				return
+			}
+			if tt.want == nil && got == nil {
+				return
+			}
+
+			if got.Enabled != tt.want.Enabled {
+				t.Errorf("parseCircuitBreakerConfig().Enabled = %v, want %v", got.Enabled, tt.want.Enabled)
+			}
+			if got.FailureThreshold != tt.want.FailureThreshold {
+				t.Errorf("parseCircuitBreakerConfig().FailureThreshold = %v, want %v", got.FailureThreshold, tt.want.FailureThreshold)
+			}
+			if got.OpenTimeout != tt.want.OpenTimeout {
+				t.Errorf("parseCircuitBreakerConfig().OpenTimeout = %v, want %v", got.OpenTimeout, tt.want.OpenTimeout)
+			}
+			if got.HalfOpenMaxRequests != tt.want.HalfOpenMaxRequests {
+				t.Errorf("parseCircuitBreakerConfig().HalfOpenMaxRequests = %v, want %v", got.HalfOpenMaxRequests, tt.want.HalfOpenMaxRequests)
+			}
+			if got.UseExponentialBackoff != tt.want.UseExponentialBackoff {
+				t.Errorf("parseCircuitBreakerConfig().UseExponentialBackoff = %v, want %v", got.UseExponentialBackoff, tt.want.UseExponentialBackoff)
+			}
+			if got.MaxBackoffTimeout != tt.want.MaxBackoffTimeout {
+				t.Errorf("parseCircuitBreakerConfig().MaxBackoffTimeout = %v, want %v", got.MaxBackoffTimeout, tt.want.MaxBackoffTimeout)
+			}
+		})
+	}
+}
