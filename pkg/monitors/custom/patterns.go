@@ -39,9 +39,9 @@ var DefaultLogPatterns = []LogPatternConfig{
 	},
 	{
 		Name:        "device-failure",
-		Regex:       "(USB disconnect|device descriptor read error|Failed to connect to device)",
+		Regex:       "(device descriptor read error|Failed to connect to device|USB.*(?:error|failed))",
 		Severity:    "warning",
-		Description: "Device connection or descriptor error",
+		Description: "Device descriptor or connection error (not normal disconnect)",
 		Source:      "kmsg",
 	},
 	{
@@ -53,16 +53,16 @@ var DefaultLogPatterns = []LogPatternConfig{
 	},
 	{
 		Name:        "kubelet-error",
-		Regex:       "(kubelet.*Failed|kubelet.*Error|kubelet.*failed to|PLEG is not healthy)",
+		Regex:       "(kubelet.*(?:Failed to|failed to start|crash|PLEG is not healthy|eviction manager.*failed))",
 		Severity:    "error",
-		Description: "Kubelet error detected in systemd journal",
+		Description: "Critical kubelet error - service may be degraded",
 		Source:      "journal",
 	},
 	{
 		Name:        "containerd-error",
-		Regex:       "(containerd.*error|containerd.*failed|failed to start container)",
+		Regex:       "(containerd.*(?:failed to start|crash|panic))",
 		Severity:    "error",
-		Description: "Containerd error detected in systemd journal",
+		Description: "Critical containerd error - service may be degraded",
 		Source:      "journal",
 	},
 	{
@@ -71,6 +71,55 @@ var DefaultLogPatterns = []LogPatternConfig{
 		Severity:    "error",
 		Description: "Docker daemon error detected in systemd journal",
 		Source:      "journal",
+	},
+	{
+		Name:        "cpu-thermal-throttle",
+		Regex:       "(Package temperature/speed (high|normal)|cpu clock throttled|thermal_sys.*Throttling|CPU\\d+.*throttled)",
+		Severity:    "warning",
+		Description: "CPU thermal throttling detected - possible thermal/cooling issue",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "nfs-server-timeout",
+		Regex:       "nfs.*(?:not responding|timed out|Timeout waiting|RPC.*timeout)",
+		Severity:    "error",
+		Description: "NFS server timeout - mount may hang or become unavailable",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "nfs-stale-filehandle",
+		Regex:       "(?:Stale file handle|NFS_STALE|Clearing.*NFS_STALE)",
+		Severity:    "error",
+		Description: "NFS stale file handle - filesystem inconsistency detected",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "numa-balancing-failure",
+		Regex:       "numa.*(?:balancing failed|memory pressure|high remote|imbalance|disabled)",
+		Severity:    "warning",
+		Description: "NUMA balancing issue detected - may impact memory performance",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "hardware-mce-error",
+		Regex:       "mce:.*\\[Hardware Error\\]",
+		Severity:    "error",
+		Description: "Machine Check Exception - hardware error detected",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "edac-uncorrectable-error",
+		Regex:       "EDAC.*(?:UE|Uncorrectable|FATAL|poisoned)",
+		Severity:    "error",
+		Description: "EDAC uncorrectable memory error - hardware failure",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "edac-correctable-error",
+		Regex:       "(?i)EDAC.*(?:\\bCE\\b|single-bit|\\bcorrectable\\b|\\bcorrected\\b)",
+		Severity:    "warning",
+		Description: "EDAC correctable memory error - monitor for degradation",
+		Source:      "kmsg",
 	},
 }
 
