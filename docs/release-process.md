@@ -142,6 +142,111 @@ make test-all
 gh run list --limit 1
 ```
 
+### GPG Signing Setup (One-Time)
+
+Node Doctor releases use dual-layer signing for security:
+- **Layer 1**: Cosign (keyless, via GitHub OIDC) - automatic
+- **Layer 2**: GPG (maintainer signature) - requires setup
+
+#### Creating a Dedicated Signing Subkey (Recommended)
+
+**⚠️ IMPORTANT**: Never upload your main GPG private key to GitHub Secrets. Use a dedicated signing subkey instead!
+
+**Why use a subkey?**
+- Protects your main GPG key from compromise
+- Subkey can be revoked independently if GitHub is compromised
+- Best practice for automated signing systems
+- Main key stays on your local machine
+
+**Setup Process**:
+
+```bash
+# Run the automated setup script
+./scripts/setup-gpg-signing-subkey.sh
+
+# This will:
+# 1. Verify your main GPG key (1AF32A8B0481A7F3)
+# 2. Create a dedicated signing subkey
+# 3. Export ONLY the subkey (not main key)
+# 4. Optionally remove passphrase from subkey
+# 5. Provide GitHub Secrets configuration instructions
+```
+
+**Manual Setup** (if you prefer):
+
+```bash
+# 1. Edit your main key
+gpg --expert --edit-key 1AF32A8B0481A7F3
+
+# 2. Add signing subkey
+gpg> addkey
+# Choose: (4) RSA (sign only)
+# Key size: 4096
+# Expiration: 2y (2 years)
+
+gpg> save
+
+# 3. Export ONLY the subkey (note the '!' suffix)
+gpg --armor --export-secret-subkeys <SUBKEY_ID>! > /tmp/gpg-signing-subkey.asc
+
+# 4. (Optional) Remove passphrase from subkey for easier automation
+gpg --edit-key 1AF32A8B0481A7F3
+gpg> key <SUBKEY_ID>
+gpg> passwd
+# Enter current passphrase, then leave new passphrase blank
+gpg> save
+```
+
+**Adding to GitHub Secrets**:
+
+```bash
+# Via GitHub CLI (recommended)
+gh secret set GPG_PRIVATE_KEY < /tmp/gpg-signing-subkey.asc
+
+# If you kept the passphrase on the subkey:
+gh secret set GPG_PASSPHRASE
+# (you'll be prompted to enter the passphrase)
+
+# Via GitHub UI
+# 1. Go to: https://github.com/supporttools/node-doctor/settings/secrets/actions
+# 2. Click "New repository secret"
+# 3. Name: GPG_PRIVATE_KEY
+#    Value: <paste contents of /tmp/gpg-signing-subkey.asc>
+# 4. (If needed) Name: GPG_PASSPHRASE
+#    Value: <your passphrase>
+```
+
+**Verify Setup**:
+
+```bash
+# Run verification script
+./scripts/verify-gpg-setup.sh
+
+# Test with a pre-release tag
+git tag v0.1.0-rc.1
+git push origin v0.1.0-rc.1
+
+# Check GitHub Actions for GPG signing steps
+# Verify artifacts have both .cosign.sig and .asc files
+```
+
+**Security Notes**:
+- ✅ Main GPG key never leaves your machine
+- ✅ Only signing subkey is uploaded to GitHub
+- ✅ Subkey can be revoked independently if needed
+- ✅ After uploading, securely delete the exported file: `shred -u /tmp/gpg-signing-subkey.asc`
+
+**Revoking the subkey** (if GitHub is compromised):
+```bash
+gpg --edit-key 1AF32A8B0481A7F3
+gpg> key <SUBKEY_ID>
+gpg> revkey
+gpg> save
+
+# Publish revocation
+gpg --send-keys 1AF32A8B0481A7F3
+```
+
 ### Step-by-Step Release Process
 
 #### Option A: Automated Stable Release (Recommended)
