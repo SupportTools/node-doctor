@@ -375,6 +375,7 @@ node-doctor/
 - [Monitors](docs/monitors.md) - Health check monitor implementations
 - [Remediation](docs/remediation.md) - Auto-remediation system
 - [Configuration](docs/configuration.md) - Configuration reference
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and debugging guide
 
 ## Comparison with Node Problem Detector
 

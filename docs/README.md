@@ -104,6 +104,7 @@ docs/
 - **Deployment**: `development/helm-chart-standards.md`, `workflows/deployment.md`
 - **Testing**: `development/local-cicd-validation-guide.md`, `workflows/testing-strategy.md`
 - **Frontend**: `development/web-ui-api-synchronization.md`
+- **Operations**: `troubleshooting.md` - Common issues, debugging, performance tuning
 
 ### By Question
 
@@ -115,6 +116,8 @@ docs/
 - **"What are the API standards?"** → [API Handler Architecture](development/api-handler-architecture-standards.md)
 - **"How do I write Helm charts?"** → [Helm Chart Standards](development/helm-chart-standards.md)
 - **"How do tasks work?"** → [Master Task Management](development/master-task-management.md)
+- **"Why isn't my monitor running?"** → [Troubleshooting Guide](troubleshooting.md)
+- **"How do I debug issues?"** → [Troubleshooting Guide](troubleshooting.md)
 
 ## 🎓 Learning Path
 
