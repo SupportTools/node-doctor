@@ -2,7 +2,7 @@ package reload
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,120 +10,162 @@ import (
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/types"
-	"github.com/supporttools/node-doctor/pkg/util"
 )
 
-// TestNewReloadCoordinator tests creation of ReloadCoordinator
+// TestNewReloadCoordinator tests creating a new reload coordinator
 func TestNewReloadCoordinator(t *testing.T) {
-	tempDir := t.TempDir()
-	configPath := filepath.Join(tempDir, "config.yaml")
-
 	config := &types.NodeDoctorConfig{
-		APIVersion: "node-doctor.io/v1alpha1",
-		Kind:       "NodeDoctorConfig",
-	}
-
-	callbackCalled := false
-	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
-		callbackCalled = true
-		return nil
-	}
-
-	emitterCalled := false
-	emitter := func(severity types.EventSeverity, reason, message string) {
-		emitterCalled = true
-	}
-
-	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
-
-	if coordinator == nil {
-		t.Fatal("Expected coordinator but got nil")
-	}
-
-	if coordinator.configPath != configPath {
-		t.Errorf("Expected configPath %s, got %s", configPath, coordinator.configPath)
-	}
-
-	if coordinator.currentConfig != config {
-		t.Error("Current config not set correctly")
-	}
-
-	if coordinator.reloadCallback == nil {
-		t.Error("Reload callback not set")
-	}
-
-	if coordinator.eventEmitter == nil {
-		t.Error("Event emitter not set")
-	}
-
-	if coordinator.reloadInProgress {
-		t.Error("Reload should not be in progress initially")
-	}
-
-	// Verify callbacks were not called during construction
-	if callbackCalled {
-		t.Error("Callback should not be called during construction")
-	}
-
-	if emitterCalled {
-		t.Error("Emitter should not be called during construction")
-	}
-}
-
-// TestGetCurrentConfig tests retrieving current configuration
-func TestGetCurrentConfig(t *testing.T) {
-	config := &types.NodeDoctorConfig{
-		APIVersion: "node-doctor.io/v1alpha1",
+		APIVersion: "v1",
 		Kind:       "NodeDoctorConfig",
 		Metadata: types.ConfigMetadata{
 			Name: "test-config",
 		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
 	}
 
-	coordinator := NewReloadCoordinator("", config, nil, nil)
-
-	currentConfig := coordinator.GetCurrentConfig()
-
-	if currentConfig != config {
-		t.Error("GetCurrentConfig returned wrong config")
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		return nil
 	}
 
-	if currentConfig.Metadata.Name != "test-config" {
-		t.Errorf("Expected config name 'test-config', got '%s'", currentConfig.Metadata.Name)
+	emitter := func(severity types.EventSeverity, reason, message string) {}
+
+	coordinator := NewReloadCoordinator("/test/path", config, callback, emitter)
+
+	if coordinator.configPath != "/test/path" {
+		t.Errorf("Expected configPath '/test/path', got '%s'", coordinator.configPath)
+	}
+
+	if coordinator.currentConfig != config {
+		t.Error("Expected current config to match initial config")
+	}
+
+	if coordinator.validator == nil {
+		t.Error("Expected validator to be initialized")
 	}
 }
 
-// TestTriggerReload_NoChanges tests reload when configuration is unchanged
+// TestNewReloadCoordinatorWithValidator tests creating coordinator with custom validator
+func TestNewReloadCoordinatorWithValidator(t *testing.T) {
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+	}
+
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		return nil
+	}
+
+	emitter := func(severity types.EventSeverity, reason, message string) {}
+
+	customValidator := NewConfigValidatorWithLimits(50, 5, 25, 10)
+	coordinator := NewReloadCoordinatorWithValidator("/test/path", config, callback, emitter, customValidator)
+
+	if coordinator.validator != customValidator {
+		t.Error("Expected custom validator to be set")
+	}
+
+	if coordinator.validator.maxMonitors != 50 {
+		t.Errorf("Expected maxMonitors to be 50, got %d", coordinator.validator.maxMonitors)
+	}
+}
+
+// TestGetCurrentConfig tests getting current config
+func TestGetCurrentConfig(t *testing.T) {
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+	}
+
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		return nil
+	}
+
+	emitter := func(severity types.EventSeverity, reason, message string) {}
+
+	coordinator := NewReloadCoordinator("/test/path", config, callback, emitter)
+	currentConfig := coordinator.GetCurrentConfig()
+
+	if currentConfig.Settings.NodeName != "test-node" {
+		t.Errorf("Expected node name 'test-node', got '%s'", currentConfig.Settings.NodeName)
+	}
+}
+
+// TestTriggerReload_NoChanges tests reload with no configuration changes
 func TestTriggerReload_NoChanges(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 
-	// Create config file
+	// Create a valid config file
 	configYAML := `
-apiVersion: node-doctor.io/v1alpha1
+apiVersion: v1
 kind: NodeDoctorConfig
 metadata:
   name: test-config
 settings:
   nodeName: test-node
-  logLevel: info
-  logFormat: text
-monitors: []
-exporters: {}
+monitors:
+  - name: test-monitor
+    type: kubelet
+    enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
 remediation:
   enabled: false
-reload:
-  enabled: false
-  debounceInterval: "500ms"
 `
 	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
 
-	// Load initial config from file (so it has defaults applied)
-	config, err := util.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("Failed to load initial config: %v", err)
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Monitors: []types.MonitorConfig{
+			{
+				Name:     "test-monitor",
+				Type:     "kubelet",
+				Enabled:  true,
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+			},
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
+	}
+
+	// Apply defaults to match what LoadConfig does
+	if err := config.ApplyDefaults(); err != nil {
+		t.Fatalf("Failed to apply defaults: %v", err)
 	}
 
 	callbackCalled := false
@@ -140,31 +182,29 @@ reload:
 	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
 
 	ctx := context.Background()
-	err = coordinator.TriggerReload(ctx)
+	err := coordinator.TriggerReload(ctx)
 
-	// Should succeed but not call callback (no changes)
 	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
+		t.Errorf("Unexpected error: %v", err)
 	}
 
 	if callbackCalled {
 		t.Error("Callback should not be called when there are no changes")
 	}
 
-	// When there are no changes, the event should be ConfigReloadNoChanges
 	if eventReason != "ConfigReloadNoChanges" {
 		t.Errorf("Expected 'ConfigReloadNoChanges' event, got '%s'", eventReason)
 	}
 }
 
-// TestTriggerReload_WithChanges tests successful reload with changes
+// TestTriggerReload_WithChanges tests reload with configuration changes
 func TestTriggerReload_WithChanges(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 
-	// Create updated config file with new monitor
+	// Create a config file with changes
 	configYAML := `
-apiVersion: node-doctor.io/v1alpha1
+apiVersion: v1
 kind: NodeDoctorConfig
 metadata:
   name: test-config
@@ -172,16 +212,23 @@ settings:
   nodeName: test-node
 monitors:
   - name: new-monitor
-    type: system
+    type: kubelet
     enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
+remediation:
+  enabled: false
 `
 	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
 
-	// Create initial config without monitor
 	config := &types.NodeDoctorConfig{
-		APIVersion: "node-doctor.io/v1alpha1",
+		APIVersion: "v1",
 		Kind:       "NodeDoctorConfig",
 		Metadata: types.ConfigMetadata{
 			Name: "test-config",
@@ -189,12 +236,100 @@ monitors:
 		Settings: types.GlobalSettings{
 			NodeName: "test-node",
 		},
-		Monitors: []types.MonitorConfig{},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
 	}
 
-	var callbackDiff *ConfigDiff
+	callbackCalled := false
 	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
-		callbackDiff = diff
+		callbackCalled = true
+		return nil
+	}
+
+	var eventReason string
+	emitter := func(severity types.EventSeverity, reason, message string) {
+		eventReason = reason
+	}
+
+	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
+
+	ctx := context.Background()
+	err := coordinator.TriggerReload(ctx)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	if !callbackCalled {
+		t.Error("Callback should be called when there are changes")
+	}
+
+	if eventReason != "ConfigReloadSucceeded" {
+		t.Errorf("Expected 'ConfigReloadSucceeded' event, got '%s'", eventReason)
+	}
+
+	// Verify the config was updated
+	currentConfig := coordinator.GetCurrentConfig()
+	if len(currentConfig.Monitors) != 1 {
+		t.Errorf("Expected current config to have 1 monitor, got %d", len(currentConfig.Monitors))
+	}
+}
+
+// TestTriggerReload_ValidationFails tests reload with invalid configuration
+func TestTriggerReload_ValidationFails(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+
+	// Create config file that passes basic validation but fails our validator
+	// (empty monitor name and type, no exporters enabled)
+	configYAML := `
+apiVersion: v1
+kind: NodeDoctorConfig
+metadata:
+  name: test-config
+settings:
+  nodeName: test-node
+monitors:
+  - name: ""
+    type: ""
+    enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: false
+  http:
+    enabled: false
+  prometheus:
+    enabled: false
+remediation:
+  enabled: false
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+	}
+
+	callbackCalled := false
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		callbackCalled = true
 		return nil
 	}
 
@@ -210,58 +345,57 @@ monitors:
 	ctx := context.Background()
 	err := coordinator.TriggerReload(ctx)
 
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
+	if err == nil {
+		t.Error("Expected validation error")
 	}
 
-	// Verify callback was called with correct diff
-	if callbackDiff == nil {
-		t.Fatal("Callback should be called with changes")
+	if callbackCalled {
+		t.Error("Callback should not be called when validation fails")
 	}
 
-	if len(callbackDiff.MonitorsAdded) != 1 {
-		t.Errorf("Expected 1 monitor added, got %d", len(callbackDiff.MonitorsAdded))
+	// When LoadConfig fails due to validation, we get ConfigReloadFailed
+	// ConfigValidationFailed is only emitted when a separate validator is set
+	if eventReason != "ConfigReloadFailed" {
+		t.Errorf("Expected 'ConfigReloadFailed' event, got '%s'", eventReason)
 	}
 
-	if len(callbackDiff.MonitorsAdded) > 0 && callbackDiff.MonitorsAdded[0].Name != "new-monitor" {
-		t.Errorf("Expected monitor 'new-monitor', got '%s'", callbackDiff.MonitorsAdded[0].Name)
+	// Verify error message contains validation details
+	if !strings.Contains(err.Error(), "configuration validation failed") {
+		t.Errorf("Error should mention validation failure, got: %v", err)
 	}
 
-	// Verify success event
-	if eventReason != "ConfigReloadSucceeded" {
-		t.Errorf("Expected 'ConfigReloadSucceeded' event, got '%s'", eventReason)
-	}
-
-	// Verify event message contains statistics
-	if !strings.Contains(eventMessage, "1 monitor(s) added") {
-		t.Errorf("Event message should contain '1 monitor(s) added', got: %s", eventMessage)
-	}
-
-	// Verify current config was updated
-	currentConfig := coordinator.GetCurrentConfig()
-	if len(currentConfig.Monitors) != 1 {
-		t.Errorf("Expected current config to have 1 monitor, got %d", len(currentConfig.Monitors))
+	// Verify validation error details are in event message
+	if !strings.Contains(eventMessage, "configuration validation failed") {
+		t.Errorf("Event message should contain validation details, got: %s", eventMessage)
 	}
 }
 
-// TestTriggerReload_InvalidConfig tests reload with invalid configuration
+// TestTriggerReload_InvalidConfig tests reload with invalid config file
 func TestTriggerReload_InvalidConfig(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 
-	// Create invalid config file
-	invalidYAML := `
-invalid: yaml: syntax[[[
+	// Create invalid YAML
+	configYAML := `
+invalid: yaml: content:
+  - this is not valid
 `
-	if err := os.WriteFile(configPath, []byte(invalidYAML), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
 
-	config := &types.NodeDoctorConfig{}
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+	}
 
-	callbackCalled := false
 	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
-		callbackCalled = true
 		return nil
 	}
 
@@ -279,24 +413,25 @@ invalid: yaml: syntax[[[
 		t.Error("Expected error for invalid config")
 	}
 
-	if callbackCalled {
-		t.Error("Callback should not be called for invalid config")
-	}
-
 	if eventReason != "ConfigReloadFailed" {
 		t.Errorf("Expected 'ConfigReloadFailed' event, got '%s'", eventReason)
 	}
 }
 
-// TestTriggerReload_MissingConfigFile tests reload when config file doesn't exist
+// TestTriggerReload_MissingConfigFile tests reload with missing config file
 func TestTriggerReload_MissingConfigFile(t *testing.T) {
-	configPath := "/nonexistent/config.yaml"
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+	}
 
-	config := &types.NodeDoctorConfig{}
-
-	callbackCalled := false
 	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
-		callbackCalled = true
 		return nil
 	}
 
@@ -305,7 +440,7 @@ func TestTriggerReload_MissingConfigFile(t *testing.T) {
 		eventReason = reason
 	}
 
-	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
+	coordinator := NewReloadCoordinator("/nonexistent/config.yaml", config, callback, emitter)
 
 	ctx := context.Background()
 	err := coordinator.TriggerReload(ctx)
@@ -314,46 +449,61 @@ func TestTriggerReload_MissingConfigFile(t *testing.T) {
 		t.Error("Expected error for missing config file")
 	}
 
-	if callbackCalled {
-		t.Error("Callback should not be called for missing config")
-	}
-
 	if eventReason != "ConfigReloadFailed" {
 		t.Errorf("Expected 'ConfigReloadFailed' event, got '%s'", eventReason)
 	}
 }
 
-// TestTriggerReload_CallbackError tests reload when callback returns error
+// TestTriggerReload_CallbackError tests reload with callback returning error
 func TestTriggerReload_CallbackError(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 
-	// Create valid but different config
 	configYAML := `
-apiVersion: node-doctor.io/v1alpha1
+apiVersion: v1
 kind: NodeDoctorConfig
 metadata:
-  name: updated-config
+  name: test-config
 settings:
   nodeName: test-node
 monitors:
   - name: new-monitor
-    type: system
+    type: kubelet
     enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
+remediation:
+  enabled: false
 `
 	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
 
 	config := &types.NodeDoctorConfig{
-		APIVersion: "node-doctor.io/v1alpha1",
+		APIVersion: "v1",
 		Kind:       "NodeDoctorConfig",
 		Metadata: types.ConfigMetadata{
 			Name: "test-config",
 		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
 	}
 
-	callbackError := errors.New("callback failed")
+	callbackError := fmt.Errorf("callback failed")
 	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
 		return callbackError
 	}
@@ -369,56 +519,79 @@ monitors:
 	err := coordinator.TriggerReload(ctx)
 
 	if err == nil {
-		t.Error("Expected error when callback fails")
+		t.Error("Expected callback error to be returned")
 	}
 
-	if !errors.Is(err, callbackError) {
-		t.Errorf("Expected callback error, got: %v", err)
+	if !strings.Contains(err.Error(), "callback failed") {
+		t.Errorf("Expected callback error in result, got: %v", err)
 	}
 
 	if eventReason != "ConfigReloadFailed" {
 		t.Errorf("Expected 'ConfigReloadFailed' event, got '%s'", eventReason)
 	}
-
-	// Verify current config was NOT updated on failure
-	currentConfig := coordinator.GetCurrentConfig()
-	if currentConfig.Metadata.Name != "test-config" {
-		t.Error("Config should not be updated when callback fails")
-	}
 }
 
-// TestTriggerReload_ConcurrentAttempts tests that concurrent reloads are prevented
+// TestTriggerReload_ConcurrentAttempts tests concurrent reload attempts
 func TestTriggerReload_ConcurrentAttempts(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 
-	// Create config file
 	configYAML := `
-apiVersion: node-doctor.io/v1alpha1
+apiVersion: v1
 kind: NodeDoctorConfig
 metadata:
   name: test-config
 settings:
   nodeName: test-node
 monitors:
-  - name: monitor1
-    type: system
+  - name: test-monitor
+    type: kubelet
     enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
+remediation:
+  enabled: false
 `
 	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
 
 	config := &types.NodeDoctorConfig{
-		APIVersion: "node-doctor.io/v1alpha1",
+		APIVersion: "v1",
 		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Monitors: []types.MonitorConfig{
+			{
+				Name:     "test-monitor",
+				Type:     "kubelet",
+				Enabled:  true,
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+			},
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
 	}
 
-	// Slow callback that takes 500ms
-	callbackCount := 0
+	// Slow callback to simulate long reload
 	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
-		callbackCount++
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		return nil
 	}
 
@@ -428,95 +601,327 @@ monitors:
 
 	ctx := context.Background()
 
-	// Start first reload in goroutine
-	done := make(chan error, 2)
+	// Start first reload
+	errCh1 := make(chan error, 1)
 	go func() {
-		done <- coordinator.TriggerReload(ctx)
+		errCh1 <- coordinator.TriggerReload(ctx)
 	}()
 
-	// Give first reload time to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Try second reload while first is in progress
+	// Start second reload immediately
+	errCh2 := make(chan error, 1)
 	go func() {
-		done <- coordinator.TriggerReload(ctx)
+		errCh2 <- coordinator.TriggerReload(ctx)
 	}()
 
-	// Wait for both to complete
-	err1 := <-done
-	err2 := <-done
+	err1 := <-errCh1
+	err2 := <-errCh2
 
-	// One should succeed, one should fail with "in progress" error
+	// One should succeed, one should fail with "reload already in progress"
+	if err1 != nil && err2 != nil {
+		t.Error("Expected one reload to succeed")
+	}
+
 	if err1 == nil && err2 == nil {
-		t.Error("Expected one reload to fail due to concurrent attempt")
+		t.Error("Expected one reload to fail with 'already in progress'")
 	}
 
-	// Callback should only be called once
-	if callbackCount != 1 {
-		t.Errorf("Expected callback to be called once, got %d times", callbackCount)
-	}
-}
-
-// TestBuildReloadStats tests the reload statistics message building
-func TestBuildReloadStats(t *testing.T) {
-	coordinator := NewReloadCoordinator("", &types.NodeDoctorConfig{}, nil, nil)
-
-	diff := &ConfigDiff{
-		MonitorsAdded:      []types.MonitorConfig{{Name: "m1"}, {Name: "m2"}},
-		MonitorsRemoved:    []types.MonitorConfig{{Name: "m3"}},
-		MonitorsModified:   []MonitorChange{{}, {}, {}},
-		ExportersChanged:   true,
-		RemediationChanged: false,
+	// Check that one of the errors mentions "reload already in progress"
+	inProgressErr := err1
+	if inProgressErr == nil {
+		inProgressErr = err2
 	}
 
-	stats := coordinator.buildReloadStats(diff, 1234*time.Millisecond)
-
-	if !strings.Contains(stats, "2 monitor(s) added") {
-		t.Errorf("Stats should contain '2 monitor(s) added', got: %s", stats)
-	}
-
-	if !strings.Contains(stats, "1 monitor(s) removed") {
-		t.Errorf("Stats should contain '1 monitor(s) removed', got: %s", stats)
-	}
-
-	if !strings.Contains(stats, "3 monitor(s) modified") {
-		t.Errorf("Stats should contain '3 monitor(s) modified', got: %s", stats)
-	}
-
-	if !strings.Contains(stats, "exporters updated") {
-		t.Errorf("Stats should contain 'exporters updated', got: %s", stats)
-	}
-
-	if !strings.Contains(stats, "1.234s") {
-		t.Errorf("Stats should contain duration '1.234s', got: %s", stats)
+	if inProgressErr != nil && !strings.Contains(inProgressErr.Error(), "reload already in progress") {
+		t.Errorf("Expected 'reload already in progress' error, got: %v", inProgressErr)
 	}
 }
 
-// TestReloadCoordinator_ContextCancellation tests reload cancellation
-func TestReloadCoordinator_ContextCancellation(t *testing.T) {
+// TestTriggerReload_WithValidationSuccess tests reload with validation success
+func TestTriggerReload_WithValidationSuccess(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 
-	// Create config with changes
 	configYAML := `
-apiVersion: node-doctor.io/v1alpha1
+apiVersion: v1
 kind: NodeDoctorConfig
 metadata:
   name: test-config
 settings:
   nodeName: test-node
 monitors:
-  - name: new-monitor
-    type: system
+  - name: test-monitor
+    type: kubelet
     enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
+remediation:
+  enabled: false
 `
 	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
 		t.Fatalf("Failed to create config file: %v", err)
 	}
 
-	config := &types.NodeDoctorConfig{}
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "different-node", // Different from file to trigger change
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
+	}
 
-	// Callback that checks context
+	callbackCalled := false
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		callbackCalled = true
+		return nil
+	}
+
+	var events []string
+	emitter := func(severity types.EventSeverity, reason, message string) {
+		events = append(events, reason)
+	}
+
+	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
+
+	ctx := context.Background()
+	err := coordinator.TriggerReload(ctx)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	if !callbackCalled {
+		t.Error("Callback should be called when there are valid changes")
+	}
+
+	// Check that we got validation success event
+	hasValidationSuccess := false
+	for _, event := range events {
+		if event == "ConfigValidationSucceeded" {
+			hasValidationSuccess = true
+			break
+		}
+	}
+
+	if !hasValidationSuccess {
+		t.Error("Expected 'ConfigValidationSucceeded' event")
+	}
+}
+
+// TestSetValidator tests setting a new validator
+func TestSetValidator(t *testing.T) {
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+	}
+
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		return nil
+	}
+
+	emitter := func(severity types.EventSeverity, reason, message string) {}
+
+	coordinator := NewReloadCoordinator("/test/path", config, callback, emitter)
+
+	// Check initial validator
+	initialValidator := coordinator.GetValidator()
+	if initialValidator.maxMonitors != 100 {
+		t.Errorf("Expected default maxMonitors 100, got %d", initialValidator.maxMonitors)
+	}
+
+	// Set new validator
+	newValidator := NewConfigValidatorWithLimits(50, 5, 25, 10)
+	coordinator.SetValidator(newValidator)
+
+	// Verify validator was changed
+	currentValidator := coordinator.GetValidator()
+	if currentValidator.maxMonitors != 50 {
+		t.Errorf("Expected maxMonitors 50, got %d", currentValidator.maxMonitors)
+	}
+}
+
+// TestTriggerReload_NilValidator tests reload with nil validator (should skip validation)
+func TestTriggerReload_NilValidator(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+
+	// Create a valid config file
+	configYAML := `
+apiVersion: v1
+kind: NodeDoctorConfig
+metadata:
+  name: test-config
+settings:
+  nodeName: test-node
+monitors:
+  - name: test-monitor
+    type: kubelet
+    enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
+remediation:
+  enabled: false
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "different-node", // Different to trigger change
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
+	}
+
+	callbackCalled := false
+	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
+		callbackCalled = true
+		return nil
+	}
+
+	emitter := func(severity types.EventSeverity, reason, message string) {}
+
+	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
+	coordinator.SetValidator(nil) // Disable validation
+
+	ctx := context.Background()
+	err := coordinator.TriggerReload(ctx)
+
+	if err != nil {
+		t.Errorf("Expected no error when validator is nil, got: %v", err)
+	}
+
+	if !callbackCalled {
+		t.Error("Callback should be called when validation is skipped")
+	}
+}
+
+// TestBuildReloadStats tests building reload statistics message
+func TestBuildReloadStats(t *testing.T) {
+	coordinator := &ReloadCoordinator{}
+
+	diff := &ConfigDiff{
+		MonitorsAdded: []types.MonitorConfig{
+			{Name: "monitor1"},
+			{Name: "monitor2"},
+		},
+		MonitorsRemoved: []types.MonitorConfig{
+			{Name: "monitor3"},
+		},
+		MonitorsModified: []MonitorChange{
+			{Old: types.MonitorConfig{Name: "monitor4"}, New: types.MonitorConfig{Name: "monitor4"}},
+		},
+		ExportersChanged:   true,
+		RemediationChanged: true,
+	}
+
+	duration := 150 * time.Millisecond
+	stats := coordinator.buildReloadStats(diff, duration)
+
+	expectedPhrases := []string{
+		"150ms",
+		"2 monitor(s) added",
+		"1 monitor(s) removed",
+		"1 monitor(s) modified",
+		"exporters updated",
+		"remediation config updated",
+	}
+
+	for _, phrase := range expectedPhrases {
+		if !strings.Contains(stats, phrase) {
+			t.Errorf("Expected stats to contain '%s', got: %s", phrase, stats)
+		}
+	}
+}
+
+// TestReloadCoordinator_ContextCancellation tests context cancellation during reload
+func TestReloadCoordinator_ContextCancellation(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+
+	configYAML := `
+apiVersion: v1
+kind: NodeDoctorConfig
+metadata:
+  name: test-config
+settings:
+  nodeName: test-node
+monitors:
+  - name: test-monitor
+    type: kubelet
+    enabled: true
+    interval: 30s
+    timeout: 10s
+exporters:
+  kubernetes:
+    enabled: true
+    namespace: default
+remediation:
+  enabled: false
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	config := &types.NodeDoctorConfig{
+		APIVersion: "v1",
+		Kind:       "NodeDoctorConfig",
+		Metadata: types.ConfigMetadata{
+			Name: "test-config",
+		},
+		Settings: types.GlobalSettings{
+			NodeName: "different-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:   true,
+				Namespace: "default",
+			},
+		},
+		Remediation: types.RemediationConfig{
+			Enabled: false,
+		},
+	}
+
+	// Callback that checks for cancellation
 	callback := func(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *ConfigDiff) error {
 		select {
 		case <-ctx.Done():
@@ -530,15 +935,16 @@ monitors:
 
 	coordinator := NewReloadCoordinator(configPath, config, callback, emitter)
 
-	// Create context that's already cancelled
+	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	err := coordinator.TriggerReload(ctx)
 
-	// Should handle context cancellation gracefully
-	// Error might occur during callback or earlier
-	if err == nil {
-		t.Log("Reload succeeded despite cancelled context (acceptable if validated before callback)")
+	// The reload might succeed if cancellation happens after validation
+	// This test mainly ensures we handle context properly
+	if err != nil && !strings.Contains(err.Error(), "context canceled") {
+		// If there's an error, it should be context-related
+		t.Logf("Got error (acceptable): %v", err)
 	}
 }

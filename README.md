@@ -2,6 +2,8 @@
 
 [![Go Version](https://img.shields.io/badge/go-1.21+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/supporttools/node-doctor?include_prereleases)](https://github.com/supporttools/node-doctor/releases)
+[![Docker](https://img.shields.io/badge/docker-harbor.support.tools-blue)](https://harbor.support.tools/harbor/projects/7/repositories/node-doctor)
 [![Status](https://img.shields.io/badge/status-in%20development-yellow.svg)]()
 
 Kubernetes node health monitoring and auto-remediation system. Node Doctor runs as a DaemonSet on each node, performing comprehensive health checks and automatically fixing common problems.
@@ -75,6 +77,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed architecture infor
 
 ### Installation
 
+#### Option 1: Kubernetes DaemonSet (Recommended)
+
 1. **Deploy Node Doctor as a DaemonSet**:
 
 ```bash
@@ -99,6 +103,67 @@ curl http://localhost:8080/health
 # Via kubectl
 kubectl get nodes -o json | jq '.items[].status.conditions'
 ```
+
+#### Option 2: Standalone Binary (For Testing/Development)
+
+Download pre-built binaries from the [releases page](https://github.com/supporttools/node-doctor/releases):
+
+```bash
+# Linux amd64
+wget https://github.com/supporttools/node-doctor/releases/latest/download/node-doctor_linux_amd64.tar.gz
+tar -xzf node-doctor_linux_amd64.tar.gz
+sudo mv node-doctor /usr/local/bin/
+node-doctor --version
+
+# Linux arm64
+wget https://github.com/supporttools/node-doctor/releases/latest/download/node-doctor_linux_arm64.tar.gz
+tar -xzf node-doctor_linux_arm64.tar.gz
+sudo mv node-doctor /usr/local/bin/
+
+# Note: macOS builds temporarily unavailable
+# For macOS testing, use Docker or build from source
+```
+
+**Verify artifact signatures** (recommended for production):
+
+All releases are dual-signed for defense-in-depth security:
+- **Cosign** (GitHub OIDC): Proves CI/CD built it
+- **GPG** (Maintainer key): Proves maintainer approved it
+
+```bash
+# Layer 1: Cosign verification (GitHub Actions)
+brew install cosign  # macOS / or download from https://github.com/sigstore/cosign/releases
+cosign verify-blob \
+  --signature node-doctor_linux_amd64.tar.gz.cosign.sig \
+  --certificate node-doctor_linux_amd64.tar.gz.cosign.crt \
+  --certificate-identity-regexp="https://github.com/supporttools/node-doctor" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+  node-doctor_linux_amd64.tar.gz
+
+# Layer 2: GPG verification (Maintainer approval)
+brew install gnupg  # macOS / or apt-get install gnupg
+gpg --keyserver keyserver.ubuntu.com --recv-keys <MAINTAINER_KEY_ID>  # See release notes
+gpg --verify node-doctor_linux_amd64.tar.gz.asc node-doctor_linux_amd64.tar.gz
+
+# Both verifications should pass for production deployments ✅
+```
+
+#### Option 3: Docker Image
+
+Pull multi-architecture images from Harbor:
+
+```bash
+# Pull latest stable release
+docker pull harbor.support.tools/node-doctor/node-doctor:latest
+
+# Pull specific version
+docker pull harbor.support.tools/node-doctor/node-doctor:v1.0.0
+
+# Run locally for testing
+docker run --rm harbor.support.tools/node-doctor/node-doctor:latest --help
+```
+
+Supported platforms: `linux/amd64`, `linux/arm64`
 
 ### Configuration
 
@@ -375,6 +440,8 @@ node-doctor/
 - [Monitors](docs/monitors.md) - Health check monitor implementations
 - [Remediation](docs/remediation.md) - Auto-remediation system
 - [Configuration](docs/configuration.md) - Configuration reference
+- [Deployment](docs/deployment.md) - Deployment guide for production clusters
+- [Release Process](docs/release-process.md) - Release management and versioning
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and debugging guide
 
 ## Comparison with Node Problem Detector

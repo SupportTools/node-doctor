@@ -1,0 +1,195 @@
+# GoReleaser configuration for Node Doctor
+# Documentation: https://goreleaser.com
+
+version: 2
+
+# Project metadata
+project_name: node-doctor
+
+# Git configuration
+git:
+  tag_sort: -version:refname
+
+# Build configuration
+builds:
+  - id: node-doctor
+    binary: node-doctor
+    main: ./cmd/node-doctor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.GitCommit={{.ShortCommit}}
+      - -X main.BuildTime={{.Date}}
+    flags:
+      - -trimpath
+    mod_timestamp: '{{.CommitTimestamp}}'
+    # Note: Darwin builds temporarily disabled due to cross-compilation type issues
+    # TODO: Fix pkg/monitors/system/disk.go:58 uint32->int64 conversion for darwin
+
+# Archive configuration
+archives:
+  - id: node-doctor-archive
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      # Documentation
+      - LICENSE
+      - README.md
+      - CONTRIBUTING.md
+      - docs/**/*
+      # Deployment files
+      - deployment/rbac.yaml
+      - deployment/daemonset.yaml
+      # Example configurations
+      - config/node-doctor.yaml
+      - config/examples/**/*
+    format_overrides:
+      - goos: windows
+        format: zip
+
+# Checksum configuration
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+# Snapshot configuration (for test builds)
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+# Changelog configuration
+changelog:
+  use: github-native
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - 'merge conflict'
+      - 'Merge pull request'
+      - 'Merge branch'
+      - '^WIP'
+  groups:
+    - title: 'Features'
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: '^perf(\(.+\))?:'
+      order: 2
+    - title: 'Security'
+      regexp: '^security(\(.+\))?:'
+      order: 3
+    - title: 'Other Changes'
+      order: 999
+
+# GitHub release configuration
+release:
+  github:
+    owner: supporttools
+    name: node-doctor
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Node Doctor {{ .Tag }}
+
+    Kubernetes node health monitoring and auto-remediation DaemonSet.
+
+    ### 🚀 Quick Start
+
+    **Docker Image (Recommended for Kubernetes):**
+    ```bash
+    # Multi-arch image available on Harbor
+    docker pull harbor.support.tools/node-doctor/node-doctor:{{ .Tag }}
+
+    # Deploy to Kubernetes
+    kubectl apply -f https://github.com/supporttools/node-doctor/releases/download/{{ .Tag }}/rbac.yaml
+    kubectl apply -f https://github.com/supporttools/node-doctor/releases/download/{{ .Tag }}/daemonset.yaml
+    ```
+
+    **Binary Installation (For testing/development):**
+    ```bash
+    # Linux amd64
+    wget https://github.com/supporttools/node-doctor/releases/download/{{ .Tag }}/node-doctor_{{ .Tag }}_linux_amd64.tar.gz
+    tar -xzf node-doctor_{{ .Tag }}_linux_amd64.tar.gz
+    sudo mv node-doctor /usr/local/bin/
+
+    # macOS arm64 (Apple Silicon)
+    wget https://github.com/supporttools/node-doctor/releases/download/{{ .Tag }}/node-doctor_{{ .Tag }}_darwin_arm64.tar.gz
+    tar -xzf node-doctor_{{ .Tag }}_darwin_arm64.tar.gz
+    sudo mv node-doctor /usr/local/bin/
+    ```
+
+    ### 📦 What's Included
+
+    - Multi-architecture binaries (linux/darwin × amd64/arm64)
+    - Kubernetes deployment manifests
+    - Complete documentation
+    - Example configurations
+
+    ### 🔐 Artifact Verification
+
+    All artifacts are signed with cosign. Verify with:
+    ```bash
+    # Install cosign
+    brew install cosign  # macOS
+    # or
+    wget https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+
+    # Verify signature (keyless)
+    cosign verify-blob \
+      --signature node-doctor_{{ .Tag }}_linux_amd64.tar.gz.sig \
+      --certificate node-doctor_{{ .Tag }}_linux_amd64.tar.gz.crt \
+      --certificate-identity-regexp="https://github.com/supporttools/node-doctor" \
+      --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+      node-doctor_{{ .Tag }}_linux_amd64.tar.gz
+    ```
+  footer: |
+    ---
+
+    ### 📊 Docker Images
+
+    Multi-architecture images are available on Harbor:
+    - `harbor.support.tools/node-doctor/node-doctor:{{ .Tag }}`
+    - `harbor.support.tools/node-doctor/node-doctor:latest` (if stable release)
+
+    Supported platforms: `linux/amd64`, `linux/arm64`
+
+    ### 📚 Documentation
+
+    - [Deployment Guide](https://github.com/supporttools/node-doctor/blob/main/docs/deployment.md)
+    - [Configuration Reference](https://github.com/supporttools/node-doctor/blob/main/docs/configuration.md)
+    - [Monitor Specifications](https://github.com/supporttools/node-doctor/blob/main/docs/monitors.md)
+    - [Troubleshooting](https://github.com/supporttools/node-doctor/blob/main/docs/troubleshooting.md)
+
+    ### 🐛 Reporting Issues
+
+    Found a bug? [Open an issue](https://github.com/supporttools/node-doctor/issues/new)
+
+    **Full Changelog**: https://github.com/supporttools/node-doctor/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# Disable unused features
+dockers:
+  - skip_push: true
+
+nfpms:
+  - id: skip
+    meta: true
+    maintainer: "SupportTools Team <team@support.tools>"
+
+brews:
+  - skip_upload: true
+
+announce:
+  skip: true

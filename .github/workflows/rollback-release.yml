@@ -1,0 +1,386 @@
+name: Rollback Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to rollback (e.g., v1.2.3)'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+      action:
+        description: 'Rollback action'
+        required: true
+        type: choice
+        options:
+          - mark-unsafe
+          - unpublish
+          - delete
+        default: mark-unsafe
+      create_issue:
+        description: 'Create tracking issue'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rollback:
+    name: Rollback Release ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v{MAJOR}.{MINOR}.{PATCH}[-{PRERELEASE}]"
+            exit 1
+          fi
+          echo "✅ Version format valid: $VERSION"
+
+      - name: Verify release exists
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "Checking if release $VERSION exists..."
+
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "✅ Release $VERSION found"
+            echo "exists=true" >> $GITHUB_OUTPUT
+
+            # Get release details for safety check
+            RELEASE_DATE=$(gh release view "$VERSION" --json publishedAt -q .publishedAt)
+            IS_PRERELEASE=$(gh release view "$VERSION" --json isPrerelease -q .isPrerelease)
+            IS_DRAFT=$(gh release view "$VERSION" --json isDraft -q .isDraft)
+
+            echo "release_date=$RELEASE_DATE" >> $GITHUB_OUTPUT
+            echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+            echo "is_draft=$IS_DRAFT" >> $GITHUB_OUTPUT
+
+            echo ""
+            echo "Release details:"
+            echo "  - Published: $RELEASE_DATE"
+            echo "  - Pre-release: $IS_PRERELEASE"
+            echo "  - Draft: $IS_DRAFT"
+          else
+            echo "❌ Release $VERSION not found"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Safety check - prevent rollback of main branch
+        run: |
+          VERSION="${{ inputs.version }}"
+
+          # Get the default branch
+          DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)
+
+          # Check if version tag is on the default branch
+          if git merge-base --is-ancestor "$VERSION" "$DEFAULT_BRANCH" 2>/dev/null; then
+            echo "⚠️  WARNING: $VERSION is on the default branch ($DEFAULT_BRANCH)"
+            echo "This could affect multiple users."
+
+            # For delete action, extra confirmation required
+            if [[ "${{ inputs.action }}" == "delete" ]]; then
+              echo ""
+              echo "❌ SAFETY BLOCK: Cannot delete releases on default branch without manual override"
+              echo "Use 'mark-unsafe' or 'unpublish' instead, or contact repository admin"
+              exit 1
+            fi
+          fi
+
+      - name: Create tracking issue first
+        id: create_issue
+        if: inputs.create_issue == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          REASON="${{ inputs.reason }}"
+          ACTION="${{ inputs.action }}"
+
+          # Create issue body
+          ISSUE_BODY="## 🚨 Release Rollback Intent: $VERSION
+
+**⏱️  Status**: Rollback initiated, not yet executed
+
+**Action**: $ACTION
+
+**Reason**: $REASON
+
+**Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+**Triggered By**: @${{ github.actor }}
+
+**Workflow Run**: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+### Details
+
+- **Release**: $VERSION
+- **Requested Action**: $ACTION
+- **Published**: ${{ steps.verify.outputs.release_date }}
+- **Pre-release**: ${{ steps.verify.outputs.is_prerelease }}
+
+### Rollback Plan
+
+This issue tracks the rollback process:
+
+- [x] Rollback initiated
+- [ ] Rollback executed
+- [ ] Users notified
+- [ ] Root cause investigated
+- [ ] Fix created and tested
+- [ ] New release published
+
+### Next Steps
+
+1. **Immediate**: Rollback will be executed shortly
+2. **Within 1 hour**: Notify users via GitHub release notes / mailing list
+3. **Within 24 hours**: Investigate root cause
+4. **Within 1 week**: Publish fix in new release
+
+---
+
+**This issue will be updated when rollback completes**"
+
+          # Create issue and capture number
+          ISSUE_URL=$(gh issue create \
+            --title "🚨 Release Rollback: $VERSION - $REASON" \
+            --body "$ISSUE_BODY" \
+            --label "release,rollback,critical" \
+            --assignee "${{ github.actor }}")
+
+          ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+
+          echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          echo "issue_url=$ISSUE_URL" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "✅ Tracking issue created: $ISSUE_URL"
+          echo "Rollback will proceed in 10 seconds..."
+          sleep 10
+
+      - name: Mark release as unsafe
+        if: inputs.action == 'mark-unsafe' && steps.verify.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          REASON="${{ inputs.reason }}"
+
+          echo "Marking release $VERSION as unsafe..."
+
+          # Get current release notes
+          CURRENT_NOTES=$(gh release view "$VERSION" --json body -q .body)
+
+          # Prepare warning banner
+          WARNING_BANNER="---
+## ⚠️ **DO NOT USE - RELEASE ROLLED BACK** ⚠️
+
+**This release has been rolled back and should NOT be used.**
+
+**Reason**: $REASON
+
+**Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+**Action Required**:
+- If you have already deployed this version, rollback to the previous stable release
+- Use the latest stable release instead
+- See the issue tracker for more information
+
+---
+
+"
+
+          # Combine warning with existing notes
+          NEW_NOTES="${WARNING_BANNER}${CURRENT_NOTES}"
+
+          # Update release notes
+          gh release edit "$VERSION" \
+            --notes "$NEW_NOTES" \
+            --prerelease \
+            --latest=false
+
+          echo "✅ Release $VERSION marked as unsafe (pre-release)"
+
+      - name: Unpublish release
+        if: inputs.action == 'unpublish' && steps.verify.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          REASON="${{ inputs.reason }}"
+
+          echo "⚠️  Unpublishing release $VERSION..."
+          echo "This will make the release a draft (hidden from users)"
+
+          # Get current release notes
+          CURRENT_NOTES=$(gh release view "$VERSION" --json body -q .body)
+
+          # Add unpublished notice
+          UNPUBLISHED_NOTICE="---
+## 🚨 **RELEASE UNPUBLISHED** 🚨
+
+**This release has been unpublished and is no longer available.**
+
+**Reason**: $REASON
+
+**Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+---
+
+${CURRENT_NOTES}"
+
+          # Convert to draft
+          gh release edit "$VERSION" \
+            --draft \
+            --notes "$UNPUBLISHED_NOTICE"
+
+          echo "✅ Release $VERSION unpublished (converted to draft)"
+
+      - name: Delete release
+        if: inputs.action == 'delete' && steps.verify.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          REASON="${{ inputs.reason }}"
+
+          echo "🚨 DELETING release $VERSION..."
+          echo "⚠️  THIS ACTION CANNOT BE UNDONE!"
+          echo ""
+          echo "Reason: $REASON"
+          echo ""
+          echo "⚠️  FINAL WARNING: Deleting in 30 seconds..."
+          echo "Cancel this workflow now if this is a mistake!"
+          echo ""
+          sleep 30
+
+          # Delete the release (NO --yes flag for safety)
+          echo "Executing delete..."
+          if gh release delete "$VERSION" --cleanup-tag=false; then
+            echo "✅ Release $VERSION deleted"
+          else
+            echo "❌ Failed to delete release"
+            exit 1
+          fi
+
+          # Note about tag preservation
+          echo ""
+          echo "⚠️  Note: Git tag was NOT deleted (safety measure)"
+          echo "To delete the tag later, run: git push origin --delete $VERSION"
+
+      - name: Update tracking issue
+        if: inputs.create_issue == true && steps.create_issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          ACTION="${{ inputs.action }}"
+          ISSUE_NUMBER="${{ steps.create_issue.outputs.issue_number }}"
+
+          # Update issue with completion status
+          COMMENT="## ✅ Rollback Completed
+
+**Action Executed**: $ACTION
+
+**Completion Time**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+**Status**: Rollback operation completed successfully
+
+---
+
+### What Happened
+
+The rollback operation has been completed. The release $VERSION has been:
+
+"
+
+          case "$ACTION" in
+            mark-unsafe)
+              COMMENT+="- Marked as pre-release\n- Warning banner added to release notes\n- Marked as not-latest\n"
+              ;;
+            unpublish)
+              COMMENT+="- Converted to draft\n- Hidden from public view\n- Artifacts preserved\n"
+              ;;
+            delete)
+              COMMENT+="- Completely removed from releases\n- All artifacts deleted\n- Git tag preserved\n"
+              ;;
+          esac
+
+          COMMENT+="
+### Next Actions Required
+
+- [ ] Notify users via mailing list / Slack / Discord
+- [ ] Investigate root cause
+- [ ] Create and test fix
+- [ ] Publish new release with fix
+- [ ] Update this issue with resolution details
+
+**Assignee**: Please complete the checklist above."
+
+          # Post comment
+          gh issue comment "$ISSUE_NUMBER" --body "$COMMENT"
+
+          echo "✅ Tracking issue updated: https://github.com/${{ github.repository }}/issues/$ISSUE_NUMBER"
+
+      - name: Generate rollback summary
+        if: always()
+        run: |
+          echo "## 🚨 Release Rollback Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action**: ${{ inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason**: ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered By**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ inputs.action }}" == "mark-unsafe" ]]; then
+            echo "### ✅ Release Marked as Unsafe" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Release marked as pre-release" >> $GITHUB_STEP_SUMMARY
+            echo "- Warning banner added to release notes" >> $GITHUB_STEP_SUMMARY
+            echo "- Release still visible but clearly marked as unsafe" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ inputs.action }}" == "unpublish" ]]; then
+            echo "### ✅ Release Unpublished" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Release converted to draft" >> $GITHUB_STEP_SUMMARY
+            echo "- No longer visible to users" >> $GITHUB_STEP_SUMMARY
+            echo "- Can be republished if needed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ inputs.action }}" == "delete" ]]; then
+            echo "### ✅ Release Deleted" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Release completely removed" >> $GITHUB_STEP_SUMMARY
+            echo "- This action cannot be undone" >> $GITHUB_STEP_SUMMARY
+            echo "- Git tag may still exist" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "1. Investigate and fix the issue" >> $GITHUB_STEP_SUMMARY
+          echo "2. Create new release with fix" >> $GITHUB_STEP_SUMMARY
+          echo "3. Notify users who may have downloaded ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "4. Update documentation if needed" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ inputs.create_issue }}" == "true" ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔗 Tracking Issue" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "A tracking issue has been created to monitor resolution." >> $GITHUB_STEP_SUMMARY
+          fi
