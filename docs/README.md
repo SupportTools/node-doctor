@@ -6,10 +6,8 @@ Central navigation for all project documentation.
 
 New to the project? Start here:
 
-1. **[Root CLAUDE.md](../CLAUDE.md)** - Multi-agent orchestration overview
-2. **[.claude/AGENT_GUIDE.md](../.claude/AGENT_GUIDE.md)** - How to use the 17 agents
-3. **[Task Execution Workflow](development/task-execution-workflow.md)** - Mandatory development process
-4. **[Template README](../README.md)** - Template usage guide
+1. **[Task Execution Workflow](development/task-execution-workflow.md)** - Mandatory development process
+2. **[Template README](../README.md)** - Template usage guide
 
 ## 📚 Core Documentation
 
@@ -98,7 +96,7 @@ docs/
 ### By Topic
 
 - **Task Management**: `development/master-task-management.md`, `development/taskforge-usage-guide.md`
-- **Quality Assurance**: `development/task-execution-workflow.md` (quality gates), `.claude/AGENT_GUIDE.md` (QA agents)
+- **Quality Assurance**: `development/task-execution-workflow.md` (quality gates and QA process)
 - **API Development**: `development/api-handler-architecture-standards.md`, `development/error-response-standard.md`
 - **Database**: `development/database-patterns-guide.md`
 - **Deployment**: `development/helm-chart-standards.md`, `workflows/deployment.md`
@@ -112,7 +110,6 @@ docs/
 - **"What's the development process?"** → [Task Execution Workflow](development/task-execution-workflow.md)
 - **"How do I validate before pushing?"** → [Local CI/CD Validation](development/local-cicd-validation-guide.md)
 - **"How do I deploy?"** → [Deployment Workflow](workflows/deployment.md)
-- **"How do I use agents?"** → [Agent Guide](../.claude/AGENT_GUIDE.md)
 - **"What are the API standards?"** → [API Handler Architecture](development/api-handler-architecture-standards.md)
 - **"How do I write Helm charts?"** → [Helm Chart Standards](development/helm-chart-standards.md)
 - **"How do tasks work?"** → [Master Task Management](development/master-task-management.md)
@@ -122,11 +119,9 @@ docs/
 ## 🎓 Learning Path
 
 ### Week 1: Foundation
-1. Read Root CLAUDE.md
-2. Read Agent Guide
-3. Read Task Execution Workflow
-4. Read Master Task Management
-5. Try a small task following the workflow
+1. Read Task Execution Workflow
+2. Read Master Task Management
+3. Try a small task following the workflow
 
 ### Week 2: Standards
 1. Read API Handler Architecture Standards
@@ -200,7 +195,6 @@ When adding documentation:
 - **Can't find documentation?** Check this README or search repository
 - **Documentation unclear?** Open an issue or ask the team
 - **Want to contribute?** Follow contribution guidelines
-- **Need process help?** Engage the Prime Orchestrator agent
 
 ## 🎯 Remember
 

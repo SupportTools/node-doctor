@@ -681,10 +681,7 @@ git commit -m "feat(monitors): add CPU throttling monitor
 - Update DaemonSet with host access permissions
 - Add comprehensive unit tests (87% coverage)
 - Add integration tests for Problem Detector
-- Task completion: [TaskForge task description]
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-Co-Authored-By: Claude <noreply@anthropic.com>"
+- Task completion: [TaskForge task description]"
 
 git push origin main
 ```
