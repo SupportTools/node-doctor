@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/supporttools/node-doctor/test/e2e/utils"
 )
 
 const (
@@ -23,10 +25,22 @@ const (
 	ClusterName = "node-doctor-e2e"
 
 	// DefaultTimeout is the default timeout for cluster operations
-	DefaultTimeout = 5 * time.Minute
+	DefaultTimeout = 10 * time.Minute
 
 	// NodeReadyTimeout is the timeout waiting for nodes to be ready
 	NodeReadyTimeout = 2 * time.Minute
+
+	// CoreDNSTimeout is the timeout waiting for CoreDNS to be ready
+	CoreDNSTimeout = 3 * time.Minute
+
+	// CNITimeout is the timeout waiting for CNI to be ready
+	CNITimeout = 3 * time.Minute
+
+	// DNSTimeout is the timeout waiting for DNS resolution to work
+	DNSTimeout = 1 * time.Minute
+
+	// PodSchedulingTimeout is the timeout waiting for pod scheduling to work
+	PodSchedulingTimeout = 2 * time.Minute
 )
 
 // SetupOptions contains configuration for cluster setup
@@ -191,13 +205,54 @@ func createCluster(ctx context.Context, opts *SetupOptions) error {
 	return nil
 }
 
-// waitForClusterReady waits for cluster nodes to be ready
+// waitForClusterReady validates cluster is fully ready with comprehensive checks
 func waitForClusterReady(ctx context.Context, clusterName string) error {
+	kubeContext := "kind-" + clusterName
+
+	// Layer 1: Nodes Ready
+	fmt.Println("Checking node readiness...")
+	if err := waitForNodesReady(ctx, kubeContext); err != nil {
+		return fmt.Errorf("nodes not ready: %w", err)
+	}
+	fmt.Println("✓ Nodes ready")
+
+	// Layer 2: CoreDNS Ready
+	fmt.Println("Checking CoreDNS readiness...")
+	if err := utils.WaitForCoreDNSReady(ctx, kubeContext); err != nil {
+		return fmt.Errorf("CoreDNS not ready: %w", err)
+	}
+	fmt.Println("✓ CoreDNS ready")
+
+	// Layer 3: CNI Ready
+	fmt.Println("Checking CNI readiness...")
+	if err := utils.WaitForCNIReady(ctx, kubeContext); err != nil {
+		return fmt.Errorf("CNI not ready: %w", err)
+	}
+	fmt.Println("✓ CNI ready")
+
+	// Layer 4: DNS Resolution Works
+	fmt.Println("Checking DNS resolution...")
+	if err := utils.WaitForDNSResolution(ctx, kubeContext); err != nil {
+		return fmt.Errorf("DNS resolution failed: %w", err)
+	}
+	fmt.Println("✓ DNS resolution working")
+
+	// Layer 5: Pod Scheduling Works
+	fmt.Println("Checking pod scheduling capability...")
+	if err := utils.WaitForPodScheduling(ctx, kubeContext); err != nil {
+		return fmt.Errorf("pod scheduling failed: %w", err)
+	}
+	fmt.Println("✓ Pod scheduling working")
+
+	fmt.Println("✓ Cluster fully ready!")
+	return nil
+}
+
+// waitForNodesReady waits for cluster nodes to be ready
+func waitForNodesReady(ctx context.Context, kubeContext string) error {
 	// Create context with node ready timeout
 	ctx, cancel := context.WithTimeout(ctx, NodeReadyTimeout)
 	defer cancel()
-
-	kubeContext := "kind-" + clusterName
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -205,7 +260,7 @@ func waitForClusterReady(ctx context.Context, clusterName string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for cluster to be ready")
+			return fmt.Errorf("timeout waiting for nodes to be ready")
 
 		case <-ticker.C:
 			cmd := exec.CommandContext(ctx, "kubectl",
