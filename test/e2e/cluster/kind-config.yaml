@@ -1,0 +1,48 @@
+# KIND cluster configuration for Node Doctor E2E tests
+#
+# This configuration creates a single-node cluster with:
+# - Extra mounts for log access
+# - Privileged containers enabled
+# - Host network/PID access for node-level monitoring
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+# Single node cluster (sufficient for E2E testing)
+nodes:
+  - role: control-plane
+    # Enable privileged containers (required for Node Doctor)
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            "allow-privileged": "true"
+
+    # Extra mounts for problem injection and log access
+    extraMounts:
+      # Mount Docker socket for container operations
+      - hostPath: /var/run/docker.sock
+        containerPath: /var/run/docker.sock
+
+      # Mount systemd for kubelet control
+      - hostPath: /run/systemd
+        containerPath: /run/systemd
+
+      # Mount logs directory for observation
+      - hostPath: /var/log
+        containerPath: /var/log
+
+# Networking configuration
+networking:
+  # Use default pod/service CIDRs
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
+
+  # Disable default CNI (we'll install later if needed)
+  disableDefaultCNI: false
+
+# Feature gates
+featureGates:
+  # Enable any required feature gates
+  "CSIMigration": true
