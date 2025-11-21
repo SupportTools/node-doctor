@@ -207,7 +207,11 @@ jobs:
           cat helm/node-doctor/Chart.yaml
 
       - name: Helm Lint
-        run: helm lint helm/node-doctor/
+        run: |
+          # Copy chart to temp directory to avoid directory context issues
+          cp -r helm/node-doctor /tmp/chart-lint
+          helm lint /tmp/chart-lint/
+          rm -rf /tmp/chart-lint
 
       - name: Package Helm chart
         run: |
