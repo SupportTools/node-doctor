@@ -39,7 +39,7 @@ REGISTRY := docker.io/supporttools
 VERSION := $(shell date +%s)
 GIT_COMMIT := $(shell git rev-parse HEAD)
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-GO_VERSION := 1.21
+GO_VERSION := 1.25
 
 # RC Version - for release candidate builds
 RC_VERSION_FILE := .version-rc

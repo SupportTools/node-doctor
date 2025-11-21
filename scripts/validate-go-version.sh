@@ -5,7 +5,7 @@
 
 set -e
 
-REQUIRED_GO_VERSION="1.21"
+REQUIRED_GO_VERSION="1.25"
 ERRORS=0
 
 echo "Checking Go version in all go.mod files..."
@@ -21,9 +21,12 @@ while IFS= read -r mod_file; do
         continue
     fi
     
-    # Compare versions
-    if [ "$go_version" != "$REQUIRED_GO_VERSION" ] && [ "$go_version" != "${REQUIRED_GO_VERSION}.0" ]; then
-        echo "ERROR: $mod_file has Go version $go_version, expected $REQUIRED_GO_VERSION"
+    # Compare versions - allow patch versions (e.g., 1.25.3 matches 1.25)
+    # Extract major.minor from the go.mod version
+    go_version_minor=$(echo "$go_version" | grep -oE "^[0-9]+\.[0-9]+")
+
+    if [ "$go_version_minor" != "$REQUIRED_GO_VERSION" ]; then
+        echo "ERROR: $mod_file has Go version $go_version, expected $REQUIRED_GO_VERSION or $REQUIRED_GO_VERSION.x"
         ERRORS=$((ERRORS + 1))
     else
         echo "✓ $mod_file: Go $go_version"

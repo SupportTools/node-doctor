@@ -11,7 +11,7 @@ on:
       - main
 
 env:
-  GO_VERSION: '1.21'
+  GO_VERSION: '1.25'
   REGISTRY: docker.io/supporttools
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.21', '1.22']
+        go-version: ['1.24', '1.25']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -74,7 +74,7 @@ jobs:
           fi
 
       - name: Upload coverage to Codecov
-        if: matrix.go-version == '1.22'
+        if: matrix.go-version == '1.25'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.out,./coverage-integration.out
