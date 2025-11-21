@@ -477,6 +477,38 @@ func TempFile(t *testing.T, content string) string {
 	return path
 }
 
+// TempConfigFile creates a temporary config file with minimal valid content for tests.
+func TempConfigFile(t *testing.T, name string) string {
+	t.Helper()
+	content := fmt.Sprintf(`apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+metadata:
+  name: %s
+settings:
+  nodeName: test-node
+  logLevel: info
+  logFormat: text
+  logOutput: stdout
+  updateInterval: 30s
+  resyncInterval: 5m
+  heartbeatInterval: 30s
+  qps: 5
+  burst: 10
+remediation:
+  enabled: false
+  cooldownPeriod: 5m
+  maxAttemptsGlobal: 3
+  historySize: 100
+`, name)
+	dir := TempDir(t)
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("failed to create temp config file: %v", err)
+	}
+	return path
+}
+
 // Eventually retries a condition function until it returns true or timeout.
 func Eventually(t *testing.T, condition func() bool, timeout time.Duration, interval time.Duration, msgAndArgs ...interface{}) {
 	t.Helper()

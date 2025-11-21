@@ -1,0 +1,316 @@
+# Default values for node-doctor Helm chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Node Doctor settings
+settings:
+  # Log level: debug, info, warn, error
+  logLevel: info
+  # Log format: json, text
+  logFormat: json
+  # Update interval for monitors
+  updateInterval: 30s
+  # Resync interval
+  resyncInterval: 5m
+  # Heartbeat interval
+  heartbeatInterval: 1m
+  # Enable remediation actions
+  enableRemediation: true
+  # Dry run mode (log actions without executing)
+  dryRunMode: false
+  # Kubernetes API QPS
+  qps: 50
+  # Kubernetes API burst
+  burst: 100
+
+# Container image configuration
+image:
+  # Image repository
+  repository: supporttools/node-doctor
+  # Image pull policy
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion
+  # This is dynamically set by CI/CD
+  tag: "v1.0.0"
+
+# Secrets for pulling images from private registries
+imagePullSecrets: []
+
+# Override chart name
+nameOverride: ""
+
+# Override full release name
+fullnameOverride: ""
+
+# Service account configuration
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use
+  # If not set and create is true, a name is generated using the fullname template
+  name: "node-doctor"
+
+# Additional pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9101"
+  prometheus.io/path: "/metrics"
+
+# Pod labels
+podLabels: {}
+
+# Security context for the pod
+podSecurityContext:
+  runAsUser: 0
+  runAsGroup: 0
+  fsGroup: 0
+  # Supplemental groups for container runtime socket access
+  supplementalGroups: [0, 997, 998, 999]
+
+# Container security context - PRIVILEGED ACCESS REQUIRED
+securityContext:
+  privileged: true
+  capabilities:
+    add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+      - NET_ADMIN
+      - SYS_TIME
+      - SETUID
+      - SETGID
+  allowPrivilegeEscalation: true
+  runAsUser: 0
+  runAsGroup: 0
+  runAsNonRoot: false
+  readOnlyRootFilesystem: false
+
+# Host network access - REQUIRED for network monitoring
+hostNetwork: true
+
+# Host PID access - REQUIRED for process monitoring
+hostPID: true
+
+# DNS policy for host network mode
+dnsPolicy: ClusterFirstWithHostNet
+
+# Priority class - ensures highest priority scheduling
+priorityClassName: system-node-critical
+
+# Service configuration for metrics endpoint
+service:
+  type: ClusterIP
+  # Use headless service for DaemonSet
+  clusterIP: None
+  httpPort: 8080
+  metricsPort: 9101
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9101"
+    prometheus.io/path: "/metrics"
+
+# Prometheus ServiceMonitor configuration (for Prometheus Operator)
+serviceMonitor:
+  # Enable ServiceMonitor creation
+  enabled: false
+  # Namespace where ServiceMonitor will be created (defaults to release namespace)
+  namespace: ""
+  # Additional labels for ServiceMonitor
+  labels: {}
+  # Scrape interval
+  interval: 30s
+  # Scrape timeout
+  scrapeTimeout: 10s
+  # Target port
+  port: metrics
+  # Path
+  path: /metrics
+  # Honor labels
+  honorLabels: true
+  # Metric relabelings
+  metricRelabelings: []
+  # Relabelings
+  relabelings: []
+
+# Health probe configuration
+probes:
+  liveness:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+  readiness:
+    enabled: true
+    httpGet:
+      path: /ready
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+  startup:
+    enabled: true
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 20
+    successThreshold: 1
+
+# Resource limits and requests
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Node selector - run on all Linux nodes
+nodeSelector:
+  kubernetes.io/os: linux
+
+# Tolerations - CRITICAL: Must run on ALL nodes regardless of taints
+tolerations:
+  # Tolerate all taints - ensures deployment on every node
+  - operator: Exists
+  # Specific tolerations for common node taints
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/not-ready
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 300
+  - key: node.kubernetes.io/unreachable
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 300
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/memory-pressure
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/pid-pressure
+    operator: Exists
+    effect: NoSchedule
+  - key: node.kubernetes.io/network-unavailable
+    operator: Exists
+    effect: NoSchedule
+  - key: CriticalAddonsOnly
+    operator: Exists
+
+# Affinity rules
+affinity: {}
+
+# Update strategy for the DaemonSet
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+# Termination grace period
+terminationGracePeriodSeconds: 30
+
+# Monitors configuration
+monitors:
+  cpu:
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    loadAverageThresholds:
+      warning: 80
+      critical: 95
+    thermalThresholds:
+      warning: 85
+      critical: 95
+    cpuUsageThresholds:
+      warning: 85
+      critical: 95
+
+  memory:
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    memoryThresholds:
+      warning: 85
+      critical: 95
+    swapThresholds:
+      warning: 50
+      critical: 80
+    oomDetection: true
+
+  disk:
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    paths:
+      - path: "/"
+        warningThreshold: 85
+        criticalThreshold: 95
+      - path: "/var/lib/kubelet"
+        warningThreshold: 85
+        criticalThreshold: 95
+      - path: "/var/lib/docker"
+        warningThreshold: 80
+        criticalThreshold: 90
+      - path: "/var/lib/containerd"
+        warningThreshold: 80
+        criticalThreshold: 90
+    inodeThresholds:
+      warning: 85
+      critical: 95
+    readOnlyDetection: true
+    ioHealthCheck: true
+
+# Exporters configuration
+exporters:
+  kubernetes:
+    enabled: true
+    updateInterval: 30s
+    resyncInterval: 5m
+    heartbeatInterval: 1m
+    maxEventsPerMinute: 10
+    eventTTL: 1h
+    deduplicationWindow: 5m
+
+  prometheus:
+    enabled: true
+    port: 9101
+    path: /metrics
+    namespace: node_doctor
+    subsystem: monitor
+
+  http:
+    enabled: false
+    bindAddress: "0.0.0.0"
+    port: 8080
+    tlsEnabled: false
+
+# Remediation configuration
+remediation:
+  enabled: true
+  dryRun: false
+  maxRemediationsPerHour: 5
+  maxRemediationsPerMinute: 1
+  cooldownPeriod: 10m
+  maxAttemptsGlobal: 2
+
+# Features configuration
+features:
+  enableMetrics: true
+  enableProfiling: false
+  enableTracing: false

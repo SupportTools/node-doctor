@@ -106,9 +106,11 @@ func (h *ReloadTestHelper) WaitForReload(t *testing.T, timeout time.Duration) er
 	for time.Now().Before(deadline) {
 		h.eventsMu.Lock()
 		for _, event := range h.events {
-			if event.Reason == "ConfigReloadSucceeded" || event.Reason == "ConfigReloadFailed" {
+			// Match the actual event reasons emitted by the detector
+			if event.Reason == "ReloadSuccess" || event.Reason == "NoChanges" ||
+				event.Reason == "ReloadFailed" || event.Reason == "ReloadPartialFailure" {
 				h.eventsMu.Unlock()
-				if event.Reason == "ConfigReloadFailed" {
+				if event.Reason == "ReloadFailed" || event.Reason == "ReloadPartialFailure" {
 					return fmt.Errorf("reload failed: %s", event.Message)
 				}
 				return nil

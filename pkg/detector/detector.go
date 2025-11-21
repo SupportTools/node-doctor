@@ -100,6 +100,7 @@ type ProblemDetector struct {
 	started             bool
 	seenProblems        map[string]*types.Problem // For deduplication
 	problemsMutex       sync.RWMutex              // Protects seenProblems
+	passedMonitors      []types.Monitor           // Monitors passed directly to constructor
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -149,19 +150,13 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 		configFilePath:    configFilePath,
 		monitorFactory:    monitorFactory,
 		seenProblems:      make(map[string]*types.Problem),
+		passedMonitors:    monitors, // Store passed monitors to start in Start()
 	}
 
 	// Create reload coordinator with callback and event emitter
 	reloadCallback := pd.handleConfigReload
 	eventEmitter := pd.emitReloadEvent
 	pd.reloadCoordinator = reload.NewReloadCoordinator(configFilePath, config, reloadCallback, eventEmitter)
-
-	// Add the provided monitors and exporters
-	for _, monitor := range monitors {
-		// TODO: Need to match monitors with their configs properly
-		// For now, we'll add them during Start() when we have the context
-		_ = monitor
-	}
 
 	for _, exporter := range exporters {
 		pd.AddExporter(exporter)
@@ -221,7 +216,7 @@ func (pd *ProblemDetector) Start() error {
 		pd.watchConfigChanges()
 	}()
 
-	// Start monitors
+	// Start monitors from config (requires MonitorFactory)
 	for _, monitorConfig := range pd.config.Monitors {
 		monitor, err := pd.createMonitor(monitorConfig)
 		if err != nil {
@@ -237,6 +232,23 @@ func (pd *ProblemDetector) Start() error {
 		}
 
 		log.Printf("[INFO] Started monitor: %s", monitorConfig.Name)
+	}
+
+	// Start passed monitors (for testing or programmatic use)
+	for i, monitor := range pd.passedMonitors {
+		// Create a synthetic config for passed monitors
+		monitorConfig := types.MonitorConfig{
+			Name:    fmt.Sprintf("passed-monitor-%d", i),
+			Enabled: true,
+		}
+
+		if err := pd.addMonitor(pd.ctx, monitor, monitorConfig); err != nil {
+			log.Printf("[ERROR] Failed to start passed monitor %d: %v", i, err)
+			pd.stats.IncrementMonitorsFailed()
+			continue
+		}
+
+		log.Printf("[INFO] Started passed monitor: %s", monitorConfig.Name)
 	}
 
 	// Start status processing goroutine
@@ -379,7 +391,7 @@ func (pd *ProblemDetector) statusToProblems(status *types.Status) []*types.Probl
 				Type:       "condition-" + condition.Type,
 				Resource:   status.Source,
 				Message:    condition.Message,
-				Severity:   types.ProblemWarning, // Default severity
+				Severity:   types.ProblemCritical, // False conditions are critical problems
 				DetectedAt: condition.Transition,
 				Metadata: map[string]string{
 					"condition": condition.Type,

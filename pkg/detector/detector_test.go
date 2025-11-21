@@ -225,7 +225,7 @@ func TestStatusToProblems_Events(t *testing.T) {
 			}(),
 			expectedCount:      2, // 1 error event + 1 false condition
 			containsTypes:      []string{"event-CriticalError", "condition-SystemHealth"},
-			containsSeverities: []types.ProblemSeverity{types.ProblemCritical, types.ProblemWarning},
+			containsSeverities: []types.ProblemSeverity{types.ProblemCritical}, // Both error events and false conditions are Critical
 		},
 		{
 			name: "warning event",

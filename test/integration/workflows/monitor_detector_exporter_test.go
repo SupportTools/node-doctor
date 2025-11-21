@@ -31,12 +31,29 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 			Name: "integration-test",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: "test-node",
+			NodeName:          "test-node",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			LogOutput:         "stdout",
+			UpdateInterval:    30 * time.Second,
+			ResyncInterval:    5 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			QPS:               5,
+			Burst:             10,
+		},
+		Remediation: types.RemediationConfig{
+			Enabled:           false,
+			CooldownPeriod:    5 * time.Minute,
+			MaxAttemptsGlobal: 3,
+			HistorySize:       100,
 		},
 	}
 
-	// Create problem detector (no reload in tests)
-	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, "", nil)
+	// Create temp config file for test
+	configPath := test.TempConfigFile(t, "integration-test")
+
+	// Create problem detector (with config file for reload support)
+	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil)
 	test.AssertNoError(t, err, "Failed to create problem detector")
 
 	// Start detector in background
@@ -177,17 +194,34 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 			Name: "multi-monitor-test",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: "test-node",
+			NodeName:          "test-node",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			LogOutput:         "stdout",
+			UpdateInterval:    30 * time.Second,
+			ResyncInterval:    5 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			QPS:               5,
+			Burst:             10,
+		},
+		Remediation: types.RemediationConfig{
+			Enabled:           false,
+			CooldownPeriod:    5 * time.Minute,
+			MaxAttemptsGlobal: 3,
+			HistorySize:       100,
 		},
 	}
+
+	// Create temp config file for test
+	configPath := test.TempConfigFile(t, "multi-monitor-test")
 
 	// Create problem detector with multiple monitors
 	pd, err := detector.NewProblemDetector(
 		config,
 		[]types.Monitor{monitor1, monitor2, monitor3},
 		[]types.Exporter{mockExporter},
-		"",  // no config file in tests
-		nil, // no monitor factory in tests
+		configPath, // use temp config file for reload support
+		nil,        // no monitor factory in tests
 	)
 	test.AssertNoError(t, err, "Failed to create problem detector")
 
@@ -275,11 +309,28 @@ func TestProblemDeduplication(t *testing.T) {
 			Name: "dedup-test",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: "test-node",
+			NodeName:          "test-node",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			LogOutput:         "stdout",
+			UpdateInterval:    30 * time.Second,
+			ResyncInterval:    5 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			QPS:               5,
+			Burst:             10,
+		},
+		Remediation: types.RemediationConfig{
+			Enabled:           false,
+			CooldownPeriod:    5 * time.Minute,
+			MaxAttemptsGlobal: 3,
+			HistorySize:       100,
 		},
 	}
 
-	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, "", nil)
+	// Create temp config file for test
+	configPath := test.TempConfigFile(t, "dedup-test")
+
+	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil)
 	test.AssertNoError(t, err)
 
 	var wg sync.WaitGroup

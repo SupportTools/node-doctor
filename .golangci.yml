@@ -108,6 +108,12 @@ linters-settings:
   gosec:
     excludes:
       - G104 # Audit errors not checked (covered by errcheck)
+      - G101 # Potential hardcoded credentials (false positive for constant paths)
+      - G115 # Integer overflow conversion (safe in our use cases with known block sizes)
+      - G204 # Subprocess with variable (we use controlled systemctl commands)
+      - G306 # WriteFile permissions (0644 is intentional for config files)
+      - G402 # TLS InsecureSkipVerify (optional user configuration)
+      - G601 # Implicit memory aliasing in for loop (Go 1.22+ handles this)
     config:
       global:
         nosec: true  # Allow nosec comments
@@ -128,11 +134,18 @@ issues:
         - dupl
         - gosec
         - gocritic
+        - revive
 
-    # Exclude errcheck from test helpers
+    # Exclude errcheck and gosec from test helpers
     - path: test/helpers\.go
       linters:
         - errcheck
+        - gosec
+
+    # Exclude unused-parameter for example and noop monitors
+    - path: pkg/monitors/example/
+      linters:
+        - revive
 
     # Exclude known issues in generated code
     - path: zz_generated\..*\.go

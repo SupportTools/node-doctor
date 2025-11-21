@@ -41,12 +41,29 @@ func TestConcurrentMonitorStatusUpdates(t *testing.T) {
 			Name: "concurrent-test",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: "concurrent-test-node",
+			NodeName:          "concurrent-test-node",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			LogOutput:         "stdout",
+			UpdateInterval:    30 * time.Second,
+			ResyncInterval:    5 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			QPS:               5,
+			Burst:             10,
+		},
+		Remediation: types.RemediationConfig{
+			Enabled:           false,
+			CooldownPeriod:    5 * time.Minute,
+			MaxAttemptsGlobal: 3,
+			HistorySize:       100,
 		},
 	}
 
-	// Create detector (no reload in tests)
-	pd, err := detector.NewProblemDetector(config, monitors, []types.Exporter{mockExporter}, "", nil)
+	// Create temp config file for test
+	configPath := test.TempConfigFile(t, "concurrent-test")
+
+	// Create detector (with config file for reload support)
+	pd, err := detector.NewProblemDetector(config, monitors, []types.Exporter{mockExporter}, configPath, nil)
 	test.AssertNoError(t, err)
 
 	// Start detector
@@ -243,12 +260,29 @@ func TestConcurrentExporterOperations(t *testing.T) {
 			Name: "multi-exporter-test",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: "test-node",
+			NodeName:          "test-node",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			LogOutput:         "stdout",
+			UpdateInterval:    30 * time.Second,
+			ResyncInterval:    5 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			QPS:               5,
+			Burst:             10,
+		},
+		Remediation: types.RemediationConfig{
+			Enabled:           false,
+			CooldownPeriod:    5 * time.Minute,
+			MaxAttemptsGlobal: 3,
+			HistorySize:       100,
 		},
 	}
 
-	// Create detector with multiple exporters (no reload in tests)
-	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, exporters, "", nil)
+	// Create temp config file for test
+	configPath := test.TempConfigFile(t, "multi-exporter-test")
+
+	// Create detector with multiple exporters (with config file for reload support)
+	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, exporters, configPath, nil)
 	test.AssertNoError(t, err)
 
 	// Start detector
@@ -314,16 +348,33 @@ func TestRaceConditionDetection(t *testing.T) {
 			Name: "race-test",
 		},
 		Settings: types.GlobalSettings{
-			NodeName: "race-test-node",
+			NodeName:          "race-test-node",
+			LogLevel:          "info",
+			LogFormat:         "text",
+			LogOutput:         "stdout",
+			UpdateInterval:    30 * time.Second,
+			ResyncInterval:    5 * time.Minute,
+			HeartbeatInterval: 30 * time.Second,
+			QPS:               5,
+			Burst:             10,
+		},
+		Remediation: types.RemediationConfig{
+			Enabled:           false,
+			CooldownPeriod:    5 * time.Minute,
+			MaxAttemptsGlobal: 3,
+			HistorySize:       100,
 		},
 	}
+
+	// Create temp config file for test
+	configPath := test.TempConfigFile(t, "race-test")
 
 	pd, err := detector.NewProblemDetector(
 		config,
 		[]types.Monitor{monitor1, monitor2},
 		[]types.Exporter{exporter},
-		"",  // no config file in tests
-		nil, // no monitor factory in tests
+		configPath, // use temp config file for reload support
+		nil,        // no monitor factory in tests
 	)
 	test.AssertNoError(t, err)
 
