@@ -426,7 +426,7 @@ func TestGetters(t *testing.T) {
 	// Test GetConfiguration
 	config := exporter.GetConfiguration()
 	if config == nil {
-		t.Error("GetConfiguration() returned nil")
+		t.Fatal("GetConfiguration() returned nil")
 	}
 	if !config.Enabled {
 		t.Error("Configuration should be enabled")

@@ -61,7 +61,7 @@ func TestNewEventManager(t *testing.T) {
 	manager := NewEventManager(client, config)
 
 	if manager == nil {
-		t.Error("NewEventManager() returned nil")
+		t.Fatal("NewEventManager() returned nil")
 	}
 	if manager.maxEventsPerMin != 5 {
 		t.Errorf("Expected maxEventsPerMin = 5, got %d", manager.maxEventsPerMin)

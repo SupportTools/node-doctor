@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +19,8 @@ type mockPluginExecutor struct {
 	err      error
 	delay    time.Duration
 
-	// Track execution calls
+	// Track execution calls with mutex for thread safety
+	mu           sync.Mutex
 	executeCalls []mockExecuteCall
 }
 
@@ -29,12 +31,14 @@ type mockExecuteCall struct {
 }
 
 func (m *mockPluginExecutor) Execute(ctx context.Context, pluginPath string, args []string, env map[string]string) (stdout, stderr string, exitCode int, err error) {
-	// Record the call
+	// Record the call with mutex protection
+	m.mu.Lock()
 	m.executeCalls = append(m.executeCalls, mockExecuteCall{
 		pluginPath: pluginPath,
 		args:       args,
 		env:        env,
 	})
+	m.mu.Unlock()
 
 	// Simulate delay if configured
 	if m.delay > 0 {
