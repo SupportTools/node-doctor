@@ -71,8 +71,12 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: 1
         run: |
+          # Extract version without 'v' prefix (to match docker metadata output)
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
           echo "Signing Docker image with cosign (keyless)..."
-          cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          echo "Tag: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}
           echo "✅ Docker image signed"
 
       - name: Generate Docker summary
