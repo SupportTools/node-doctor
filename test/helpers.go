@@ -234,9 +234,13 @@ func NewMockHTTPServer() *MockHTTPServer {
 
 		// Read and track body
 		if r.Body != nil {
-			body, _ := io.ReadAll(r.Body)
-			mock.requestBodies = append(mock.requestBodies, string(body))
-			r.Body.Close()
+			body, err := io.ReadAll(r.Body)
+			if err == nil {
+				mock.requestBodies = append(mock.requestBodies, string(body))
+			} else {
+				mock.requestBodies = append(mock.requestBodies, "")
+			}
+			_ = r.Body.Close()
 		} else {
 			mock.requestBodies = append(mock.requestBodies, "")
 		}

@@ -353,15 +353,18 @@ func (e *HTTPExporter) GetHealthStatus() map[string]interface{} {
 	}
 
 	// Add per-webhook health
-	for name, webhookStats := range stats.WebhookStats {
-		health["webhookHealth"].(map[string]interface{})[name] = map[string]interface{}{
-			"healthy":         webhookStats.IsHealthy(),
-			"successRate":     fmt.Sprintf("%.1f%%", webhookStats.GetSuccessRate()),
-			"totalRequests":   webhookStats.RequestsTotal,
-			"lastSuccess":     webhookStats.LastSuccessTime,
-			"lastError":       webhookStats.LastError,
-			"avgResponseTime": webhookStats.AvgResponseTime.String(),
-			"retryAttempts":   webhookStats.RetryAttempts,
+	webhookHealthMap, ok := health["webhookHealth"].(map[string]interface{})
+	if ok {
+		for name, webhookStats := range stats.WebhookStats {
+			webhookHealthMap[name] = map[string]interface{}{
+				"healthy":         webhookStats.IsHealthy(),
+				"successRate":     fmt.Sprintf("%.1f%%", webhookStats.GetSuccessRate()),
+				"totalRequests":   webhookStats.RequestsTotal,
+				"lastSuccess":     webhookStats.LastSuccessTime,
+				"lastError":       webhookStats.LastError,
+				"avgResponseTime": webhookStats.AvgResponseTime.String(),
+				"retryAttempts":   webhookStats.RetryAttempts,
+			}
 		}
 	}
 

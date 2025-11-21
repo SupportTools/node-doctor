@@ -88,7 +88,9 @@ func NewConnectivityMonitor(ctx context.Context, config types.MonitorConfig) (ty
 	}
 
 	// Set the check function
-	baseMonitor.SetCheckFunc(monitor.checkConnectivity)
+	if err := baseMonitor.SetCheckFunc(monitor.checkConnectivity); err != nil {
+		return nil, fmt.Errorf("failed to set check function: %w", err)
+	}
 
 	return monitor, nil
 }

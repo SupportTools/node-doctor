@@ -89,7 +89,9 @@ func NewGatewayMonitor(ctx context.Context, config types.MonitorConfig) (types.M
 	}
 
 	// Set the check function
-	baseMonitor.SetCheckFunc(monitor.checkGateway)
+	if err := baseMonitor.SetCheckFunc(monitor.checkGateway); err != nil {
+		return nil, fmt.Errorf("failed to set check function: %w", err)
+	}
 
 	return monitor, nil
 }

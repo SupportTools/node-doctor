@@ -175,7 +175,9 @@ func NewCNIMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 	}
 
 	// Set the check function
-	baseMonitor.SetCheckFunc(monitor.checkCNI)
+	if err := baseMonitor.SetCheckFunc(monitor.checkCNI); err != nil {
+		return nil, fmt.Errorf("failed to set check function: %w", err)
+	}
 
 	return monitor, nil
 }

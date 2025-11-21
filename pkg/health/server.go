@@ -275,7 +275,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleReady handles the /ready endpoint (readiness probe).
@@ -297,7 +297,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleStatus handles the /status endpoint (detailed status).
@@ -322,7 +322,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // handleRemediationHistory handles the /remediation/history endpoint.
@@ -339,7 +339,7 @@ func (s *Server) handleRemediationHistory(w http.ResponseWriter, r *http.Request
 	if provider == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"error": "Remediation history not available",
 		})
 		return
@@ -386,7 +386,7 @@ func (s *Server) handleRemediationHistory(w http.ResponseWriter, r *http.Request
 	// Return as JSON
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"count":   count,
 		"limit":   limit,
 		"history": history,
