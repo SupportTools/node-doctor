@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 env:
-  GO_VERSION: '1.21'
+  GO_VERSION: "1.21"
   REGISTRY: docker.io
   IMAGE_NAME: supporttools/node-doctor
 
@@ -51,7 +51,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -65,7 +65,7 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:
-          cosign-release: 'v2.2.2'
+          cosign-release: "v2.2.2"
 
       - name: Sign Docker image
         env:
