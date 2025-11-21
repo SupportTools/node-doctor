@@ -1,0 +1,61 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "node-doctor.fullname" . }}
+  labels:
+    {{- include "node-doctor.labels" . | nindent 4 }}
+rules:
+  # Node operations - read and update node status/conditions
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["get", "patch", "update"]
+
+  # Events - create events for node issues
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+
+  # Pods - for monitoring pod status on nodes
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+
+  # ConfigMaps - for configuration and coordination
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+
+  # Namespaces - for namespace awareness
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+
+  # Services - for service discovery
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+
+  # Endpoints - for endpoint health checks
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+
+  # Leases - for leader election if running in HA mode
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ComponentStatuses - for cluster component health
+  - apiGroups: [""]
+    resources: ["componentstatuses"]
+    verbs: ["get", "list"]
+
+  # Discovery API - for API server health checks
+  - nonResourceURLs: ["/healthz", "/livez", "/readyz", "/version"]
+    verbs: ["get"]

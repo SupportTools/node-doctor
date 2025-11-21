@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "node-doctor.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-doctor.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    apiVersion: v1
+    kind: NodeDoctorConfig
+    metadata:
+      name: {{ include "node-doctor.name" . }}
+    settings:
+      nodeName: "${NODE_NAME}"
+      logLevel: {{ .Values.settings.logLevel }}
+      logFormat: {{ .Values.settings.logFormat }}
+      logOutput: stdout
+      updateInterval: {{ .Values.settings.updateInterval }}
+      resyncInterval: {{ .Values.settings.resyncInterval }}
+      heartbeatInterval: {{ .Values.settings.heartbeatInterval }}
+      enableRemediation: {{ .Values.settings.enableRemediation }}
+      dryRunMode: {{ .Values.settings.dryRunMode }}
+      qps: {{ .Values.settings.qps }}
+      burst: {{ .Values.settings.burst }}
+
+    monitors:
+      {{- if .Values.monitors.cpu.enabled }}
+      # CPU Monitor - Load average and thermal monitoring
+      - name: cpu-health
+        type: system-cpu
+        enabled: true
+        interval: {{ .Values.monitors.cpu.interval }}
+        timeout: {{ .Values.monitors.cpu.timeout }}
+        config:
+          loadAverageThresholds:
+            warning: {{ .Values.monitors.cpu.loadAverageThresholds.warning }}
+            critical: {{ .Values.monitors.cpu.loadAverageThresholds.critical }}
+          thermalThresholds:
+            warning: {{ .Values.monitors.cpu.thermalThresholds.warning }}
+            critical: {{ .Values.monitors.cpu.thermalThresholds.critical }}
+          cpuUsageThresholds:
+            warning: {{ .Values.monitors.cpu.cpuUsageThresholds.warning }}
+            critical: {{ .Values.monitors.cpu.cpuUsageThresholds.critical }}
+      {{- end }}
+
+      {{- if .Values.monitors.memory.enabled }}
+      # Memory Monitor - Memory and swap usage monitoring
+      - name: memory-health
+        type: system-memory
+        enabled: true
+        interval: {{ .Values.monitors.memory.interval }}
+        timeout: {{ .Values.monitors.memory.timeout }}
+        config:
+          memoryThresholds:
+            warning: {{ .Values.monitors.memory.memoryThresholds.warning }}
+            critical: {{ .Values.monitors.memory.memoryThresholds.critical }}
+          swapThresholds:
+            warning: {{ .Values.monitors.memory.swapThresholds.warning }}
+            critical: {{ .Values.monitors.memory.swapThresholds.critical }}
+          oomDetection: {{ .Values.monitors.memory.oomDetection }}
+          kmsgPath: /dev/kmsg
+      {{- end }}
+
+      {{- if .Values.monitors.disk.enabled }}
+      # Disk Monitor - Disk space and I/O health
+      - name: disk-health
+        type: system-disk
+        enabled: true
+        interval: {{ .Values.monitors.disk.interval }}
+        timeout: {{ .Values.monitors.disk.timeout }}
+        config:
+          paths:
+            {{- toYaml .Values.monitors.disk.paths | nindent 12 }}
+          inodeThresholds:
+            warning: {{ .Values.monitors.disk.inodeThresholds.warning }}
+            critical: {{ .Values.monitors.disk.inodeThresholds.critical }}
+          readOnlyDetection: {{ .Values.monitors.disk.readOnlyDetection }}
+          ioHealthCheck: {{ .Values.monitors.disk.ioHealthCheck }}
+      {{- end }}
+
+    exporters:
+      kubernetes:
+        enabled: {{ .Values.exporters.kubernetes.enabled }}
+        updateInterval: {{ .Values.exporters.kubernetes.updateInterval }}
+        resyncInterval: {{ .Values.exporters.kubernetes.resyncInterval }}
+        heartbeatInterval: {{ .Values.exporters.kubernetes.heartbeatInterval }}
+        namespace: {{ .Release.Namespace }}
+        conditions:
+          - type: NodeDoctorHealthy
+            defaultStatus: "True"
+            defaultReason: "NodeDoctorRunning"
+            defaultMessage: "Node Doctor is running and monitoring the node"
+        events:
+          maxEventsPerMinute: {{ .Values.exporters.kubernetes.maxEventsPerMinute }}
+          eventTTL: {{ .Values.exporters.kubernetes.eventTTL }}
+          deduplicationWindow: {{ .Values.exporters.kubernetes.deduplicationWindow }}
+
+      http:
+        enabled: {{ .Values.exporters.http.enabled }}
+        bindAddress: {{ .Values.exporters.http.bindAddress | quote }}
+        hostPort: {{ .Values.exporters.http.port }}
+        tlsEnabled: {{ .Values.exporters.http.tlsEnabled }}
+        endpoints:
+          - path: /healthz
+            handler: overall-health
+            description: "Kubernetes-style health endpoint"
+          - path: /ready
+            handler: readiness
+            description: "Readiness check"
+          - path: /status
+            handler: detailed-status
+            description: "Detailed node and monitor status"
+
+      prometheus:
+        enabled: {{ .Values.exporters.prometheus.enabled }}
+        port: {{ .Values.exporters.prometheus.port }}
+        path: {{ .Values.exporters.prometheus.path }}
+        namespace: {{ .Values.exporters.prometheus.namespace }}
+        subsystem: {{ .Values.exporters.prometheus.subsystem }}
+        labels:
+          cluster: kubernetes
+
+    remediation:
+      enabled: {{ .Values.remediation.enabled }}
+      dryRun: {{ .Values.remediation.dryRun }}
+      maxRemediationsPerHour: {{ .Values.remediation.maxRemediationsPerHour }}
+      maxRemediationsPerMinute: {{ .Values.remediation.maxRemediationsPerMinute }}
+      cooldownPeriod: {{ .Values.remediation.cooldownPeriod }}
+      maxAttemptsGlobal: {{ .Values.remediation.maxAttemptsGlobal }}
+
+    features:
+      enableMetrics: {{ .Values.features.enableMetrics }}
+      enableProfiling: {{ .Values.features.enableProfiling }}
+      enableTracing: {{ .Values.features.enableTracing }}

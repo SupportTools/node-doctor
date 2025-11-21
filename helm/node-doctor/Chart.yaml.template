@@ -1,0 +1,32 @@
+apiVersion: v2
+name: node-doctor
+description: A Kubernetes DaemonSet that monitors node health, detects issues, and optionally remediates problems across your cluster
+
+# Application chart for deploying the node-doctor agent
+type: application
+
+# Chart version - dynamically set by CI/CD
+version: ${CHART_VERSION}
+
+# Application version - matches the node-doctor version
+appVersion: ${APP_VERSION}
+
+keywords:
+  - kubernetes
+  - node
+  - monitoring
+  - health
+  - remediation
+  - daemonset
+  - observability
+
+home: https://github.com/supporttools/node-doctor
+sources:
+  - https://github.com/supporttools/node-doctor
+
+maintainers:
+  - name: mattmattox
+    email: mmattox@support.tools
+
+# Optional: icon URL
+# icon: https://cdn.support.tools/node-doctor/logo.png

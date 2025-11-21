@@ -1,0 +1,62 @@
+Node Doctor has been deployed successfully!
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+== DaemonSet ==
+Node Doctor is running as a DaemonSet and will deploy pods to all nodes matching the node selector.
+
+To check the status of the DaemonSet:
+  kubectl get daemonset {{ include "node-doctor.fullname" . }} -n {{ .Release.Namespace }}
+
+To view the pods:
+  kubectl get pods -n {{ .Release.Namespace }} -l {{ include "node-doctor.selectorLabels" . | replace ": " "=" | replace "\n" "," }}
+
+To view logs from a specific pod:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "node-doctor.name" . }} --tail=100 -f
+
+== Metrics ==
+Prometheus metrics are exposed on port {{ .Values.service.metricsPort }}.
+
+{{- if .Values.serviceMonitor.enabled }}
+
+A ServiceMonitor has been created for Prometheus Operator integration.
+{{- else }}
+
+To enable Prometheus Operator integration, set serviceMonitor.enabled=true in your values.
+
+For manual scraping, the metrics endpoint is:
+  http://{{ include "node-doctor.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.metricsPort }}/metrics
+{{- end }}
+
+To view metrics from a pod:
+  kubectl exec -n {{ .Release.Namespace }} -it $(kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "node-doctor.name" . }} -o jsonpath='{.items[0].metadata.name}') -- wget -qO- http://localhost:{{ .Values.service.metricsPort }}/metrics | head -50
+
+== Health Endpoints ==
+Health check endpoints are available on port {{ .Values.service.httpPort }}:
+  - /healthz - Liveness check
+  - /ready   - Readiness check
+  - /status  - Detailed status information
+
+== Configuration ==
+Configuration is stored in ConfigMap: {{ include "node-doctor.configMapName" . }}
+
+To view the current configuration:
+  kubectl get configmap {{ include "node-doctor.configMapName" . }} -n {{ .Release.Namespace }} -o yaml
+
+== Node Conditions ==
+Node Doctor sets the following conditions on nodes:
+  - NodeDoctorHealthy: Overall health status of the node
+
+To view node conditions:
+  kubectl get nodes -o custom-columns='NAME:.metadata.name,NODE_DOCTOR:.status.conditions[?(@.type=="NodeDoctorHealthy")].status'
+
+== Documentation ==
+For more information, visit: https://github.com/supporttools/node-doctor
+
+== Upgrading ==
+To upgrade Node Doctor:
+  helm upgrade {{ .Release.Name }} node-doctor/node-doctor -n {{ .Release.Namespace }}
+
+To rollback to a previous release:
+  helm rollback {{ .Release.Name }} -n {{ .Release.Namespace }}
