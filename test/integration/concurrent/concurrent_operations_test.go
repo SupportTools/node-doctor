@@ -15,7 +15,7 @@ import (
 
 // TestConcurrentMonitorStatusUpdates tests multiple monitors sending statuses concurrently
 func TestConcurrentMonitorStatusUpdates(t *testing.T) {
-	ctx, cancel := test.TestContext(t, 60*time.Second)
+	_, cancel := test.TestContext(t, 60*time.Second)
 	defer cancel()
 
 	const numMonitors = 10
@@ -219,7 +219,7 @@ func TestConcurrentRemediationSameResource(t *testing.T) {
 
 // TestConcurrentExporterOperations tests concurrent exports to multiple exporters
 func TestConcurrentExporterOperations(t *testing.T) {
-	ctx, cancel := test.TestContext(t, 30*time.Second)
+	_, cancel := test.TestContext(t, 30*time.Second)
 	defer cancel()
 
 	// Create multiple exporters
@@ -297,7 +297,7 @@ func TestConcurrentExporterOperations(t *testing.T) {
 
 // TestRaceConditionDetection tests for data races under concurrent load
 func TestRaceConditionDetection(t *testing.T) {
-	ctx, cancel := test.TestContext(t, 30*time.Second)
+	_, cancel := test.TestContext(t, 30*time.Second)
 	defer cancel()
 
 	// This test is designed to catch race conditions when run with -race flag

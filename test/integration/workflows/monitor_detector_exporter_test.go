@@ -14,7 +14,7 @@ import (
 
 // TestMonitorToDetectorToExporterFlow tests the complete workflow from monitor → detector → exporter
 func TestMonitorToDetectorToExporterFlow(t *testing.T) {
-	ctx, cancel := test.TestContext(t, 30*time.Second)
+	_, cancel := test.TestContext(t, 30*time.Second)
 	defer cancel()
 
 	// Create a mock monitor that sends test statuses
@@ -158,7 +158,7 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 
 // TestMultipleMonitorsWorkflow tests integration with multiple monitors running concurrently
 func TestMultipleMonitorsWorkflow(t *testing.T) {
-	ctx, cancel := test.TestContext(t, 30*time.Second)
+	_, cancel := test.TestContext(t, 30*time.Second)
 	defer cancel()
 
 	// Create multiple mock monitors
@@ -262,7 +262,7 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 
 // TestProblemDeduplication tests that duplicate problems are not re-exported
 func TestProblemDeduplication(t *testing.T) {
-	ctx, cancel := test.TestContext(t, 30*time.Second)
+	_, cancel := test.TestContext(t, 30*time.Second)
 	defer cancel()
 
 	mockMonitor := newMockMonitor("test-monitor")
