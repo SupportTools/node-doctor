@@ -256,6 +256,185 @@ func (e *PrometheusExporter) ExportProblem(ctx context.Context, problem *types.P
 	return nil
 }
 
+// Reload implements types.ReloadableExporter interface for configuration reload
+func (e *PrometheusExporter) Reload(config interface{}) error {
+	// Type assert with safety check
+	prometheusConfig, ok := config.(*types.PrometheusExporterConfig)
+	if !ok {
+		return fmt.Errorf("invalid config type for Prometheus exporter: expected *types.PrometheusExporterConfig, got %T", config)
+	}
+
+	// Validate before applying
+	if prometheusConfig == nil {
+		return fmt.Errorf("prometheus exporter config cannot be nil")
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	log.Printf("[INFO] Reloading Prometheus exporter configuration")
+
+	// Validate new configuration
+	if err := validateConfig(prometheusConfig); err != nil {
+		return fmt.Errorf("new configuration validation failed: %w", err)
+	}
+
+	oldConfig := e.config
+
+	// Set defaults for new config
+	if prometheusConfig.Port == 0 {
+		prometheusConfig.Port = 9100
+	}
+	if prometheusConfig.Path == "" {
+		prometheusConfig.Path = "/metrics"
+	}
+	if prometheusConfig.Namespace == "" {
+		prometheusConfig.Namespace = "node_doctor"
+	}
+
+	// Check if server needs to be restarted due to significant changes
+	if e.needsServerRestart(oldConfig, prometheusConfig) {
+		log.Printf("[INFO] Restarting Prometheus server due to configuration changes")
+
+		// Stop existing server if running
+		if e.started && e.server != nil {
+			if err := shutdownServer(e.server, 10*time.Second); err != nil {
+				log.Printf("[WARN] Error stopping existing server: %v", err)
+			}
+		}
+
+		// Check if metrics need to be recreated due to namespace/subsystem changes
+		if e.needsMetricsRecreation(oldConfig, prometheusConfig) {
+			log.Printf("[INFO] Recreating metrics due to namespace/subsystem changes")
+
+			// Create new constant labels
+			constLabels := make(prometheus.Labels)
+			for k, v := range prometheusConfig.Labels {
+				constLabels[k] = v
+			}
+
+			// Create new registry
+			e.registry = NewRegistry(constLabels)
+
+			// Create new metrics
+			metrics, err := NewMetrics(prometheusConfig.Namespace, prometheusConfig.Subsystem, constLabels)
+			if err != nil {
+				return fmt.Errorf("failed to create new metrics: %w", err)
+			}
+
+			// Register new metrics
+			if err := metrics.Register(e.registry); err != nil {
+				return fmt.Errorf("failed to register new metrics: %w", err)
+			}
+
+			e.metrics = metrics
+
+			// Re-initialize static metrics
+			e.initializeStaticMetrics()
+
+			// Reset active problems tracking
+			e.activeProblems = make(map[string]*types.Problem)
+		}
+
+		// Start new server if exporter was running
+		if e.started {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			addr := fmt.Sprintf("0.0.0.0:%d", prometheusConfig.Port)
+			server, err := startHTTPServer(ctx, addr, prometheusConfig.Path, e.registry)
+			if err != nil {
+				return fmt.Errorf("failed to start new HTTP server: %w", err)
+			}
+			e.server = server
+
+			log.Printf("[INFO] Prometheus server restarted on %s%s", addr, prometheusConfig.Path)
+		}
+	}
+
+	// Update configuration
+	e.config = prometheusConfig
+
+	log.Printf("[INFO] Successfully reloaded Prometheus exporter configuration")
+	log.Printf("[DEBUG] Config changes: port %d->%d, path %s->%s, namespace %s->%s, subsystem %s->%s",
+		oldConfig.Port, prometheusConfig.Port,
+		oldConfig.Path, prometheusConfig.Path,
+		oldConfig.Namespace, prometheusConfig.Namespace,
+		oldConfig.Subsystem, prometheusConfig.Subsystem)
+
+	return nil
+}
+
+// IsReloadable implements types.ReloadableExporter interface
+func (e *PrometheusExporter) IsReloadable() bool {
+	return true
+}
+
+// needsServerRestart determines if the HTTP server needs to be restarted
+// based on configuration changes that affect server behavior.
+func (e *PrometheusExporter) needsServerRestart(oldConfig, newConfig *types.PrometheusExporterConfig) bool {
+	if oldConfig == nil {
+		return true // First time configuration
+	}
+
+	// Check if port changed
+	if oldConfig.Port != newConfig.Port {
+		return true
+	}
+
+	// Check if path changed
+	if oldConfig.Path != newConfig.Path {
+		return true
+	}
+
+	// Check if metrics need recreation (which requires server restart)
+	if e.needsMetricsRecreation(oldConfig, newConfig) {
+		return true
+	}
+
+	return false
+}
+
+// needsMetricsRecreation determines if metrics need to be recreated
+// based on configuration changes that affect metric names or labels.
+func (e *PrometheusExporter) needsMetricsRecreation(oldConfig, newConfig *types.PrometheusExporterConfig) bool {
+	if oldConfig == nil {
+		return true // First time configuration
+	}
+
+	// Check if namespace changed
+	if oldConfig.Namespace != newConfig.Namespace {
+		return true
+	}
+
+	// Check if subsystem changed
+	if oldConfig.Subsystem != newConfig.Subsystem {
+		return true
+	}
+
+	// Check if labels changed
+	if !labelsEqual(oldConfig.Labels, newConfig.Labels) {
+		return true
+	}
+
+	return false
+}
+
+// labelsEqual compares two label maps for equality
+func labelsEqual(old, new map[string]string) bool {
+	if len(old) != len(new) {
+		return false
+	}
+
+	for k, v := range old {
+		if new[k] != v {
+			return false
+		}
+	}
+
+	return true
+}
+
 // validateConfig validates the Prometheus exporter configuration
 func validateConfig(config *types.PrometheusExporterConfig) error {
 	if config.Port < 0 || config.Port > 65535 {

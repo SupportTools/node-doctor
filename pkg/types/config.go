@@ -73,9 +73,9 @@ var (
 	}
 
 	// Minimum interval thresholds (conservative settings to prevent system overload)
-	MinMonitorInterval    = 1 * time.Second  // Minimum time between monitor polls
-	MinHeartbeatInterval  = 5 * time.Second  // Minimum heartbeat check interval
-	MinCooldownPeriod     = 10 * time.Second // Minimum cooldown between remediation attempts
+	MinMonitorInterval   = 1 * time.Second  // Minimum time between monitor polls
+	MinHeartbeatInterval = 5 * time.Second  // Minimum heartbeat check interval
+	MinCooldownPeriod    = 10 * time.Second // Minimum cooldown between remediation attempts
 )
 
 // MonitorRegistryValidator provides an interface for validating monitor types

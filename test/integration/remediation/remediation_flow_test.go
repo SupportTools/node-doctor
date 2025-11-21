@@ -314,8 +314,8 @@ func (m *mockRemediator) GetAttemptCount() int {
 // failingRemediator is a mock Remediator that can be configured to fail
 type failingRemediator struct {
 	*remediators.BaseRemediator
-	mu          sync.Mutex
-	shouldFail  bool
+	mu           sync.Mutex
+	shouldFail   bool
 	attemptCount int
 }
 

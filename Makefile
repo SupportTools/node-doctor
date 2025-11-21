@@ -32,8 +32,8 @@
 # Project Configuration
 PROJECT_NAME := node-doctor
 
-# Container registry (Harbor for production releases)
-REGISTRY := harbor.support.tools/node-doctor
+# Container registry (DockerHub for production releases)
+REGISTRY := docker.io/supporttools
 
 # Version and build information
 VERSION := $(shell date +%s)
@@ -72,8 +72,7 @@ NAMESPACE_STG := kube-system
 NAMESPACE_PRD := node-doctor
 
 # Helm Chart settings
-# CUSTOMIZE: Update Helm repository URL
-HELM_REPO_URL := {{HELM_REPO}}
+HELM_REPO_URL := https://charts.support.tools
 CHART_VERSION := v$(shell git rev-list --count HEAD)
 
 # ================================================================================================
@@ -446,7 +445,7 @@ bump-rc: validate-pipeline-local increment-rc-version
 	@$(call print_success,Multi-arch image built and pushed: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION))
 	@echo ""
 	@$(call print_status,Updating DaemonSet image tag...)
-	@sed -i.bak 's|image: harbor.support.tools/node-doctor/node-doctor:.*|image: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)|' deployment/daemonset.yaml
+	@sed -i.bak 's|image: .*node-doctor:.*|image: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)|' deployment/daemonset.yaml
 	@rm -f deployment/daemonset.yaml.bak
 	@echo ""
 	@$(MAKE) deploy-prd-kubectl

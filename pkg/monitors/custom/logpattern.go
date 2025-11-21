@@ -28,7 +28,7 @@ const (
 	maxRegexLength = 1000 // Maximum allowed regex pattern length
 
 	// Resource limits to prevent unbounded memory usage and DoS attacks
-	maxConfiguredPatterns  = 50              // Maximum number of patterns (user + defaults)
+	maxConfiguredPatterns  = 60              // Maximum number of patterns (user + defaults)
 	maxJournalUnits        = 20              // Maximum number of journal units to monitor
 	minMaxEventsPerPattern = 1               // Minimum events per pattern per window
 	maxMaxEventsPerPattern = 1000            // Maximum events per pattern per window
@@ -978,6 +978,7 @@ func (m *LogPatternMonitor) shouldCheckPattern(pattern *LogPatternConfig, source
 // Returns (reported, suppressed):
 //   - reported: true if event should be reported
 //   - suppressed: true if event was suppressed due to rate limiting
+//
 // This function is thread-safe and consolidates map operations to minimize
 // lock time and reduce race condition potential
 func (m *LogPatternMonitor) shouldReportEvent(patternName string) (reported bool, suppressed bool) {

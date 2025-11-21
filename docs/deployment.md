@@ -5,11 +5,115 @@ This guide walks through deploying Node Doctor to a real Kubernetes cluster.
 ## Prerequisites
 
 - Kubernetes cluster (1.19+) with kubectl access
-- Docker installed for building images
-- Access to Harbor registry: `harbor.support.tools`
+- Docker installed for building images (for manual deployment)
+- Access to Docker Hub registry (for manual deployment)
 - Cluster admin privileges (for RBAC and DaemonSet deployment)
 
-## Quick Start: Automated RC Deployment
+## Deployment Options
+
+| Method | Recommended For | Description |
+|--------|----------------|-------------|
+| **Helm Chart** | Production | Easiest installation with configurable values |
+| **Automated RC** | Development/Testing | One-command build and deploy for RC releases |
+| **Manual** | Custom/Advanced | Full control over each deployment step |
+
+---
+
+## Option 1: Helm Chart Deployment (Recommended)
+
+The Helm chart is the recommended method for deploying Node Doctor to production clusters.
+
+### Add the Helm Repository
+
+```bash
+helm repo add supporttools https://charts.support.tools
+helm repo update
+```
+
+### Basic Installation
+
+```bash
+helm install node-doctor supporttools/node-doctor \
+  --namespace node-doctor \
+  --create-namespace
+```
+
+### Installation with Custom Values
+
+```bash
+# Create custom values file
+cat > custom-values.yaml << 'EOF'
+settings:
+  logLevel: info
+  logFormat: json
+  updateInterval: 30s
+  enableRemediation: true
+  dryRunMode: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+EOF
+
+# Install with custom values
+helm install node-doctor supporttools/node-doctor \
+  --namespace node-doctor \
+  --create-namespace \
+  -f custom-values.yaml
+```
+
+### Verify Helm Deployment
+
+```bash
+# Check DaemonSet status
+kubectl get daemonset -n node-doctor node-doctor
+
+# View pods
+kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor
+
+# Check logs
+kubectl logs -n node-doctor -l app.kubernetes.io/name=node-doctor --tail=50
+
+# View node conditions
+kubectl get nodes -o custom-columns='NAME:.metadata.name,HEALTHY:.status.conditions[?(@.type=="NodeDoctorHealthy")].status'
+```
+
+### Helm Upgrade and Rollback
+
+```bash
+# Upgrade to latest version
+helm repo update
+helm upgrade node-doctor supporttools/node-doctor -n node-doctor
+
+# Upgrade with new values
+helm upgrade node-doctor supporttools/node-doctor \
+  -n node-doctor \
+  --set settings.logLevel=debug
+
+# Rollback to previous release
+helm rollback node-doctor -n node-doctor
+```
+
+### Uninstall via Helm
+
+```bash
+helm uninstall node-doctor -n node-doctor
+kubectl delete namespace node-doctor
+```
+
+For complete Helm chart configuration options, see [../helm/node-doctor/README.md](../helm/node-doctor/README.md).
+
+---
+
+## Option 2: Automated RC Deployment (Development/Testing)
 
 For rapid deployment of release candidates to the `a1-ops-prd` cluster:
 
@@ -22,14 +126,14 @@ This single command will:
 1. ✅ Validate the pipeline (run all tests)
 2. ✅ Increment the RC version (e.g., v0.1.0-rc.1 → v0.1.0-rc.2)
 3. ✅ Build Docker image with RC tag
-4. ✅ Push to Harbor registry: `harbor.support.tools/node-doctor/node-doctor`
+4. ✅ Push to Docker Hub registry: `supporttools/node-doctor`
 5. ✅ Deploy to `a1-ops-prd` cluster in `node-doctor` namespace
 6. ✅ Commit and tag the release
 
 **Configuration:**
 - Cluster: `a1-ops-prd` (from `~/.kube/config`)
 - Namespace: `node-doctor` (auto-created if needed)
-- Registry: `harbor.support.tools/node-doctor/node-doctor`
+- Registry: `docker.io/supporttools/node-doctor`
 - Version tracking: `.version-rc` file
 
 **Verify Deployment:**
@@ -44,30 +148,32 @@ kubectl --context=a1-ops-prd -n node-doctor logs -l app=node-doctor
 kubectl --context=a1-ops-prd -n node-doctor get pods -l app=node-doctor -w
 ```
 
-## Manual Deployment (Alternative)
+---
+
+## Option 3: Manual Deployment (Advanced)
 
 If you prefer manual control over each step, follow the detailed instructions below.
 
-## Step 1: Build and Push Container Image
+### Step 1: Build and Push Container Image
 
 ```bash
 # Build the Docker image with version tag
-docker build -t harbor.support.tools/node-doctor/node-doctor:v0.1.0 \
+docker build -t supporttools/node-doctor:v0.1.0 \
   --build-arg VERSION=v0.1.0 \
   --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) \
   --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   .
 
 # Tag as latest
-docker tag harbor.support.tools/node-doctor/node-doctor:v0.1.0 \
-  harbor.support.tools/node-doctor/node-doctor:latest
+docker tag supporttools/node-doctor:v0.1.0 \
+  supporttools/node-doctor:latest
 
-# Login to Harbor (if not already logged in)
-docker login harbor.support.tools
+# Login to Docker Hub (if not already logged in)
+docker login
 
 # Push both tags
-docker push harbor.support.tools/node-doctor/node-doctor:v0.1.0
-docker push harbor.support.tools/node-doctor/node-doctor:latest
+docker push supporttools/node-doctor:v0.1.0
+docker push supporttools/node-doctor:latest
 ```
 
 **Image Details:**
@@ -320,7 +426,7 @@ kubectl get all -n kube-system -l app=node-doctor
 - Ready for production deployment
 
 **Image Registry:**
-- Harbor: `harbor.support.tools/node-doctor/node-doctor:v0.1.0`
+- Docker Hub: `supporttools/node-doctor:v0.1.0`
 - Image: `node-doctor:v0.1.0` (84.8 MB Alpine-based)
 
 You're ready to deploy to a real cluster! 🚀

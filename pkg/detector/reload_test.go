@@ -2,60 +2,13 @@ package detector
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/reload"
 	"github.com/supporttools/node-doctor/pkg/types"
 )
-
-// TestInitializeReload tests the initializeReload function.
-func TestInitializeReload(t *testing.T) {
-	t.Run("successful initialization", func(t *testing.T) {
-		// Create temp config file
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte("apiVersion: v1\nkind: NodeDoctorConfig\n"), 0644); err != nil {
-			t.Fatalf("Failed to create config file: %v", err)
-		}
-
-		// Create test config
-		helper := NewTestHelper()
-		config := helper.CreateTestConfig()
-		config.Reload = types.ReloadConfig{
-			Enabled:          true,
-			DebounceInterval: 1 * time.Second,
-		}
-
-		// Create problem detector
-		pd, err := NewProblemDetector(
-			config,
-			[]types.Monitor{NewMockMonitor("test-monitor")},
-			[]types.Exporter{NewMockExporter("test-exporter")},
-			configPath,
-			nil,
-		)
-		if err != nil {
-			t.Fatalf("Failed to create problem detector: %v", err)
-		}
-
-		// Test initializeReload
-		err = pd.initializeReload()
-		if err != nil {
-			t.Errorf("initializeReload() unexpected error = %v", err)
-		}
-
-		// Verify components were initialized
-		if pd.configWatcher == nil {
-			t.Error("initializeReload() configWatcher is nil")
-		}
-		if pd.reloadCoordinator == nil {
-			t.Error("initializeReload() reloadCoordinator is nil")
-		}
-	})
-}
 
 // TestStopMonitorByName tests the stopMonitorByName function.
 func TestStopMonitorByName(t *testing.T) {
@@ -73,16 +26,25 @@ func TestStopMonitorByName(t *testing.T) {
 				helper := NewTestHelper()
 				config := helper.CreateTestConfig()
 				config.Monitors = []types.MonitorConfig{
-					{Name: "test-monitor", Type: "test", Enabled: true},
+					helper.CreateTestMonitorConfig("test-monitor", "test"),
+				}
+				factory := NewMockMonitorFactory()
+
+				detector, err := NewProblemDetector(
+					config,
+					[]types.Monitor{},
+					[]types.Exporter{NewMockExporter("test-exporter")},
+					"/tmp/test-config.yaml",
+					factory,
+				)
+				if err != nil {
+					return nil, err
 				}
 
-				return NewProblemDetector(
-					config,
-					[]types.Monitor{NewMockMonitor("test-monitor")},
-					[]types.Exporter{NewMockExporter("test-exporter")},
-					"",
-					nil,
-				)
+				// Start the detector to create monitor handles
+				detector.Start()
+				time.Sleep(50 * time.Millisecond) // Give monitors time to start
+				return detector, nil
 			},
 			wantError: false,
 		},
@@ -93,16 +55,25 @@ func TestStopMonitorByName(t *testing.T) {
 				helper := NewTestHelper()
 				config := helper.CreateTestConfig()
 				config.Monitors = []types.MonitorConfig{
-					{Name: "test-monitor", Type: "test", Enabled: true},
+					helper.CreateTestMonitorConfig("test-monitor", "test"),
+				}
+				factory := NewMockMonitorFactory()
+
+				detector, err := NewProblemDetector(
+					config,
+					[]types.Monitor{},
+					[]types.Exporter{NewMockExporter("test-exporter")},
+					"/tmp/test-config.yaml",
+					factory,
+				)
+				if err != nil {
+					return nil, err
 				}
 
-				return NewProblemDetector(
-					config,
-					[]types.Monitor{NewMockMonitor("test-monitor")},
-					[]types.Exporter{NewMockExporter("test-exporter")},
-					"",
-					nil,
-				)
+				// Start the detector to create monitor handles
+				detector.Start()
+				time.Sleep(50 * time.Millisecond) // Give monitors time to start
+				return detector, nil
 			},
 			wantError: true,
 			errorMsg:  "monitor nonexistent-monitor not found",
@@ -115,6 +86,7 @@ func TestStopMonitorByName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to setup monitors: %v", err)
 			}
+			defer pd.Stop() // Clean shutdown
 
 			err = pd.stopMonitorByName(tt.monitorName)
 
@@ -133,105 +105,18 @@ func TestStopMonitorByName(t *testing.T) {
 	}
 }
 
-// TestReplaceMonitor tests the replaceMonitor function.
-func TestReplaceMonitor(t *testing.T) {
-	helper := NewTestHelper()
-	config := helper.CreateTestConfig()
-	config.Monitors = []types.MonitorConfig{
-		{Name: "monitor-1", Type: "test", Enabled: true},
-		{Name: "monitor-2", Type: "test", Enabled: true},
-	}
-
-	oldMonitor1 := NewMockMonitor("monitor-1")
-	oldMonitor2 := NewMockMonitor("monitor-2")
-
-	pd, err := NewProblemDetector(
-		config,
-		[]types.Monitor{oldMonitor1, oldMonitor2},
-		[]types.Exporter{NewMockExporter("test-exporter")},
-		"",
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create problem detector: %v", err)
-	}
-
-	// Create new monitor to replace the first one
-	newMonitor := NewMockMonitor("monitor-1-replaced")
-
-	// Replace monitor-1
-	pd.replaceMonitor("monitor-1", newMonitor)
-
-	// Verify replacement
-	if pd.monitors[0] != newMonitor {
-		t.Error("replaceMonitor() did not replace monitor at index 0")
-	}
-	if pd.monitors[1] != oldMonitor2 {
-		t.Error("replaceMonitor() incorrectly modified monitor at index 1")
-	}
-
-	// Test replacing non-existent monitor (should be no-op)
-	pd.replaceMonitor("nonexistent", NewMockMonitor("new"))
-	// No error, just silently does nothing
-}
-
-// TestGetMonitorIndex tests the getMonitorIndex function.
-func TestGetMonitorIndex(t *testing.T) {
-	helper := NewTestHelper()
-	config := helper.CreateTestConfig()
-	config.Monitors = []types.MonitorConfig{
-		{Name: "monitor-1", Type: "test", Enabled: true},
-		{Name: "monitor-2", Type: "test", Enabled: true},
-		{Name: "monitor-3", Type: "test", Enabled: true},
-	}
-
-	pd, err := NewProblemDetector(
-		config,
-		[]types.Monitor{
-			NewMockMonitor("monitor-1"),
-			NewMockMonitor("monitor-2"),
-			NewMockMonitor("monitor-3"),
-		},
-		[]types.Exporter{NewMockExporter("test-exporter")},
-		"",
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create problem detector: %v", err)
-	}
-
-	tests := []struct {
-		name     string
-		monitor  string
-		expected int
-	}{
-		{"first monitor", "monitor-1", 0},
-		{"second monitor", "monitor-2", 1},
-		{"third monitor", "monitor-3", 2},
-		{"non-existent monitor", "nonexistent", -1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := pd.getMonitorIndex(tt.monitor)
-			if got != tt.expected {
-				t.Errorf("getMonitorIndex(%q) = %d, want %d", tt.monitor, got, tt.expected)
-			}
-		})
-	}
-}
-
 // TestEmitReloadEvent tests the emitReloadEvent function.
 func TestEmitReloadEvent(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()
+	factory := NewMockMonitorFactory()
 
 	pd, err := NewProblemDetector(
 		config,
-		[]types.Monitor{NewMockMonitor("test-monitor")},
+		[]types.Monitor{},
 		[]types.Exporter{NewMockExporter("test-exporter")},
-		"",
-		nil,
+		"/tmp/test-config.yaml",
+		factory,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create problem detector: %v", err)
@@ -294,126 +179,63 @@ func TestEmitReloadEvent(t *testing.T) {
 	}
 }
 
-// TestCleanupOnce tests the cleanupOnce function.
-func TestCleanupOnce(t *testing.T) {
-	helper := NewTestHelper()
-	config := helper.CreateTestConfig()
-
-	pd, err := NewProblemDetector(
-		config,
-		[]types.Monitor{NewMockMonitor("test-monitor")},
-		[]types.Exporter{NewMockExporter("test-exporter")},
-		"",
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("Failed to create problem detector: %v", err)
-	}
-
-	// Set a short problem TTL for testing
-	pd.problemTTL = 50 * time.Millisecond
-
-	// Add some problems
-	now := time.Now()
-	pd.problems["fresh-problem"] = &problemEntry{
-		problem: &types.Problem{
-			Type:     "test-problem",
-			Resource: "fresh-resource",
-			Severity: types.ProblemCritical,
-			Message:  "Fresh problem",
-		},
-		lastSeen: now, // Fresh problem
-	}
-	pd.problems["old-problem"] = &problemEntry{
-		problem: &types.Problem{
-			Type:     "test-problem",
-			Resource: "old-resource",
-			Severity: types.ProblemCritical,
-			Message:  "Old problem",
-		},
-		lastSeen: now.Add(-100 * time.Millisecond), // Expired problem
-	}
-	pd.problems["another-old-problem"] = &problemEntry{
-		problem: &types.Problem{
-			Type:     "test-problem",
-			Resource: "another-old-resource",
-			Severity: types.ProblemCritical,
-			Message:  "Another old problem",
-		},
-		lastSeen: now.Add(-200 * time.Millisecond), // Very expired problem
-	}
-
-	// Verify initial state
-	if len(pd.problems) != 3 {
-		t.Fatalf("Initial problems count = %d, want 3", len(pd.problems))
-	}
-
-	// Run cleanup
-	pd.cleanupOnce()
-
-	// Verify cleanup results
-	pd.problemsMu.Lock()
-	defer pd.problemsMu.Unlock()
-
-	if len(pd.problems) != 1 {
-		t.Errorf("After cleanup, problems count = %d, want 1", len(pd.problems))
-	}
-
-	if _, exists := pd.problems["fresh-problem"]; !exists {
-		t.Error("cleanupOnce() removed fresh problem")
-	}
-	if _, exists := pd.problems["old-problem"]; exists {
-		t.Error("cleanupOnce() did not remove old problem")
-	}
-	if _, exists := pd.problems["another-old-problem"]; exists {
-		t.Error("cleanupOnce() did not remove another old problem")
-	}
-}
-
 // TestApplyConfigReload tests the applyConfigReload function.
 func TestApplyConfigReload(t *testing.T) {
 	t.Run("reload with monitor changes", func(t *testing.T) {
 		helper := NewTestHelper()
 		config := helper.CreateTestConfig()
 		config.Monitors = []types.MonitorConfig{
-			{Name: "monitor-1", Type: "test", Enabled: true, Interval: 30 * time.Second},
-			{Name: "monitor-2", Type: "test", Enabled: true, Interval: 30 * time.Second},
+			helper.CreateTestMonitorConfig("monitor-1", "test"),
+			helper.CreateTestMonitorConfig("monitor-2", "test"),
 		}
 
+		factory := NewMockMonitorFactory()
 		pd, err := NewProblemDetector(
 			config,
-			[]types.Monitor{
-				NewMockMonitor("monitor-1"),
-				NewMockMonitor("monitor-2"),
-			},
+			[]types.Monitor{},
 			[]types.Exporter{NewMockExporter("test-exporter")},
-			"",
-			nil,
+			"/tmp/test-config.yaml",
+			factory,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create problem detector: %v", err)
 		}
 
+		// Start detector to create monitor handles
+		err = pd.Start()
+		if err != nil {
+			t.Fatalf("Failed to start detector: %v", err)
+		}
+		defer pd.Stop()
+
+		time.Sleep(100 * time.Millisecond) // Wait for monitors to start
+
 		// Create new config with changes
 		newConfig := helper.CreateTestConfig()
 		newConfig.Monitors = []types.MonitorConfig{
-			{Name: "monitor-2", Type: "test", Enabled: true, Interval: 60 * time.Second}, // Modified
-			{Name: "monitor-3", Type: "test", Enabled: true, Interval: 30 * time.Second}, // Added
+			helper.CreateTestMonitorConfig("monitor-2", "test"), // Modified (different interval)
+			helper.CreateTestMonitorConfig("monitor-3", "test"), // Added
 		}
+		// Set different interval for monitor-2 to make it a modification
+		newConfig.Monitors[0].Interval = 60 * time.Second
 		// monitor-1 is removed
 
 		// Create config diff
 		diff := &reload.ConfigDiff{
 			MonitorsAdded: []types.MonitorConfig{
-				{Name: "monitor-3", Type: "test", Enabled: true, Interval: 30 * time.Second},
+				helper.CreateTestMonitorConfig("monitor-3", "test"),
 			},
 			MonitorsRemoved: []types.MonitorConfig{
-				{Name: "monitor-1", Type: "test", Enabled: true, Interval: 30 * time.Second},
+				helper.CreateTestMonitorConfig("monitor-1", "test"),
 			},
 			MonitorsModified: []reload.MonitorChange{
 				{
-					Old: types.MonitorConfig{Name: "monitor-2", Type: "test", Enabled: true, Interval: 30 * time.Second},
-					New: types.MonitorConfig{Name: "monitor-2", Type: "test", Enabled: true, Interval: 60 * time.Second},
+					Old: helper.CreateTestMonitorConfig("monitor-2", "test"),
+					New: func() types.MonitorConfig {
+						cfg := helper.CreateTestMonitorConfig("monitor-2", "test")
+						cfg.Interval = 60 * time.Second
+						return cfg
+					}(),
 				},
 			},
 		}
@@ -437,13 +259,14 @@ func TestApplyConfigReload(t *testing.T) {
 	t.Run("reload with no changes", func(t *testing.T) {
 		helper := NewTestHelper()
 		config := helper.CreateTestConfig()
+		factory := NewMockMonitorFactory()
 
 		pd, err := NewProblemDetector(
 			config,
-			[]types.Monitor{NewMockMonitor("test-monitor")},
+			[]types.Monitor{},
 			[]types.Exporter{NewMockExporter("test-exporter")},
-			"",
-			nil,
+			"/tmp/test-config.yaml",
+			factory,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create problem detector: %v", err)
@@ -460,6 +283,166 @@ func TestApplyConfigReload(t *testing.T) {
 		if err != nil {
 			t.Errorf("applyConfigReload() unexpected error = %v", err)
 		}
+	})
+
+	t.Run("reload with critical failures", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		config.Monitors = []types.MonitorConfig{
+			helper.CreateTestMonitorConfig("monitor-1", "test"),
+		}
+
+		// Factory that returns an error for new monitors
+		factory := NewMockMonitorFactory().SetCreateFunc(func(config types.MonitorConfig) (types.Monitor, error) {
+			if config.Name == "new-monitor" {
+				return nil, fmt.Errorf("create failed")
+			}
+			return NewMockMonitor(config.Name), nil
+		})
+
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+		)
+		if err != nil {
+			t.Fatalf("Failed to create problem detector: %v", err)
+		}
+
+		err = pd.Start()
+		if err != nil {
+			t.Fatalf("Failed to start detector: %v", err)
+		}
+		defer pd.Stop()
+
+		time.Sleep(100 * time.Millisecond) // Wait for monitors to start
+
+		// Create new config that will cause failure
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{
+			helper.CreateTestMonitorConfig("new-monitor", "test"), // This will fail
+		}
+
+		diff := &reload.ConfigDiff{
+			MonitorsAdded: []types.MonitorConfig{
+				helper.CreateTestMonitorConfig("new-monitor", "test"),
+			},
+		}
+
+		// Apply config reload - should fail
+		ctx := context.Background()
+		err = pd.applyConfigReload(ctx, newConfig, diff)
+
+		if err == nil {
+			t.Errorf("applyConfigReload() expected error due to critical failure")
+		}
+
+		// Verify original config is still in place
+		pd.mu.RLock()
+		if pd.config == newConfig {
+			t.Error("applyConfigReload() updated config despite critical failure")
+		}
+		pd.mu.RUnlock()
+	})
+}
+
+// TestConfigReloadCriticalErrorHandling tests the P1 fix for error aggregation
+func TestConfigReloadCriticalErrorHandling(t *testing.T) {
+	helper := NewTestHelper()
+	config := helper.CreateTestConfig()
+	config.Monitors = []types.MonitorConfig{
+		helper.CreateTestMonitorConfig("existing-monitor", "test"),
+	}
+
+	// Factory that fails for certain monitors
+	factory := NewMockMonitorFactory().SetCreateFunc(func(config types.MonitorConfig) (types.Monitor, error) {
+		if config.Name == "failing-monitor" {
+			return nil, fmt.Errorf("monitor creation failed")
+		}
+		return NewMockMonitor(config.Name), nil
+	})
+
+	pd, err := NewProblemDetector(
+		config,
+		[]types.Monitor{},
+		[]types.Exporter{NewMockExporter("test-exporter")},
+		"/tmp/test-config.yaml",
+		factory,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create problem detector: %v", err)
+	}
+
+	err = pd.Start()
+	if err != nil {
+		t.Fatalf("Failed to start detector: %v", err)
+	}
+	defer pd.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	originalConfig := pd.config
+
+	// Test 1: Monitor creation failure should be critical
+	t.Run("monitor creation failure is critical", func(t *testing.T) {
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{
+			helper.CreateTestMonitorConfig("existing-monitor", "test"),
+			helper.CreateTestMonitorConfig("failing-monitor", "test"),
+		}
+
+		diff := &reload.ConfigDiff{
+			MonitorsAdded: []types.MonitorConfig{
+				helper.CreateTestMonitorConfig("failing-monitor", "test"),
+			},
+		}
+
+		err = pd.applyConfigReload(context.Background(), newConfig, diff)
+
+		if err == nil {
+			t.Errorf("Expected critical error due to monitor creation failure")
+		}
+
+		// Config should NOT be updated due to critical error
+		pd.mu.RLock()
+		if pd.config != originalConfig {
+			t.Error("Config was updated despite critical error")
+		}
+		pd.mu.RUnlock()
+	})
+
+	// Test 2: Non-critical errors should allow partial success
+	t.Run("non-critical errors allow partial success", func(t *testing.T) {
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{
+			helper.CreateTestMonitorConfig("existing-monitor", "test"),
+			helper.CreateTestMonitorConfig("good-monitor", "test"),
+		}
+
+		// Remove a non-existent monitor (non-critical error)
+		diff := &reload.ConfigDiff{
+			MonitorsRemoved: []types.MonitorConfig{
+				helper.CreateTestMonitorConfig("non-existent-monitor", "test"),
+			},
+			MonitorsAdded: []types.MonitorConfig{
+				helper.CreateTestMonitorConfig("good-monitor", "test"),
+			},
+		}
+
+		err = pd.applyConfigReload(context.Background(), newConfig, diff)
+
+		if err != nil {
+			t.Errorf("Expected success with warnings, got error: %v", err)
+		}
+
+		// Config SHOULD be updated since only non-critical errors occurred
+		pd.mu.RLock()
+		if pd.config == originalConfig {
+			t.Error("Config was not updated despite successful reload")
+		}
+		pd.mu.RUnlock()
 	})
 }
 

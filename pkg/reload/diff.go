@@ -8,10 +8,10 @@ import (
 
 // ConfigDiff represents the differences between two configurations.
 type ConfigDiff struct {
-	MonitorsAdded    []types.MonitorConfig
-	MonitorsRemoved  []types.MonitorConfig
-	MonitorsModified []MonitorChange
-	ExportersChanged bool
+	MonitorsAdded      []types.MonitorConfig
+	MonitorsRemoved    []types.MonitorConfig
+	MonitorsModified   []MonitorChange
+	ExportersChanged   bool
 	RemediationChanged bool
 }
 

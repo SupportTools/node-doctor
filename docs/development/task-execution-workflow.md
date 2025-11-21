@@ -348,7 +348,7 @@ spec:
       hostPID: true          # Access host processes
       containers:
       - name: node-doctor
-        image: ghcr.io/supporttools/node-doctor:latest
+        image: supporttools/node-doctor:latest
         securityContext:
           privileged: true   # Required for remediation
         volumeMounts:

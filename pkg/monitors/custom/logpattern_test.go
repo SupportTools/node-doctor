@@ -303,7 +303,7 @@ func TestPatternMatching(t *testing.T) {
 			name:    "kubelet error match",
 			logLine: testKubeletErrorLog,
 			pattern: LogPatternConfig{
-				Name:   "kubelet-error",
+				Name:   "kubelet-cni-error",
 				Regex:  "kubelet.*Failed",
 				Source: "journal",
 			},
@@ -490,7 +490,7 @@ func TestJournalCheck(t *testing.T) {
 			unit:          "kubelet",
 			journalOutput: createTestJournalContent(testKubeletErrorLog, "normal log line"),
 			patterns: []LogPatternConfig{
-				{Name: "kubelet-error", Regex: "kubelet.*Failed", Severity: "error", Source: "journal"},
+				{Name: "kubelet-test", Regex: "kubelet.*Failed", Severity: "error", Source: "journal"},
 			},
 			expectEvents: 1,
 		},
@@ -608,7 +608,7 @@ func TestLogPatternMonitorIntegration(t *testing.T) {
 					"source":      "kmsg",
 				},
 				map[string]interface{}{
-					"name":        "kubelet-error",
+					"name":        "kubelet-cni-error",
 					"regex":       "kubelet.*Failed",
 					"severity":    "error",
 					"description": "Kubelet error",
@@ -659,7 +659,7 @@ func TestLogPatternMonitorIntegration(t *testing.T) {
 			if strings.Contains(event.Reason, "oom-killer") {
 				foundOOM = true
 			}
-			if strings.Contains(event.Reason, "kubelet-error") {
+			if strings.Contains(event.Reason, "kubelet-cni-error") {
 				foundKubelet = true
 			}
 		}
@@ -864,7 +864,7 @@ func TestApplyDefaults_ResourceLimits(t *testing.T) {
 			name: "too many patterns",
 			config: &LogPatternMonitorConfig{
 				Patterns: func() []LogPatternConfig {
-					patterns := make([]LogPatternConfig, 51)
+					patterns := make([]LogPatternConfig, 61)
 					for i := range patterns {
 						patterns[i] = LogPatternConfig{
 							Name:     "test",
@@ -879,7 +879,7 @@ func TestApplyDefaults_ResourceLimits(t *testing.T) {
 				DedupWindow:         5 * time.Minute,
 			},
 			expectError: true,
-			errorMsg:    "exceeds maximum limit of 50",
+			errorMsg:    "exceeds maximum limit of 60",
 		},
 		{
 			name: "too many journal units",
@@ -960,7 +960,7 @@ func TestApplyDefaults_ResourceLimits(t *testing.T) {
 			name: "valid maximum configuration",
 			config: &LogPatternMonitorConfig{
 				Patterns: func() []LogPatternConfig {
-					patterns := make([]LogPatternConfig, 50)
+					patterns := make([]LogPatternConfig, 60)
 					for i := range patterns {
 						patterns[i] = LogPatternConfig{
 							Name:     "test",
@@ -1122,7 +1122,7 @@ func TestResourceLimits_WithDefaults(t *testing.T) {
 			userPatterns: 45,
 			useDefaults:  true,
 			expectError:  true,
-			errorMsg:     "exceeds maximum limit of 50",
+			errorMsg:     "exceeds maximum limit of 60",
 		},
 		{
 			name:         "defaults only within limit",
@@ -1132,16 +1132,16 @@ func TestResourceLimits_WithDefaults(t *testing.T) {
 		},
 		{
 			name:         "user patterns only at limit",
-			userPatterns: 50,
+			userPatterns: 60,
 			useDefaults:  false,
 			expectError:  false,
 		},
 		{
 			name:         "user patterns only exceeds limit",
-			userPatterns: 51,
+			userPatterns: 61,
 			useDefaults:  false,
 			expectError:  true,
-			errorMsg:     "exceeds maximum limit of 50",
+			errorMsg:     "exceeds maximum limit of 60",
 		},
 	}
 
@@ -1222,7 +1222,7 @@ func TestNewLogPatternMonitor(t *testing.T) {
 			config: &LogPatternMonitorConfig{
 				Patterns: []LogPatternConfig{
 					{
-						Regex:       `(a+)+`,  // Nested quantifiers - should fail
+						Regex:       `(a+)+`, // Nested quantifiers - should fail
 						Severity:    "error",
 						Source:      "kmsg",
 						Description: "Test",
@@ -1239,7 +1239,7 @@ func TestNewLogPatternMonitor(t *testing.T) {
 			config: &LogPatternMonitorConfig{
 				Patterns: []LogPatternConfig{
 					{
-						Regex:       `.*.*`,  // Quantified adjacency - should fail
+						Regex:       `.*.*`, // Quantified adjacency - should fail
 						Severity:    "warning",
 						Source:      "kmsg",
 						Description: "Test",
@@ -1256,7 +1256,7 @@ func TestNewLogPatternMonitor(t *testing.T) {
 			config: &LogPatternMonitorConfig{
 				Patterns: []LogPatternConfig{
 					{
-						Regex:       strings.Repeat("a", 1001),  // Over 1000 char limit
+						Regex:       strings.Repeat("a", 1001), // Over 1000 char limit
 						Severity:    "error",
 						Source:      "kmsg",
 						Description: "Test",
@@ -1282,7 +1282,7 @@ func TestNewLogPatternMonitor(t *testing.T) {
 				CheckKmsg:    false,
 				CheckJournal: false,
 			},
-			expectError: false,  // Should succeed, just won't check anything
+			expectError: false, // Should succeed, just won't check anything
 		},
 	}
 
@@ -1386,19 +1386,19 @@ func TestShouldCheckPattern(t *testing.T) {
 			name:           "default (empty) pattern for kmsg source",
 			patternSource:  "",
 			checkSource:    "kmsg",
-			expectedResult: true,  // Default is to check all sources
+			expectedResult: true, // Default is to check all sources
 		},
 		{
 			name:           "default (empty) pattern for journal source",
 			patternSource:  "",
 			checkSource:    "journal",
-			expectedResult: true,  // Default is to check all sources
+			expectedResult: true, // Default is to check all sources
 		},
 		{
 			name:           "custom pattern for kmsg source",
 			patternSource:  "custom",
 			checkSource:    "kmsg",
-			expectedResult: true,  // Unknown sources default to checking all
+			expectedResult: true, // Unknown sources default to checking all
 		},
 	}
 
@@ -1481,32 +1481,32 @@ func TestShouldCheckPattern(t *testing.T) {
 // TestCleanupExpiredEntries tests the map cleanup logic
 func TestCleanupExpiredEntries(t *testing.T) {
 	tests := []struct {
-		name           string
-		dedupWindow    time.Duration
-		setupTime      time.Duration
-		waitTime       time.Duration
-		expectCleanup  bool
+		name          string
+		dedupWindow   time.Duration
+		setupTime     time.Duration
+		waitTime      time.Duration
+		expectCleanup bool
 	}{
 		{
 			name:          "cleanup not triggered - too soon",
 			dedupWindow:   5 * time.Minute,
 			setupTime:     0,
 			waitTime:      1 * time.Minute,
-			expectCleanup: false,  // Less than 10 minutes
+			expectCleanup: false, // Less than 10 minutes
 		},
 		{
 			name:          "cleanup triggered - after 10 minutes",
-			dedupWindow:   1 * time.Second,  // Short for testing
+			dedupWindow:   1 * time.Second, // Short for testing
 			setupTime:     0,
-			waitTime:      11 * time.Minute,  // Simulated time
+			waitTime:      11 * time.Minute, // Simulated time
 			expectCleanup: true,
 		},
 		{
 			name:          "entries not expired - within 2x dedup window",
 			dedupWindow:   10 * time.Minute,
 			setupTime:     0,
-			waitTime:      15 * time.Minute,  // Less than 2x dedup window
-			expectCleanup: false,  // Entries not old enough
+			waitTime:      15 * time.Minute, // Less than 2x dedup window
+			expectCleanup: false,            // Entries not old enough
 		},
 	}
 
@@ -1526,11 +1526,11 @@ func TestCleanupExpiredEntries(t *testing.T) {
 						Description: "Error",
 					},
 				},
-				KmsgPath:           "/dev/kmsg",
-				CheckKmsg:          true,
-				CheckJournal:       false,
+				KmsgPath:            "/dev/kmsg",
+				CheckKmsg:           true,
+				CheckJournal:        false,
 				MaxEventsPerPattern: 10,
-				DedupWindow:        tt.dedupWindow,
+				DedupWindow:         tt.dedupWindow,
 			}
 
 			err := logConfig.applyDefaults()
@@ -1638,21 +1638,21 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 			config: map[string]interface{}{
 				"maxEventsPerPattern": "not-a-number",
 			},
-			expectError: false,  // Silently ignored with lenient parsing
+			expectError: false, // Silently ignored with lenient parsing
 		},
 		{
 			name: "invalid dedupWindow type",
 			config: map[string]interface{}{
-				"dedupWindow": []int{1, 2, 3},  // Not a valid duration type
+				"dedupWindow": []int{1, 2, 3}, // Not a valid duration type
 			},
-			expectError: false,  // Silently ignored with lenient parsing
+			expectError: false, // Silently ignored with lenient parsing
 		},
 		{
 			name: "invalid checkKmsg type",
 			config: map[string]interface{}{
-				"checkKmsg": 123,  // Not a boolean
+				"checkKmsg": 123, // Not a boolean
 			},
-			expectError: false,  // Silently ignored with lenient parsing
+			expectError: false, // Silently ignored with lenient parsing
 		},
 		{
 			name: "invalid journalUnits type - not a slice",
@@ -1665,15 +1665,15 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 		{
 			name: "invalid journalUnits item type",
 			config: map[string]interface{}{
-				"journalUnits": []interface{}{123, 456},  // Not strings
+				"journalUnits": []interface{}{123, 456}, // Not strings
 			},
 			expectError: true,
 			errorMsg:    "must be a string",
 		},
 		{
-			name: "nil config",
-			config: nil,
-			expectError: false,  // Should return default config
+			name:        "nil config",
+			config:      nil,
+			expectError: false, // Should return default config
 		},
 	}
 

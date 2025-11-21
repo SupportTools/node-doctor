@@ -242,9 +242,9 @@ func TestComputeConfigDiff_MultipleChanges(t *testing.T) {
 
 	newConfig := &types.NodeDoctorConfig{
 		Monitors: []types.MonitorConfig{
-			{Name: "monitor1", Type: "system", Enabled: true}, // Unchanged
+			{Name: "monitor1", Type: "system", Enabled: true},                                               // Unchanged
 			{Name: "monitor3", Type: "disk", Enabled: true, Config: map[string]interface{}{"path": "/new"}}, // Modified
-			{Name: "monitor4", Type: "memory", Enabled: true}, // Added
+			{Name: "monitor4", Type: "memory", Enabled: true},                                               // Added
 		},
 		// monitor2 removed
 	}

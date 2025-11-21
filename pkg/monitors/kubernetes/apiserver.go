@@ -317,10 +317,19 @@ func (m *APIServerMonitor) checkAPIServer(ctx context.Context) (*types.Status, e
 			// Report APIServerUnreachable condition
 			m.unhealthy = true
 			status.Conditions = append(status.Conditions, types.Condition{
-				Type:    "APIServerUnreachable",
-				Status:  "True",
-				Reason:  "APIServerUnreachable",
-				Message: fmt.Sprintf("API server unreachable after %d consecutive failures: %s", m.consecutiveFailures, sanitizeError(err)),
+				Type:       "APIServerUnreachable",
+				Status:     "True",
+				Reason:     "APIServerUnreachable",
+				Message:    fmt.Sprintf("API server unreachable after %d consecutive failures: %s", m.consecutiveFailures, sanitizeError(err)),
+				Transition: time.Now(),
+			})
+			// Also report APIServerReachable=False
+			status.Conditions = append(status.Conditions, types.Condition{
+				Type:       "APIServerReachable",
+				Status:     "False",
+				Reason:     "APIServerUnreachable",
+				Message:    fmt.Sprintf("API server unreachable: %s", sanitizeError(err)),
+				Transition: time.Now(),
 			})
 		}
 
@@ -364,13 +373,23 @@ func (m *APIServerMonitor) checkAPIServer(ctx context.Context) (*types.Status, e
 	m.consecutiveFailures = 0
 	m.unhealthy = false
 
+	// Always report APIServerReachable=True when healthy
+	status.Conditions = append(status.Conditions, types.Condition{
+		Type:       "APIServerReachable",
+		Status:     "True",
+		Reason:     "APIServerHealthy",
+		Message:    fmt.Sprintf("API server is reachable (latency: %.2fms)", float64(metrics.Latency.Microseconds())/1000.0),
+		Transition: time.Now(),
+	})
+
 	// If we were previously unhealthy, report recovery
 	if wasUnhealthy {
 		status.Conditions = append(status.Conditions, types.Condition{
-			Type:    "APIServerUnreachable",
-			Status:  "False",
-			Reason:  "APIServerHealthy",
-			Message: "API server is now reachable and responding normally",
+			Type:       "APIServerUnreachable",
+			Status:     "False",
+			Reason:     "APIServerHealthy",
+			Message:    "API server is now reachable and responding normally",
+			Transition: time.Now(),
 		})
 
 		status.Events = append(status.Events, types.Event{
@@ -380,14 +399,24 @@ func (m *APIServerMonitor) checkAPIServer(ctx context.Context) (*types.Status, e
 		})
 	}
 
-	// Check latency threshold
+	// Check latency threshold and report condition only when there's a problem
+	// Note: Only emit APIServerLatencyHigh=True when latency exceeds threshold
+	// Do not emit APIServerLatencyHigh=False to avoid false "problems" in the detector
 	if metrics.Latency > m.config.LatencyThreshold {
+		status.Conditions = append(status.Conditions, types.Condition{
+			Type:       "APIServerLatencyHigh",
+			Status:     "True",
+			Reason:     "LatencyExceeded",
+			Message:    fmt.Sprintf("API server latency %.2fs exceeds threshold %.2fs", metrics.Latency.Seconds(), m.config.LatencyThreshold.Seconds()),
+			Transition: time.Now(),
+		})
 		status.Events = append(status.Events, types.Event{
 			Severity: types.EventWarning,
 			Reason:   "APIServerSlow",
 			Message:  fmt.Sprintf("API server latency %.2fs exceeds threshold %.2fs", metrics.Latency.Seconds(), m.config.LatencyThreshold.Seconds()),
 		})
 	}
+	// Note: Latency info is already captured in APIServerReachable message above
 
 	return status, nil
 }

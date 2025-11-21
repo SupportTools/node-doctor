@@ -15,9 +15,9 @@ import (
 // These patterns are designed to cause exponential backtracking in vulnerable regex engines.
 func TestSecurity_ReDoS_AttackSimulation(t *testing.T) {
 	tests := []struct {
-		name           string
-		pattern        string
-		shouldReject   bool
+		name            string
+		pattern         string
+		shouldReject    bool
 		rejectionReason string
 	}{
 		{
@@ -134,8 +134,8 @@ func TestSecurity_ReDoS_CompilationTimeout(t *testing.T) {
 		Patterns: []LogPatternConfig{
 			{
 				Regex:       `^(([a-zA-Z0-9]+[_.-])*[a-zA-Z0-9]+@([a-zA-Z0-9]+[_.-])*[a-zA-Z0-9]+\.[a-zA-Z]{2,})$`,
-				Severity: "error",
-					Source:      "kmsg",
+				Severity:    "error",
+				Source:      "kmsg",
 				Description: "Test pattern",
 			},
 		},
@@ -151,8 +151,6 @@ func TestSecurity_ReDoS_CompilationTimeout(t *testing.T) {
 
 	mockExecutor := &mockCommandExecutor{}
 
-	
-
 	err := config.applyDefaults()
 
 	if err != nil {
@@ -161,23 +159,18 @@ func TestSecurity_ReDoS_CompilationTimeout(t *testing.T) {
 
 	}
 
-	
-
 	monitorConfig := types.MonitorConfig{
 
-		Name:     "test",
+		Name: "test",
 
-		Type:     "log-pattern",
+		Type: "log-pattern",
 
 		Interval: 30 * time.Second,
 
-		Timeout:  10 * time.Second,
+		Timeout: 10 * time.Second,
 
-		Config:   map[string]interface{}{},
-
+		Config: map[string]interface{}{},
 	}
-
-	
 
 	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 
@@ -241,8 +234,6 @@ func TestSecurity_ReDoS_GoroutineCleanup(t *testing.T) {
 
 	mockExecutor := &mockCommandExecutor{}
 
-
-
 	err := config.applyDefaults()
 
 	if err != nil {
@@ -251,23 +242,18 @@ func TestSecurity_ReDoS_GoroutineCleanup(t *testing.T) {
 
 	}
 
-
-
 	monitorConfig := types.MonitorConfig{
 
-		Name:     "test",
+		Name: "test",
 
-		Type:     "log-pattern",
+		Type: "log-pattern",
 
 		Interval: 30 * time.Second,
 
-		Timeout:  10 * time.Second,
+		Timeout: 10 * time.Second,
 
-		Config:   map[string]interface{}{},
-
+		Config: map[string]interface{}{},
 	}
-
-
 
 	monitor, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 	if err != nil {
@@ -328,84 +314,56 @@ func TestSecurity_BinaryData_Handling(t *testing.T) {
 				Patterns: []LogPatternConfig{
 					{
 						Regex:       `ERROR:`,
-						Severity: "error",
-					Source:      "kmsg",
+						Severity:    "error",
+						Source:      "kmsg",
 						Description: "Error found",
 					},
 					{
 						Regex:       `WARNING:`,
-						Severity: "warning",
-					Source:      "kmsg",
+						Severity:    "warning",
+						Source:      "kmsg",
 						Description: "Warning found",
 					},
 				},
-				KmsgPath:  "/dev/kmsg",
-				CheckKmsg: true,
+				KmsgPath:     "/dev/kmsg",
+				CheckKmsg:    true,
 				CheckJournal: false,
 			}
 
 			ctx := context.Background()
 
-
 			mockFS = newMockFileReader()
-
 
 			mockExecutor := &mockCommandExecutor{}
 
-
-			
-
-
 			err := config.applyDefaults()
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to apply defaults: %v", err)
 
-
 			}
-
-
-			
-
 
 			monitorConfig := types.MonitorConfig{
 
+				Name: "test",
 
-				Name:     "test",
-
-
-				Type:     "log-pattern",
-
+				Type: "log-pattern",
 
 				Interval: 30 * time.Second,
 
+				Timeout: 10 * time.Second,
 
-				Timeout:  10 * time.Second,
-
-
-				Config:   map[string]interface{}{},
-
-
+				Config: map[string]interface{}{},
 			}
-
-
-			
-
 
 			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to create monitor: %v", err)
 
-
 			}
-
 
 			monitor := mon.(*LogPatternMonitor)
 			if err != nil {
@@ -478,79 +436,51 @@ func TestSecurity_MalformedUTF8_Patterns(t *testing.T) {
 			config := &LogPatternMonitorConfig{
 				Patterns: []LogPatternConfig{
 					{
-						Regex:        tt.pattern,
-						Severity: "error",
-					Source:      "kmsg",
+						Regex:       tt.pattern,
+						Severity:    "error",
+						Source:      "kmsg",
 						Description: "Pattern matched",
 					},
 				},
-				KmsgPath:  "/dev/kmsg",
-				CheckKmsg: true,
+				KmsgPath:     "/dev/kmsg",
+				CheckKmsg:    true,
 				CheckJournal: false,
 			}
 
 			ctx := context.Background()
 
-
 			mockFS = newMockFileReader()
-
 
 			mockExecutor := &mockCommandExecutor{}
 
-
-			
-
-
 			err := config.applyDefaults()
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to apply defaults: %v", err)
 
-
 			}
-
-
-			
-
 
 			monitorConfig := types.MonitorConfig{
 
+				Name: "test",
 
-				Name:     "test",
-
-
-				Type:     "log-pattern",
-
+				Type: "log-pattern",
 
 				Interval: 30 * time.Second,
 
+				Timeout: 10 * time.Second,
 
-				Timeout:  10 * time.Second,
-
-
-				Config:   map[string]interface{}{},
-
-
+				Config: map[string]interface{}{},
 			}
-
-
-			
-
 
 			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to create monitor: %v", err)
 
-
 			}
-
 
 			monitor := mon.(*LogPatternMonitor)
 			if err != nil {
@@ -636,79 +566,51 @@ func TestSecurity_ExtremeLengths_LogLines(t *testing.T) {
 				Patterns: []LogPatternConfig{
 					{
 						Regex:       `ERROR:`,
-						Severity: "error",
-					Source:      "kmsg",
+						Severity:    "error",
+						Source:      "kmsg",
 						Description: "Error found",
 					},
 				},
-				KmsgPath:           "/dev/kmsg",
-				CheckKmsg:          true,
-				CheckJournal:       false,
+				KmsgPath:            "/dev/kmsg",
+				CheckKmsg:           true,
+				CheckJournal:        false,
 				MaxEventsPerPattern: 100, // Limit events to avoid explosion
 			}
 
 			ctx := context.Background()
 
-
 			mockFS = newMockFileReader()
-
 
 			mockExecutor := &mockCommandExecutor{}
 
-
-			
-
-
 			err := config.applyDefaults()
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to apply defaults: %v", err)
 
-
 			}
-
-
-			
-
 
 			monitorConfig := types.MonitorConfig{
 
+				Name: "test",
 
-				Name:     "test",
-
-
-				Type:     "log-pattern",
-
+				Type: "log-pattern",
 
 				Interval: 30 * time.Second,
 
+				Timeout: 10 * time.Second,
 
-				Timeout:  10 * time.Second,
-
-
-				Config:   map[string]interface{}{},
-
-
+				Config: map[string]interface{}{},
 			}
-
-
-			
-
 
 			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to create monitor: %v", err)
 
-
 			}
-
 
 			monitor := mon.(*LogPatternMonitor)
 			if err != nil {
@@ -742,8 +644,8 @@ func TestSecurity_ResourceExhaustion_MaxConfig(t *testing.T) {
 	for i := 0; i < maxPatterns; i++ {
 		patterns[i] = LogPatternConfig{
 			Regex:       `ERROR` + strings.Repeat(`[0-9]`, i%10), // Vary complexity
-			Severity: "error",
-					Source:      "kmsg",
+			Severity:    "error",
+			Source:      "kmsg",
 			Description: "Error pattern " + string(rune(i)),
 		}
 	}
@@ -752,9 +654,9 @@ func TestSecurity_ResourceExhaustion_MaxConfig(t *testing.T) {
 		Patterns:            patterns,
 		CheckKmsg:           true,
 		CheckJournal:        false,
-		KmsgPath:           "/dev/kmsg",
-		MaxEventsPerPattern: 1000, // Maximum events
-		DedupWindow:        1 * time.Hour, // Maximum dedup window
+		KmsgPath:            "/dev/kmsg",
+		MaxEventsPerPattern: 1000,          // Maximum events
+		DedupWindow:         1 * time.Hour, // Maximum dedup window
 	}
 
 	// Create monitor - should succeed but enforce limits
@@ -764,8 +666,6 @@ func TestSecurity_ResourceExhaustion_MaxConfig(t *testing.T) {
 
 	mockExecutor := &mockCommandExecutor{}
 
-	
-
 	err := config.applyDefaults()
 
 	if err != nil {
@@ -774,23 +674,18 @@ func TestSecurity_ResourceExhaustion_MaxConfig(t *testing.T) {
 
 	}
 
-	
-
 	monitorConfig := types.MonitorConfig{
 
-		Name:     "test",
+		Name: "test",
 
-		Type:     "log-pattern",
+		Type: "log-pattern",
 
 		Interval: 30 * time.Second,
 
-		Timeout:  10 * time.Second,
+		Timeout: 10 * time.Second,
 
-		Config:   map[string]interface{}{},
-
+		Config: map[string]interface{}{},
 	}
-
-	
 
 	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 
@@ -811,15 +706,15 @@ func TestSecurity_ResourceExhaustion_MaxConfig(t *testing.T) {
 	}
 
 	// Estimate memory usage
-// 	memEstimate := estimateMemoryUsage(monitor.config)
-// 	t.Logf("Estimated memory usage for max config: %d bytes (%.2f MB)",
-// 		memEstimate, float64(memEstimate)/(1024*1024))
+	// 	memEstimate := estimateMemoryUsage(monitor.config)
+	// 	t.Logf("Estimated memory usage for max config: %d bytes (%.2f MB)",
+	// 		memEstimate, float64(memEstimate)/(1024*1024))
 
-// 	// Memory estimate should be reasonable (<20MB for max config)
-// 	if memEstimate > 20*1024*1024 {
-// 		t.Errorf("Memory estimate too high: %.2f MB (expected <20MB)",
-// 			float64(memEstimate)/(1024*1024))
-// 	}
+	// 	// Memory estimate should be reasonable (<20MB for max config)
+	// 	if memEstimate > 20*1024*1024 {
+	// 		t.Errorf("Memory estimate too high: %.2f MB (expected <20MB)",
+	// 			float64(memEstimate)/(1024*1024))
+	// 	}
 
 	// Create extensive log content
 	var logContent strings.Builder
@@ -875,7 +770,7 @@ func TestSecurity_MemoryEstimation_Accuracy(t *testing.T) {
 			for i := 0; i < cfg.patterns; i++ {
 				patterns[i] = LogPatternConfig{
 					Regex:       `ERROR[0-9]+`,
-					Severity: "error",
+					Severity:    "error",
 					Source:      "kmsg",
 					Description: "Test",
 				}
@@ -888,30 +783,30 @@ func TestSecurity_MemoryEstimation_Accuracy(t *testing.T) {
 
 			_ = &LogPatternMonitorConfig{
 				Patterns:            patterns,
-				JournalUnits:       units,
+				JournalUnits:        units,
 				MaxEventsPerPattern: cfg.events,
-				DedupWindow:        5 * time.Minute,
+				DedupWindow:         5 * time.Minute,
 			}
 
-// 			estimate := estimateMemoryUsage(config)
-// 
-// 			// Estimates should scale with config size
-// 			expectedMin := cfg.patterns * 1024 // At least 1KB per pattern
-// 			if estimate < expectedMin {
-// 				t.Errorf("Estimate too low: got %d bytes, expected at least %d",
-// 					estimate, expectedMin)
-// 			}
-// 
-// 			// Estimates should be conservative (reasonable upper bound)
-// 			expectedMax := 50 * 1024 * 1024 // 50MB max
-// 			if estimate > expectedMax {
-// 				t.Errorf("Estimate too high: got %d bytes, expected at most %d",
-// 					estimate, expectedMax)
-// 			}
+			// 			estimate := estimateMemoryUsage(config)
+			//
+			// 			// Estimates should scale with config size
+			// 			expectedMin := cfg.patterns * 1024 // At least 1KB per pattern
+			// 			if estimate < expectedMin {
+			// 				t.Errorf("Estimate too low: got %d bytes, expected at least %d",
+			// 					estimate, expectedMin)
+			// 			}
+			//
+			// 			// Estimates should be conservative (reasonable upper bound)
+			// 			expectedMax := 50 * 1024 * 1024 // 50MB max
+			// 			if estimate > expectedMax {
+			// 				t.Errorf("Estimate too high: got %d bytes, expected at most %d",
+			// 					estimate, expectedMax)
+			// 			}
 
-// 			t.Logf("%s config: %d patterns, %d events, %d units = %.2f MB estimated",
-// 				cfg.name, cfg.patterns, cfg.events, cfg.units,
-// 				float64(estimate)/(1024*1024))
+			// 			t.Logf("%s config: %d patterns, %d events, %d units = %.2f MB estimated",
+			// 				cfg.name, cfg.patterns, cfg.events, cfg.units,
+			// 				float64(estimate)/(1024*1024))
 		})
 	}
 }
@@ -954,78 +849,50 @@ func TestSecurity_PermissionChanges_MidOperation(t *testing.T) {
 				Patterns: []LogPatternConfig{
 					{
 						Regex:       `ERROR:`,
-						Severity: "error",
-					Source:      "kmsg",
+						Severity:    "error",
+						Source:      "kmsg",
 						Description: "Error found",
 					},
 				},
-				KmsgPath:  "/dev/kmsg",
-				CheckKmsg: true,
+				KmsgPath:     "/dev/kmsg",
+				CheckKmsg:    true,
 				CheckJournal: false,
 			}
 
 			ctx := context.Background()
 
-
 			mockFS = newMockFileReader()
-
 
 			mockExecutor := &mockCommandExecutor{}
 
-
-			
-
-
 			err := config.applyDefaults()
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to apply defaults: %v", err)
 
-
 			}
-
-
-			
-
 
 			monitorConfig := types.MonitorConfig{
 
+				Name: "test",
 
-				Name:     "test",
-
-
-				Type:     "log-pattern",
-
+				Type: "log-pattern",
 
 				Interval: 30 * time.Second,
 
+				Timeout: 10 * time.Second,
 
-				Timeout:  10 * time.Second,
-
-
-				Config:   map[string]interface{}{},
-
-
+				Config: map[string]interface{}{},
 			}
-
-
-			
-
 
 			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
 
-
 			if err != nil {
-
 
 				t.Fatalf("failed to create monitor: %v", err)
 
-
 			}
-
 
 			monitor := mon.(*LogPatternMonitor)
 			if err != nil {

@@ -328,11 +328,11 @@ func BenchmarkConcurrent_100Checks(b *testing.B) {
 				Description: "Warning",
 			},
 		},
-		KmsgPath:           "/dev/kmsg",
-		CheckKmsg:          true,
-		CheckJournal:       false,
+		KmsgPath:            "/dev/kmsg",
+		CheckKmsg:           true,
+		CheckJournal:        false,
 		MaxEventsPerPattern: 100,
-		DedupWindow:        1 * time.Second,
+		DedupWindow:         1 * time.Second,
 	}
 
 	err := logConfig.applyDefaults()
@@ -385,11 +385,11 @@ func BenchmarkMemory_AllocationRate(b *testing.B) {
 				Description: "Error found",
 			},
 		},
-		KmsgPath:           "/dev/kmsg",
-		CheckKmsg:          true,
-		CheckJournal:       false,
+		KmsgPath:            "/dev/kmsg",
+		CheckKmsg:           true,
+		CheckJournal:        false,
 		MaxEventsPerPattern: 50,
-		DedupWindow:        1 * time.Second,
+		DedupWindow:         1 * time.Second,
 	}
 
 	err := logConfig.applyDefaults()
@@ -423,10 +423,10 @@ func BenchmarkMemory_AllocationRate(b *testing.B) {
 // to verify <10ms per check requirement
 func BenchmarkPatternMatching_Performance(b *testing.B) {
 	benchmarks := []struct {
-		name         string
-		numPatterns  int
-		numLogLines  int
-		target10ms   bool  // Whether this should meet <10ms target
+		name        string
+		numPatterns int
+		numLogLines int
+		target10ms  bool // Whether this should meet <10ms target
 	}{
 		{
 			name:        "10 patterns, 100 lines",
@@ -441,10 +441,10 @@ func BenchmarkPatternMatching_Performance(b *testing.B) {
 			target10ms:  true,
 		},
 		{
-			name:        "50 patterns, 1000 lines (max config)",
-			numPatterns: 50,
+			name:        "60 patterns, 1000 lines (max config)",
+			numPatterns: 60,
 			numLogLines: 1000,
-			target10ms:  false,  // Max config may exceed 10ms
+			target10ms:  false, // Max config may exceed 10ms
 		},
 		{
 			name:        "5 patterns, 50 lines (minimal)",
@@ -481,11 +481,11 @@ func BenchmarkPatternMatching_Performance(b *testing.B) {
 
 			logConfig := &LogPatternMonitorConfig{
 				Patterns:            patterns,
-				KmsgPath:           "/dev/kmsg",
-				CheckKmsg:          true,
-				CheckJournal:       false,
+				KmsgPath:            "/dev/kmsg",
+				CheckKmsg:           true,
+				CheckJournal:        false,
 				MaxEventsPerPattern: 100,
-				DedupWindow:        1 * time.Second,
+				DedupWindow:         1 * time.Second,
 			}
 
 			err := logConfig.applyDefaults()
@@ -517,7 +517,7 @@ func BenchmarkPatternMatching_Performance(b *testing.B) {
 			// Report if target was met
 			nsPerOp := b.Elapsed().Nanoseconds() / int64(b.N)
 			msPerOp := float64(nsPerOp) / 1000000.0
-			
+
 			if bm.target10ms && msPerOp > 10.0 {
 				b.Logf("WARNING: Exceeds 10ms target: %.2fms/op", msPerOp)
 			} else {

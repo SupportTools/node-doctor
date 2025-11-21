@@ -170,11 +170,11 @@ func TestAuthConfig_Validate(t *testing.T) {
 // TestParseAuthConfig tests parsing of authentication configuration.
 func TestParseAuthConfig(t *testing.T) {
 	tests := []struct {
-		name       string
-		configMap  map[string]interface{}
-		expectErr  bool
-		errMsg     string
-		expected   *AuthConfig
+		name      string
+		configMap map[string]interface{}
+		expectErr bool
+		errMsg    string
+		expected  *AuthConfig
 	}{
 		{
 			name:      "nil config",
@@ -454,11 +454,11 @@ func TestAddAuthHeader(t *testing.T) {
 // TestKubeletClient_WithAuthentication tests end-to-end authentication with a mock server.
 func TestKubeletClient_WithAuthentication(t *testing.T) {
 	tests := []struct {
-		name           string
-		auth           *AuthConfig
-		serverHandler  http.HandlerFunc
-		expectErr      bool
-		errMsg         string
+		name          string
+		auth          *AuthConfig
+		serverHandler http.HandlerFunc
+		expectErr     bool
+		errMsg        string
 	}{
 		{
 			name: "no auth required",
@@ -512,10 +512,10 @@ func TestKubeletClient_WithAuthentication(t *testing.T) {
 			defer server.Close()
 
 			config := &KubeletMonitorConfig{
-				HealthzURL: server.URL,
-				MetricsURL: server.URL,
+				HealthzURL:  server.URL,
+				MetricsURL:  server.URL,
 				HTTPTimeout: 5 * time.Second,
-				Auth:       tt.auth,
+				Auth:        tt.auth,
 			}
 
 			client := newDefaultKubeletClient(config)
@@ -557,7 +557,7 @@ func TestConfigureTLS(t *testing.T) {
 		{
 			name: "no tls config needed",
 			auth: &AuthConfig{
-				Type: "bearer",
+				Type:        "bearer",
 				BearerToken: "token",
 			},
 			expectNil: false,

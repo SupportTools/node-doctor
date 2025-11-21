@@ -19,11 +19,12 @@ type EventEmitter func(severity types.EventSeverity, reason, message string)
 
 // ReloadCoordinator orchestrates configuration reload operations.
 type ReloadCoordinator struct {
-	configPath      string
-	currentConfig   *types.NodeDoctorConfig
-	reloadCallback  ReloadCallback
-	eventEmitter    EventEmitter
-	mu              sync.Mutex
+	configPath       string
+	currentConfig    *types.NodeDoctorConfig
+	reloadCallback   ReloadCallback
+	eventEmitter     EventEmitter
+	validator        *ConfigValidator
+	mu               sync.Mutex
 	reloadInProgress bool
 }
 
@@ -39,6 +40,24 @@ func NewReloadCoordinator(
 		currentConfig:  initialConfig,
 		reloadCallback: reloadCallback,
 		eventEmitter:   eventEmitter,
+		validator:      NewConfigValidator(),
+	}
+}
+
+// NewReloadCoordinatorWithValidator creates a new reload coordinator with a custom validator.
+func NewReloadCoordinatorWithValidator(
+	configPath string,
+	initialConfig *types.NodeDoctorConfig,
+	reloadCallback ReloadCallback,
+	eventEmitter EventEmitter,
+	validator *ConfigValidator,
+) *ReloadCoordinator {
+	return &ReloadCoordinator{
+		configPath:     configPath,
+		currentConfig:  initialConfig,
+		reloadCallback: reloadCallback,
+		eventEmitter:   eventEmitter,
+		validator:      validator,
 	}
 }
 
@@ -69,7 +88,7 @@ func (rc *ReloadCoordinator) performReload(ctx context.Context) error {
 	// Emit start event
 	rc.emitEvent(types.EventInfo, "ConfigReloadStarted", "Configuration reload initiated")
 
-	// Step 1: Load and validate new configuration
+	// Step 1: Load new configuration
 	newConfig, err := util.LoadConfig(rc.configPath)
 	if err != nil {
 		rc.emitEvent(types.EventWarning, "ConfigReloadFailed",
@@ -77,26 +96,41 @@ func (rc *ReloadCoordinator) performReload(ctx context.Context) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Step 2: Compute diff
+	// Step 2: Validate new configuration
+	if rc.validator != nil {
+		validationResult := rc.validator.Validate(newConfig)
+		if !validationResult.Valid {
+			errorMsg := FormatValidationErrors(validationResult.Errors)
+			rc.emitEvent(types.EventWarning, "ConfigValidationFailed",
+				fmt.Sprintf("Configuration validation failed: %s", errorMsg))
+			return fmt.Errorf("configuration validation failed: %s", errorMsg)
+		}
+
+		// Emit validation success for observability
+		rc.emitEvent(types.EventInfo, "ConfigValidationSucceeded",
+			"Configuration validation completed successfully")
+	}
+
+	// Step 3: Compute diff
 	rc.mu.Lock()
 	diff := ComputeConfigDiff(rc.currentConfig, newConfig)
 	rc.mu.Unlock()
 
-	// Step 3: Check if there are any changes
+	// Step 4: Check if there are any changes
 	if !diff.HasChanges() {
 		rc.emitEvent(types.EventInfo, "ConfigReloadNoChanges",
 			"Configuration reload completed with no changes")
 		return nil
 	}
 
-	// Step 4: Apply changes via callback
+	// Step 5: Apply changes via callback
 	if err := rc.reloadCallback(ctx, newConfig, diff); err != nil {
 		rc.emitEvent(types.EventWarning, "ConfigReloadFailed",
 			fmt.Sprintf("Failed to apply configuration changes: %v", err))
 		return fmt.Errorf("failed to apply changes: %w", err)
 	}
 
-	// Step 5: Update current config
+	// Step 6: Update current config
 	rc.mu.Lock()
 	rc.currentConfig = newConfig
 	rc.mu.Unlock()
@@ -158,4 +192,15 @@ func (rc *ReloadCoordinator) GetCurrentConfig() *types.NodeDoctorConfig {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	return rc.currentConfig
+}
+
+// GetValidator returns the configuration validator used by this coordinator.
+func (rc *ReloadCoordinator) GetValidator() *ConfigValidator {
+	return rc.validator
+}
+
+// SetValidator sets a new configuration validator.
+// This is useful for testing or when different validation rules are needed.
+func (rc *ReloadCoordinator) SetValidator(validator *ConfigValidator) {
+	rc.validator = validator
 }

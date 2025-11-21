@@ -1,11 +1,11 @@
-// Package detector implements the Problem Detector orchestrator for Node Doctor.
-// It coordinates the flow from monitors through status processing to problem export.
 package detector
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,703 +13,764 @@ import (
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
-// ProblemDetector orchestrates the entire problem detection pipeline.
-// It collects status updates from monitors, processes them into problems,
-// deduplicates issues, and distributes results to exporters.
+// MonitorHandle represents a running monitor with its context and controls
+type MonitorHandle struct {
+	monitor      types.Monitor
+	config       types.MonitorConfig
+	statusCh     <-chan *types.Status
+	cancelFunc   context.CancelFunc
+	wg           *sync.WaitGroup
+	ctx          context.Context
+	stopped      bool
+	mu           sync.Mutex
+}
+
+// Stop stops the monitor gracefully with a timeout
+func (mh *MonitorHandle) Stop() error {
+	mh.mu.Lock()
+
+	// Check and set atomically under lock to fix TOCTOU race condition
+	if mh.stopped {
+		mh.mu.Unlock()
+		return nil // Already stopped
+	}
+	mh.stopped = true
+	mh.mu.Unlock()
+
+	// Now do the actual stop work without holding the lock
+	log.Printf("[INFO] Stopping monitor %s", mh.config.Name)
+
+	// Cancel the context first to signal stop
+	mh.cancelFunc()
+
+	// Then stop the monitor
+	mh.monitor.Stop()
+
+	// Wait for goroutines to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		mh.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Printf("[INFO] Monitor %s stopped cleanly", mh.config.Name)
+		return nil
+	case <-time.After(5 * time.Second):
+		log.Printf("[WARN] Monitor %s stop timeout after 5s", mh.config.Name)
+		return fmt.Errorf("monitor stop timeout")
+	}
+}
+
+// GetName returns the name of the monitor
+func (mh *MonitorHandle) GetName() string {
+	return mh.config.Name
+}
+
+// GetConfig returns the configuration of the monitor
+func (mh *MonitorHandle) GetConfig() types.MonitorConfig {
+	return mh.config
+}
+
+// IsRunning returns true if the monitor is currently running
+func (mh *MonitorHandle) IsRunning() bool {
+	mh.mu.Lock()
+	defer mh.mu.Unlock()
+	return !mh.stopped
+}
+
+// ProblemDetector manages monitors and exports their output
 type ProblemDetector struct {
-	config          *types.NodeDoctorConfig
-	configPath      string                   // Path to configuration file (for reload)
-	monitors        []types.Monitor
-	exporters       []types.Exporter
-	statusChan      chan *types.Status       // Buffered channel for status updates
-	stopChan        chan struct{}            // Signal for graceful shutdown
-	wg              sync.WaitGroup           // Track goroutines for shutdown
-	mu              sync.RWMutex             // Protects running state
-	running         bool                     // Current running state
-	problems        map[string]*problemEntry // Deduplication map with TTL
-	problemsMu      sync.RWMutex             // Protects problems map
-	stats           Statistics               // Thread-safe statistics
-	problemTTL      time.Duration            // TTL for problem entries
-	cleanupInterval time.Duration            // Cleanup interval
-
-	// Hot reload components
-	configWatcher      *reload.ConfigWatcher      // Watches config file for changes
-	reloadCoordinator  *reload.ReloadCoordinator  // Coordinates reload operations
-	reloadMutex        sync.Mutex                 // Prevents concurrent reloads
-	monitorFactory     MonitorFactory             // Factory for creating monitors dynamically
+	mu                  sync.RWMutex
+	config              *types.NodeDoctorConfig
+	monitorHandles      []*MonitorHandle
+	exporters           []types.Exporter
+	statusChan          chan *types.Status
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	stats               Statistics
+	configWatcher       *reload.ConfigWatcher
+	reloadCoordinator   *reload.ReloadCoordinator
+	configFilePath      string
+	monitorFactory      MonitorFactory
+	configChangeCh      <-chan struct{}
+	reloadMutex         sync.Mutex // Protects reload operations
+	started             bool
+	seenProblems        map[string]*types.Problem // For deduplication
+	problemsMutex       sync.RWMutex              // Protects seenProblems
 }
 
-// problemEntry wraps a problem with TTL tracking
-type problemEntry struct {
-	problem  *types.Problem
-	lastSeen time.Time
-}
-
-// MonitorFactory creates monitors from configuration.
-// This interface allows hot reload to dynamically create new monitors.
+// MonitorFactory interface for creating monitor instances during hot reload
 type MonitorFactory interface {
 	CreateMonitor(config types.MonitorConfig) (types.Monitor, error)
 }
 
-// NewProblemDetector creates a new ProblemDetector instance.
-// It validates the configuration and initializes all internal structures.
-// If configPath is provided and reload is enabled, hot reload will be configured.
-func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor, exporters []types.Exporter, configPath string, monitorFactory MonitorFactory) (*ProblemDetector, error) {
+// NewProblemDetector creates a new problem detector with the given configuration
+func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor, exporters []types.Exporter, configFilePath string, monitorFactory MonitorFactory) (*ProblemDetector, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
-	if len(monitors) == 0 {
-		return nil, fmt.Errorf("at least one monitor is required")
+
+	if configFilePath == "" {
+		return nil, fmt.Errorf("config file path cannot be empty")
 	}
-	if len(exporters) == 0 {
-		return nil, fmt.Errorf("at least one exporter is required")
+
+	// Validate configuration
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+
+	// Create statistics tracker
+	monitorStats := NewStatistics()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create config watcher with configFilePath and debounce interval
+	debounceInterval := config.Reload.DebounceInterval
+	if debounceInterval == 0 {
+		debounceInterval = 500 * time.Millisecond // default
+	}
+	configWatcher, err := reload.NewConfigWatcher(configFilePath, debounceInterval)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create config watcher: %w", err)
 	}
 
 	pd := &ProblemDetector{
-		config:          config,
-		configPath:      configPath,
-		monitors:        monitors,
-		exporters:       exporters,
-		monitorFactory:  monitorFactory,
-		statusChan:      make(chan *types.Status, 1000), // Buffered to prevent blocking
-		stopChan:        make(chan struct{}),
-		problems:        make(map[string]*problemEntry),
-		stats:           NewStatistics(),
-		problemTTL:      1 * time.Hour,    // Problems expire after 1 hour
-		cleanupInterval: 10 * time.Minute, // Cleanup every 10 minutes
+		config:            config,
+		monitorHandles:    make([]*MonitorHandle, 0),
+		exporters:         make([]types.Exporter, 0),
+		statusChan:        make(chan *types.Status, 1000),
+		ctx:               ctx,
+		cancel:            cancel,
+		stats:             monitorStats,
+		configWatcher:     configWatcher,
+		configFilePath:    configFilePath,
+		monitorFactory:    monitorFactory,
+		seenProblems:      make(map[string]*types.Problem),
 	}
 
-	// Initialize hot reload if enabled
-	if config.Reload.Enabled && configPath != "" {
-		if err := pd.initializeReload(); err != nil {
-			return nil, fmt.Errorf("failed to initialize hot reload: %w", err)
-		}
-		log.Printf("[INFO] Hot reload enabled for config file: %s (debounce: %v)", configPath, config.Reload.DebounceInterval)
+	// Create reload coordinator with callback and event emitter
+	reloadCallback := pd.handleConfigReload
+	eventEmitter := pd.emitReloadEvent
+	pd.reloadCoordinator = reload.NewReloadCoordinator(configFilePath, config, reloadCallback, eventEmitter)
+
+	// Add the provided monitors and exporters
+	for _, monitor := range monitors {
+		// TODO: Need to match monitors with their configs properly
+		// For now, we'll add them during Start() when we have the context
+		_ = monitor
+	}
+
+	for _, exporter := range exporters {
+		pd.AddExporter(exporter)
 	}
 
 	return pd, nil
 }
 
-// initializeReload sets up the configuration hot reload components.
-func (pd *ProblemDetector) initializeReload() error {
-	// Create config watcher
-	watcher, err := reload.NewConfigWatcher(pd.configPath, pd.config.Reload.DebounceInterval)
+// AddExporter adds an exporter to the detector
+func (pd *ProblemDetector) AddExporter(exporter types.Exporter) {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+
+	pd.exporters = append(pd.exporters, exporter)
+	log.Printf("[INFO] Added exporter to detector")
+}
+
+// IsRunning returns true if the detector is currently running
+func (pd *ProblemDetector) IsRunning() bool {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	return pd.started
+}
+
+// Run starts the problem detector (alias for Start for backward compatibility)
+func (pd *ProblemDetector) Run() error {
+	return pd.Start()
+}
+
+// GetStatistics returns the current statistics
+func (pd *ProblemDetector) GetStatistics() Statistics {
+	return pd.stats
+}
+
+// Start starts the problem detector
+func (pd *ProblemDetector) Start() error {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+
+	if pd.started {
+		return fmt.Errorf("detector already started")
+	}
+
+	log.Printf("[INFO] Starting problem detector...")
+
+	// Start config watcher
+	configChangeCh, err := pd.configWatcher.Start(pd.ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create config watcher: %w", err)
+		return fmt.Errorf("failed to start config watcher: %w", err)
 	}
-	pd.configWatcher = watcher
+	pd.configChangeCh = configChangeCh
 
-	// Create reload coordinator
-	pd.reloadCoordinator = reload.NewReloadCoordinator(
-		pd.configPath,
-		pd.config,
-		pd.applyConfigReload,
-		pd.emitReloadEvent,
-	)
-
-	return nil
-}
-
-// Run starts the problem detector orchestrator.
-// This is the main entry point that coordinates the entire pipeline.
-func (pd *ProblemDetector) Run(ctx context.Context) error {
-	pd.mu.Lock()
-	if pd.running {
-		pd.mu.Unlock()
-		return fmt.Errorf("problem detector is already running")
-	}
-	// Don't set running=true yet - wait until startup succeeds
-	pd.mu.Unlock()
-
-	log.Printf("[INFO] Starting Problem Detector with %d monitors and %d exporters", len(pd.monitors), len(pd.exporters))
-
-	// Start all monitors and collect their status channels
-	if err := pd.startMonitors(ctx); err != nil {
-		return fmt.Errorf("failed to start monitors: %w", err)
-	}
-
-	// Now that startup succeeded, mark as running
-	pd.mu.Lock()
-	pd.running = true
-	pd.mu.Unlock()
-
-	// Start the main processing loop
+	// Start watching for config changes
 	pd.wg.Add(1)
 	go func() {
 		defer pd.wg.Done()
-		pd.processStatuses(ctx)
+		pd.watchConfigChanges()
 	}()
 
-	// Start problem cleanup goroutine
-	pd.wg.Add(1)
-	go func() {
-		defer pd.wg.Done()
-		pd.cleanupExpiredProblems(ctx)
-	}()
-
-	// Start config watcher if hot reload is enabled
-	var reloadCh <-chan struct{}
-	if pd.configWatcher != nil {
-		ch, err := pd.configWatcher.Start(ctx)
+	// Start monitors
+	for _, monitorConfig := range pd.config.Monitors {
+		monitor, err := pd.createMonitor(monitorConfig)
 		if err != nil {
-			log.Printf("[ERROR] Failed to start config watcher: %v", err)
-		} else {
-			reloadCh = ch
-			log.Printf("[INFO] Config watcher started")
-		}
-	}
-
-	log.Printf("[INFO] Problem Detector started successfully")
-
-	// Wait for context cancellation, stop signal, or reload events
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("[INFO] Problem Detector stopping due to context cancellation")
-			return pd.shutdown()
-		case <-pd.stopChan:
-			log.Printf("[INFO] Problem Detector stopping due to stop signal")
-			return pd.shutdown()
-		case <-reloadCh:
-			if reloadCh != nil {
-				log.Printf("[INFO] Config file change detected, triggering reload")
-				if err := pd.reloadCoordinator.TriggerReload(ctx); err != nil {
-					log.Printf("[WARN] Config reload failed: %v", err)
-				}
-			}
-		}
-	}
-}
-
-// startMonitors starts all monitors and sets up fan-in from their status channels.
-func (pd *ProblemDetector) startMonitors(ctx context.Context) error {
-	var successful int
-	var errors []error
-
-	for i, monitor := range pd.monitors {
-		statusCh, err := monitor.Start()
-		if err != nil {
+			log.Printf("[ERROR] Failed to create monitor %s: %v", monitorConfig.Name, err)
 			pd.stats.IncrementMonitorsFailed()
-			errors = append(errors, fmt.Errorf("monitor %d failed to start: %w", i, err))
-			log.Printf("[ERROR] Monitor %d failed to start: %v", i, err)
 			continue
 		}
 
-		pd.stats.IncrementMonitorsStarted()
-		successful++
+		if err := pd.addMonitor(pd.ctx, monitor, monitorConfig); err != nil {
+			log.Printf("[ERROR] Failed to start monitor %s: %v", monitorConfig.Name, err)
+			pd.stats.IncrementMonitorsFailed()
+			continue
+		}
 
-		// Start fan-in goroutine for this monitor
-		pd.wg.Add(1)
-		go func(ch <-chan *types.Status, monitorIdx int) {
-			defer pd.wg.Done()
-			pd.fanInFromMonitor(ctx, ch, monitorIdx)
-		}(statusCh, i)
-
-		log.Printf("[INFO] Monitor %d started successfully", i)
+		log.Printf("[INFO] Started monitor: %s", monitorConfig.Name)
 	}
 
-	// Require at least one successful monitor
-	if successful == 0 {
-		return fmt.Errorf("no monitors started successfully: %v", errors)
-	}
+	// Start status processing goroutine
+	pd.wg.Add(1)
+	go func() {
+		defer pd.wg.Done()
+		pd.processStatuses()
+	}()
 
-	if len(errors) > 0 {
-		log.Printf("[WARN] %d monitors failed to start, continuing with %d successful monitors", len(errors), successful)
-	}
+	pd.started = true
+	log.Printf("[INFO] Problem detector started successfully with %d monitors", len(pd.monitorHandles))
 
 	return nil
 }
 
-// fanInFromMonitor reads status updates from a single monitor channel
-// and forwards them to the central status channel.
-func (pd *ProblemDetector) fanInFromMonitor(ctx context.Context, statusCh <-chan *types.Status, monitorIdx int) {
-	log.Printf("[INFO] Starting fan-in for monitor %d", monitorIdx)
+// Stop stops the problem detector gracefully
+func (pd *ProblemDetector) Stop() error {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
 
+	if !pd.started {
+		return nil // Already stopped
+	}
+
+	log.Printf("[INFO] Stopping problem detector...")
+
+	// Stop config watcher
+	pd.configWatcher.Stop()
+
+	// Stop all monitors
+	for _, handle := range pd.monitorHandles {
+		if err := handle.Stop(); err != nil {
+			log.Printf("[WARN] Error stopping monitor %s: %v", handle.GetName(), err)
+		}
+	}
+
+	// Cancel context to stop all goroutines
+	pd.cancel()
+
+	// Close status channel
+	close(pd.statusChan)
+
+	// Wait for all goroutines to finish
+	pd.wg.Wait()
+
+	pd.started = false
+	log.Printf("[INFO] Problem detector stopped")
+
+	return nil
+}
+
+// createMonitor creates a monitor based on configuration using the MonitorFactory
+func (pd *ProblemDetector) createMonitor(config types.MonitorConfig) (types.Monitor, error) {
+	if pd.monitorFactory == nil {
+		return nil, fmt.Errorf("monitor factory not initialized")
+	}
+
+	// Use the factory to create the monitor
+	monitor, err := pd.monitorFactory.CreateMonitor(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create monitor %s: %w", config.Name, err)
+	}
+
+	return monitor, nil
+}
+
+// processStatuses processes status updates from monitors and forwards to exporters
+func (pd *ProblemDetector) processStatuses() {
 	for {
 		select {
-		case <-ctx.Done():
-			log.Printf("[INFO] Fan-in for monitor %d stopping due to context cancellation", monitorIdx)
+		case <-pd.ctx.Done():
+			log.Printf("[DEBUG] Status processor stopping")
 			return
-		case <-pd.stopChan:
-			log.Printf("[INFO] Fan-in for monitor %d stopping due to stop signal", monitorIdx)
-			return
-		case status, ok := <-statusCh:
+		case status, ok := <-pd.statusChan:
 			if !ok {
-				log.Printf("[INFO] Monitor %d channel closed, stopping fan-in", monitorIdx)
+				log.Printf("[DEBUG] Status channel closed, processor stopping")
 				return
 			}
 
-			// Validate status before forwarding
-			if status == nil {
-				log.Printf("[WARN] Monitor %d sent nil status, ignoring", monitorIdx)
-				continue
-			}
-
-			// Non-blocking send to central channel
-			select {
-			case pd.statusChan <- status:
-				// Status sent successfully
-			case <-ctx.Done():
-				log.Printf("[INFO] Fan-in for monitor %d stopping during send", monitorIdx)
-				return
-			case <-pd.stopChan:
-				log.Printf("[INFO] Fan-in for monitor %d stopping during send", monitorIdx)
-				return
-			default:
-				// Channel is full, log and drop the status
-				log.Printf("[WARN] Status channel full, dropping status from monitor %d", monitorIdx)
-			}
-		}
-	}
-}
-
-// processStatuses is the main processing loop that handles status updates.
-// It converts statuses to problems, deduplicates them, and exports results.
-func (pd *ProblemDetector) processStatuses(ctx context.Context) {
-	log.Printf("[INFO] Starting status processing loop")
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("[INFO] Status processing stopping due to context cancellation")
-			return
-		case <-pd.stopChan:
-			log.Printf("[INFO] Status processing stopping due to stop signal")
-			return
-		case status := <-pd.statusChan:
 			if status == nil {
 				continue
 			}
 
-			pd.stats.IncrementStatusesReceived()
-
-			// Export the raw status to all exporters
-			pd.exportStatus(ctx, status)
-
-			// Convert status to problems
-			problems := pd.statusToProblems(status)
-			if len(problems) == 0 {
-				continue
-			}
-
-			pd.stats.AddProblemsDetected(len(problems))
-
-			// Deduplicate problems
-			newProblems := pd.deduplicateProblems(problems)
-			if len(newProblems) == 0 {
-				continue
-			}
-
-			pd.stats.AddProblemsDeduplicated(len(newProblems))
-
-			// Export new problems
-			pd.exportProblems(ctx, newProblems)
+			pd.processStatus(status)
 		}
 	}
 }
 
-// statusToProblems converts a Status into a slice of Problems based on events and conditions.
+// processStatus processes a single status update
+func (pd *ProblemDetector) processStatus(status *types.Status) {
+	log.Printf("[DEBUG] Processing status from %s", status.Source)
+
+	// Update statistics
+	pd.stats.IncrementStatusesReceived()
+
+	// Convert status to problems for testing
+	problems := pd.statusToProblems(status)
+	pd.stats.AddProblemsDetected(len(problems))
+
+	// Apply deduplication
+	newProblems := pd.deduplicateProblems(problems)
+	pd.stats.AddProblemsDeduplicated(len(newProblems))
+
+	for _, problem := range newProblems {
+		pd.processProblem(problem)
+	}
+
+	// Export to all exporters
+	for _, exporter := range pd.exporters {
+		if err := exporter.ExportStatus(pd.ctx, status); err != nil {
+			log.Printf("[WARN] Failed to export status to exporter: %v", err)
+			pd.stats.IncrementExportsFailed()
+		} else {
+			pd.stats.IncrementExportsSucceeded()
+		}
+	}
+}
+
+// processProblem processes a problem for testing purposes
+func (pd *ProblemDetector) processProblem(problem *types.Problem) {
+	// Export to all exporters
+	for _, exporter := range pd.exporters {
+		if err := exporter.ExportProblem(pd.ctx, problem); err != nil {
+			log.Printf("[WARN] Failed to export problem to exporter: %v", err)
+			pd.stats.IncrementExportsFailed()
+		} else {
+			pd.stats.IncrementExportsSucceeded()
+		}
+	}
+}
+
+// statusToProblems converts a status update to problems for testing
 func (pd *ProblemDetector) statusToProblems(status *types.Status) []*types.Problem {
 	var problems []*types.Problem
 
-	// Process events
-	for _, event := range status.Events {
-		var severity types.ProblemSeverity
-		switch event.Severity {
-		case types.EventError:
-			severity = types.ProblemCritical
-		case types.EventWarning:
-			severity = types.ProblemWarning
-		case types.EventInfo:
-			// Skip informational events
-			continue
-		default:
-			log.Printf("[WARN] Unknown event severity: %s", event.Severity)
-			continue
+	// Convert conditions to problems
+	for _, condition := range status.Conditions {
+		if condition.Status == types.ConditionFalse {
+			problems = append(problems, &types.Problem{
+				Type:       "condition-" + condition.Type,
+				Resource:   status.Source,
+				Message:    condition.Message,
+				Severity:   types.ProblemWarning, // Default severity
+				DetectedAt: condition.Transition,
+				Metadata: map[string]string{
+					"condition": condition.Type,
+				},
+			})
 		}
-
-		problem := types.NewProblem(
-			fmt.Sprintf("event-%s", event.Reason),
-			status.Source,
-			severity,
-			event.Message,
-		)
-		problem.WithMetadata("event_reason", event.Reason)
-		problem.WithMetadata("event_timestamp", event.Timestamp.Format(time.RFC3339))
-		problem.WithMetadata("source", status.Source)
-
-		problems = append(problems, problem)
 	}
 
-	// Process conditions
-	for _, condition := range status.Conditions {
-		switch condition.Status {
-		case types.ConditionFalse:
-			// False conditions indicate problems
-			problem := types.NewProblem(
-				fmt.Sprintf("condition-%s", condition.Type),
-				status.Source,
-				types.ProblemCritical,
-				condition.Message,
-			)
-			problem.WithMetadata("condition_type", condition.Type)
-			problem.WithMetadata("condition_reason", condition.Reason)
-			problem.WithMetadata("condition_transition", condition.Transition.Format(time.RFC3339))
-			problem.WithMetadata("source", status.Source)
-
-			problems = append(problems, problem)
-		case types.ConditionTrue, types.ConditionUnknown:
-			// Skip healthy or unknown conditions
-			continue
-		default:
-			log.Printf("[WARN] Unknown condition status: %s", condition.Status)
-			continue
+	// Convert high severity events to problems
+	for _, event := range status.Events {
+		if event.Severity == types.EventError || event.Severity == types.EventWarning {
+			severity := pd.eventSeverityToProblemSeverity(event.Severity)
+			problems = append(problems, &types.Problem{
+				Type:       "event-" + event.Reason,
+				Resource:   status.Source,
+				Message:    event.Message,
+				Severity:   severity,
+				DetectedAt: event.Timestamp,
+				Metadata: map[string]string{
+					"event": event.Reason,
+				},
+			})
 		}
 	}
 
 	return problems
 }
 
-// deduplicateProblems filters out duplicate problems based on Type+Resource key.
-// Returns only new or significantly changed problems.
+// deduplicateProblems filters out problems that have already been seen with the same severity
 func (pd *ProblemDetector) deduplicateProblems(problems []*types.Problem) []*types.Problem {
-	pd.problemsMu.Lock()
-	defer pd.problemsMu.Unlock()
+	pd.problemsMutex.Lock()
+	defer pd.problemsMutex.Unlock()
 
 	var newProblems []*types.Problem
-	now := time.Now()
 
 	for _, problem := range problems {
-		key := problem.Type + ":" + problem.Resource
-		entry, exists := pd.problems[key]
+		// Create a unique key for this problem
+		key := fmt.Sprintf("%s:%s:%s", problem.Type, problem.Resource, problem.Severity)
 
-		if !exists {
-			// New problem
-			pd.problems[key] = &problemEntry{
-				problem:  problem,
-				lastSeen: now,
+		// Check if we've seen this exact problem before
+		if existingProblem, exists := pd.seenProblems[key]; exists {
+			// If severity is the same, skip (it's a duplicate)
+			if existingProblem.Severity == problem.Severity {
+				continue
 			}
-			newProblems = append(newProblems, problem)
-			continue
 		}
 
-		// Update last seen time
-		entry.lastSeen = now
-
-		// Check if problem has significantly changed
-		if entry.problem.Severity != problem.Severity || entry.problem.Message != problem.Message {
-			// Problem changed, update and report
-			entry.problem = problem
-			newProblems = append(newProblems, problem)
-			continue
-		}
-
-		// Problem already exists and hasn't changed significantly, skip
+		// This is a new problem or severity has changed
+		pd.seenProblems[key] = problem
+		newProblems = append(newProblems, problem)
 	}
 
 	return newProblems
 }
 
-// cleanupExpiredProblems periodically removes stale problems from the map.
-// This prevents unbounded memory growth by expiring problems after the TTL.
-func (pd *ProblemDetector) cleanupExpiredProblems(ctx context.Context) {
-	ticker := time.NewTicker(pd.cleanupInterval)
-	defer ticker.Stop()
+// eventSeverityToProblemSeverity converts EventSeverity to ProblemSeverity
+func (pd *ProblemDetector) eventSeverityToProblemSeverity(severity types.EventSeverity) types.ProblemSeverity {
+	switch severity {
+	case types.EventError:
+		return types.ProblemCritical
+	case types.EventWarning:
+		return types.ProblemWarning
+	default:
+		return types.ProblemInfo
+	}
+}
+
+// fanInFromMonitor reads statuses from a monitor and forwards them to the main status channel
+func (pd *ProblemDetector) fanInFromMonitor(ctx context.Context, statusCh <-chan *types.Status, monitorName string) {
+	log.Printf("[DEBUG] Starting fan-in for monitor %s", monitorName)
+	defer log.Printf("[DEBUG] Fan-in stopped for monitor %s", monitorName)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			pd.cleanupOnce()
-		}
-	}
-}
-
-// cleanupOnce performs a single cleanup pass of expired problems.
-func (pd *ProblemDetector) cleanupOnce() {
-	pd.problemsMu.Lock()
-	defer pd.problemsMu.Unlock()
-
-	now := time.Now()
-	var expiredCount int
-
-	for key, entry := range pd.problems {
-		if now.Sub(entry.lastSeen) > pd.problemTTL {
-			delete(pd.problems, key)
-			expiredCount++
-		}
-	}
-
-	if expiredCount > 0 {
-		log.Printf("[INFO] Cleaned up %d expired problems (TTL: %v)", expiredCount, pd.problemTTL)
-	}
-}
-
-// exportStatus sends a status update to all exporters in parallel with timeout.
-func (pd *ProblemDetector) exportStatus(ctx context.Context, status *types.Status) {
-	if len(pd.exporters) == 0 {
-		return
-	}
-
-	// Create a channel to signal completion
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-
-	for i, exporter := range pd.exporters {
-		wg.Add(1)
-		go func(exp types.Exporter, exporterIdx int) {
-			defer wg.Done()
-
-			// Add per-exporter timeout
-			exportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-
-			if err := exp.ExportStatus(exportCtx, status); err != nil {
-				pd.stats.IncrementExportsFailed()
-				log.Printf("[ERROR] Exporter %d failed to export status: %v", exporterIdx, err)
-			} else {
-				pd.stats.IncrementExportsSucceeded()
+		case status, ok := <-statusCh:
+			if !ok {
+				log.Printf("[DEBUG] Status channel closed for monitor %s", monitorName)
+				return
 			}
-		}(exporter, i)
-	}
 
-	// Wait for completion or timeout in separate goroutine
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	// Wait with timeout to prevent blocking indefinitely
-	select {
-	case <-done:
-		// All exporters completed
-	case <-time.After(15 * time.Second):
-		log.Printf("[WARN] Export status timed out after 15s, some exporters may still be processing")
-	}
-}
-
-// exportProblems sends problems to all exporters in parallel with timeout.
-func (pd *ProblemDetector) exportProblems(ctx context.Context, problems []*types.Problem) {
-	if len(pd.exporters) == 0 || len(problems) == 0 {
-		return
-	}
-
-	// Create a channel to signal completion
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-
-	for i, exporter := range pd.exporters {
-		wg.Add(1)
-		go func(exp types.Exporter, exporterIdx int) {
-			defer wg.Done()
-
-			for _, problem := range problems {
-				// Add per-export timeout
-				exportCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-
-				if err := exp.ExportProblem(exportCtx, problem); err != nil {
-					pd.stats.IncrementExportsFailed()
-					log.Printf("[ERROR] Exporter %d failed to export problem: %v", exporterIdx, err)
-				} else {
-					pd.stats.IncrementExportsSucceeded()
+			if status != nil {
+				select {
+				case pd.statusChan <- status:
+					// Status sent successfully
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+					log.Printf("[WARN] Timeout sending status from monitor %s", monitorName)
 				}
-
-				cancel()
 			}
-		}(exporter, i)
-	}
-
-	// Wait for completion or timeout in separate goroutine
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	// Wait with timeout to prevent blocking indefinitely
-	select {
-	case <-done:
-		// All exporters completed
-	case <-time.After(15 * time.Second):
-		log.Printf("[WARN] Export problems timed out after 15s, some exporters may still be processing")
+		}
 	}
 }
 
-// shutdown performs graceful shutdown with timeout.
-func (pd *ProblemDetector) shutdown() error {
-	pd.mu.Lock()
-	if !pd.running {
-		pd.mu.Unlock()
+// watchConfigChanges watches for configuration changes and triggers reloads
+func (pd *ProblemDetector) watchConfigChanges() {
+	log.Printf("[DEBUG] Starting config change watcher")
+	defer log.Printf("[DEBUG] Config change watcher stopped")
+
+	for {
+		select {
+		case <-pd.ctx.Done():
+			return
+		case _, ok := <-pd.configChangeCh:
+			if !ok {
+				log.Printf("[DEBUG] Config change channel closed")
+				return
+			}
+
+			log.Printf("[INFO] Configuration file changed")
+			if err := pd.reloadCoordinator.TriggerReload(pd.ctx); err != nil {
+				log.Printf("[ERROR] Failed to trigger config reload: %v", err)
+				pd.emitReloadEvent(types.EventError, "ReloadFailed", fmt.Sprintf("Failed to trigger reload: %v", err))
+			}
+		}
+	}
+}
+
+// handleConfigReload handles configuration reload requests
+func (pd *ProblemDetector) handleConfigReload(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *reload.ConfigDiff) error {
+	log.Printf("[INFO] Applying configuration reload")
+
+	// Log summary of changes
+	if !diff.HasChanges() {
+		log.Printf("[INFO] No configuration changes detected")
+		pd.emitReloadEvent(types.EventInfo, "NoChanges", "Configuration reload completed with no changes")
 		return nil
 	}
-	pd.running = false
-	pd.mu.Unlock()
 
-	log.Printf("[INFO] Starting graceful shutdown")
+	log.Printf("[INFO] Config changes detected: %d monitors added, %d modified, %d removed",
+		len(diff.MonitorsAdded), len(diff.MonitorsModified), len(diff.MonitorsRemoved))
 
-	// Signal all goroutines to stop
-	close(pd.stopChan)
-
-	// Stop config watcher if enabled
-	if pd.configWatcher != nil {
-		pd.configWatcher.Stop()
-		log.Printf("[INFO] Stopped config watcher")
+	// Apply the reload
+	if err := pd.applyConfigReload(ctx, newConfig, diff); err != nil {
+		log.Printf("[ERROR] Configuration reload failed: %v", err)
+		pd.emitReloadEvent(types.EventError, "ReloadFailed", fmt.Sprintf("Configuration reload failed: %v", err))
+		return fmt.Errorf("configuration reload failed: %w", err)
 	}
 
-	// Stop all monitors
-	for i, monitor := range pd.monitors {
-		monitor.Stop()
-		log.Printf("[INFO] Stopped monitor %d", i)
-	}
+	log.Printf("[INFO] Configuration reload completed successfully")
+	pd.emitReloadEvent(types.EventInfo, "ReloadSuccess", "Configuration reload completed successfully")
 
-	// Wait for all goroutines to finish with timeout
-	done := make(chan struct{})
-	go func() {
-		pd.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Printf("[INFO] Graceful shutdown completed")
-		return nil
-	case <-time.After(30 * time.Second):
-		log.Printf("[WARN] Shutdown timeout reached, some goroutines may still be running")
-		return fmt.Errorf("shutdown timeout exceeded")
-	}
+	return nil
 }
 
-// GetStatistics returns a copy of the current statistics.
-func (pd *ProblemDetector) GetStatistics() Statistics {
-	return pd.stats.Copy()
-}
-
-// IsRunning returns whether the detector is currently running.
-func (pd *ProblemDetector) IsRunning() bool {
-	pd.mu.RLock()
-	defer pd.mu.RUnlock()
-	return pd.running
-}
-
-// applyConfigReload applies configuration changes during hot reload.
-// This is called by the ReloadCoordinator after validation succeeds.
+// applyConfigReload applies configuration changes with fail-fast logic for critical errors
 func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *reload.ConfigDiff) error {
 	pd.reloadMutex.Lock()
 	defer pd.reloadMutex.Unlock()
 
-	log.Printf("[INFO] Applying configuration reload")
+	var errors []error
+	var criticalErrors []error
 
 	// Step 1: Stop monitors that were removed
+	log.Printf("[INFO] Stopping %d removed monitors", len(diff.MonitorsRemoved))
 	for _, removedConfig := range diff.MonitorsRemoved {
 		if err := pd.stopMonitorByName(removedConfig.Name); err != nil {
-			log.Printf("[WARN] Failed to stop removed monitor %s: %v", removedConfig.Name, err)
+			log.Printf("[ERROR] Failed to stop monitor %s: %v", removedConfig.Name, err)
+			errors = append(errors, fmt.Errorf("failed to stop monitor %s: %w", removedConfig.Name, err))
+			// Stopping monitors is not critical - continue
 		}
 	}
 
 	// Step 2: Restart modified monitors
-	for _, change := range diff.MonitorsModified {
-		// Stop old monitor
-		if err := pd.stopMonitorByName(change.Old.Name); err != nil {
-			log.Printf("[WARN] Failed to stop monitor %s for restart: %v", change.Old.Name, err)
+	log.Printf("[INFO] Restarting %d modified monitors", len(diff.MonitorsModified))
+	for _, modifiedChange := range diff.MonitorsModified {
+		newConfig := modifiedChange.New
+
+		// Stop existing
+		if err := pd.stopMonitorByName(newConfig.Name); err != nil {
+			log.Printf("[ERROR] Failed to stop modified monitor %s: %v", newConfig.Name, err)
+			criticalErrors = append(criticalErrors, fmt.Errorf("failed to stop modified monitor %s: %w", newConfig.Name, err))
+			continue // Skip this monitor but continue with others
+		}
+
+		// Create new
+		monitor, err := pd.createMonitor(newConfig)
+		if err != nil {
+			log.Printf("[ERROR] Failed to create modified monitor %s: %v", newConfig.Name, err)
+			criticalErrors = append(criticalErrors, fmt.Errorf("failed to create modified monitor %s: %w", newConfig.Name, err))
 			continue
 		}
 
-		// Create and start new monitor with updated config
-		if pd.monitorFactory != nil {
-			newMonitor, err := pd.monitorFactory.CreateMonitor(change.New)
-			if err != nil {
-				log.Printf("[ERROR] Failed to create modified monitor %s: %v", change.New.Name, err)
-				continue
-			}
-
-			statusCh, err := newMonitor.Start()
-			if err != nil {
-				log.Printf("[ERROR] Failed to start modified monitor %s: %v", change.New.Name, err)
-				continue
-			}
-
-			// Replace in monitors array and start fan-in
-			pd.replaceMonitor(change.Old.Name, newMonitor)
-			pd.wg.Add(1)
-			go func(ch <-chan *types.Status, name string) {
-				defer pd.wg.Done()
-				pd.fanInFromMonitor(ctx, ch, pd.getMonitorIndex(name))
-			}(statusCh, change.New.Name)
-
-			log.Printf("[INFO] Restarted monitor %s with new configuration", change.New.Name)
+		// Start new
+		if err := pd.addMonitor(ctx, monitor, newConfig); err != nil {
+			log.Printf("[ERROR] Failed to start modified monitor %s: %v", newConfig.Name, err)
+			criticalErrors = append(criticalErrors, fmt.Errorf("failed to start modified monitor %s: %w", newConfig.Name, err))
 		}
 	}
 
 	// Step 3: Start new monitors
+	log.Printf("[INFO] Starting %d new monitors", len(diff.MonitorsAdded))
 	for _, addedConfig := range diff.MonitorsAdded {
-		if pd.monitorFactory != nil {
-			newMonitor, err := pd.monitorFactory.CreateMonitor(addedConfig)
-			if err != nil {
-				log.Printf("[ERROR] Failed to create new monitor %s: %v", addedConfig.Name, err)
-				continue
-			}
+		monitor, err := pd.createMonitor(addedConfig)
+		if err != nil {
+			log.Printf("[ERROR] Failed to create new monitor %s: %v", addedConfig.Name, err)
+			criticalErrors = append(criticalErrors, fmt.Errorf("failed to create new monitor %s: %w", addedConfig.Name, err))
+			continue
+		}
 
-			statusCh, err := newMonitor.Start()
-			if err != nil {
-				log.Printf("[ERROR] Failed to start new monitor %s: %v", addedConfig.Name, err)
-				continue
-			}
-
-			// Add to monitors array and start fan-in
-			pd.monitors = append(pd.monitors, newMonitor)
-			pd.wg.Add(1)
-			go func(ch <-chan *types.Status, idx int) {
-				defer pd.wg.Done()
-				pd.fanInFromMonitor(ctx, ch, idx)
-			}(statusCh, len(pd.monitors)-1)
-
-			log.Printf("[INFO] Started new monitor %s", addedConfig.Name)
+		if err := pd.addMonitor(ctx, monitor, addedConfig); err != nil {
+			log.Printf("[ERROR] Failed to start new monitor %s: %v", addedConfig.Name, err)
+			criticalErrors = append(criticalErrors, fmt.Errorf("failed to start new monitor %s: %w", addedConfig.Name, err))
 		}
 	}
 
-	// Step 4: Update configuration
-	// Note: Exporters and remediation changes don't require restarts,
-	// they just need the updated config reference
+	// Step 4: Reload exporters (critical operation)
+	if diff.ExportersChanged {
+		log.Printf("[INFO] Reloading exporters due to configuration changes")
+
+		for _, exporter := range pd.exporters {
+			exporterType := pd.getExporterType(exporter)
+
+			if err := pd.reloadExporter(exporter, newConfig); err != nil {
+				log.Printf("[ERROR] Failed to reload %s exporter: %v", exporterType, err)
+				// Exporter reload failures are CRITICAL
+				criticalErrors = append(criticalErrors, fmt.Errorf("critical: failed to reload %s exporter: %w", exporterType, err))
+			}
+		}
+	}
+
+	// Step 5: Update configuration ONLY if no critical errors
+	if len(criticalErrors) > 0 {
+		log.Printf("[ERROR] Configuration reload failed with %d critical errors", len(criticalErrors))
+
+		// Build detailed error message
+		errorMsg := fmt.Sprintf("reload failed with %d critical error(s):\n", len(criticalErrors))
+		for i, err := range criticalErrors {
+			errorMsg += fmt.Sprintf("  %d. %v\n", i+1, err)
+		}
+
+		// Emit event with details
+		pd.emitReloadEvent(types.EventError, "ReloadPartialFailure", errorMsg)
+
+		// Return combined error
+		return fmt.Errorf("configuration reload partially failed: %w", criticalErrors[0])
+	}
+
+	// Only update config if reload was fully successful
 	pd.mu.Lock()
 	pd.config = newConfig
 	pd.mu.Unlock()
 
-	log.Printf("[INFO] Configuration reload completed successfully")
+	// Report any non-critical warnings
+	if len(errors) > 0 {
+		log.Printf("[WARN] Configuration reload succeeded with %d warnings", len(errors))
+		for _, err := range errors {
+			log.Printf("[WARN] - %v", err)
+		}
+	}
+
 	return nil
 }
 
-// stopMonitorByName stops a monitor by its name.
+// getExporterType returns a string representation of the exporter type
+func (pd *ProblemDetector) getExporterType(exporter types.Exporter) string {
+	exporterType := reflect.TypeOf(exporter)
+	if exporterType.Kind() == reflect.Ptr {
+		exporterType = exporterType.Elem()
+	}
+
+	typeName := exporterType.Name()
+
+	// Convert common naming patterns
+	if strings.Contains(strings.ToLower(typeName), "kubernetes") {
+		return "kubernetes"
+	}
+	if strings.Contains(strings.ToLower(typeName), "http") {
+		return "http"
+	}
+	if strings.Contains(strings.ToLower(typeName), "prometheus") {
+		return "prometheus"
+	}
+
+	return strings.ToLower(typeName)
+}
+
+// stopMonitorByName stops a monitor by its name and removes it from the handles list
 func (pd *ProblemDetector) stopMonitorByName(name string) error {
-	for i, monitor := range pd.monitors {
-		// Try to get monitor name from config (this requires monitors to store their config)
-		// For now, we'll match by index - production would need better monitor identification
-		if i < len(pd.config.Monitors) && pd.config.Monitors[i].Name == name {
-			monitor.Stop()
-			log.Printf("[INFO] Stopped monitor %s", name)
+	for i, handle := range pd.monitorHandles {
+		if handle.GetName() == name {
+			if err := handle.Stop(); err != nil {
+				return err
+			}
+
+			// Remove from handles list
+			pd.monitorHandles = append(pd.monitorHandles[:i], pd.monitorHandles[i+1:]...)
+			log.Printf("[INFO] Stopped and removed monitor: %s", name)
 			return nil
 		}
 	}
+
 	return fmt.Errorf("monitor %s not found", name)
 }
 
-// replaceMonitor replaces a monitor in the monitors array.
-func (pd *ProblemDetector) replaceMonitor(name string, newMonitor types.Monitor) {
-	for i := range pd.monitors {
-		if i < len(pd.config.Monitors) && pd.config.Monitors[i].Name == name {
-			pd.monitors[i] = newMonitor
-			return
-		}
+// addMonitor adds a new monitor with its handle and starts it
+func (pd *ProblemDetector) addMonitor(ctx context.Context, monitor types.Monitor, config types.MonitorConfig) error {
+	// Create monitor handle
+	monitorCtx, cancel := context.WithCancel(ctx)
+	handle := &MonitorHandle{
+		monitor:    monitor,
+		config:     config,
+		ctx:        monitorCtx,
+		cancelFunc: cancel,
+		wg:         &sync.WaitGroup{},
 	}
+
+	// Start the monitor
+	statusCh, err := monitor.Start()
+	if err != nil {
+		cancel() // Clean up context
+		return fmt.Errorf("failed to start monitor: %w", err)
+	}
+
+	handle.statusCh = statusCh
+
+	// Start fan-in goroutine
+	pd.wg.Add(1)
+	handle.wg.Add(1)
+	go func() {
+		defer pd.wg.Done()
+		defer handle.wg.Done()
+		pd.fanInFromMonitor(handle.ctx, handle.statusCh, handle.GetName())
+	}()
+
+	// Add to handles list
+	pd.monitorHandles = append(pd.monitorHandles, handle)
+
+	pd.stats.IncrementMonitorsStarted()
+	return nil
 }
 
-// getMonitorIndex returns the index of a monitor by name.
-func (pd *ProblemDetector) getMonitorIndex(name string) int {
-	for i := range pd.config.Monitors {
-		if pd.config.Monitors[i].Name == name {
-			return i
-		}
+// reloadExporter attempts to reload an exporter if it supports the ReloadableExporter interface
+func (pd *ProblemDetector) reloadExporter(exporter types.Exporter, newConfig *types.NodeDoctorConfig) error {
+	if exporter == nil {
+		return fmt.Errorf("cannot reload nil exporter")
 	}
-	return -1
+
+	if newConfig == nil {
+		return fmt.Errorf("cannot reload with nil config")
+	}
+
+	// Check if exporter implements ReloadableExporter interface
+	reloadableExporter, ok := exporter.(types.ReloadableExporter)
+	if !ok {
+		log.Printf("[DEBUG] Exporter does not implement ReloadableExporter interface, skipping reload")
+		return nil
+	}
+
+	if !reloadableExporter.IsReloadable() {
+		log.Printf("[DEBUG] Exporter reports it is not reloadable, skipping reload")
+		return nil
+	}
+
+	// Determine which configuration to pass based on exporter type
+	exporterType := pd.getExporterType(exporter)
+	var exporterConfig interface{}
+
+	switch exporterType {
+	case "kubernetes":
+		if newConfig.Exporters.Kubernetes != nil {
+			exporterConfig = newConfig.Exporters.Kubernetes
+		} else {
+			return fmt.Errorf("kubernetes exporter config not found in new configuration")
+		}
+	case "http":
+		if newConfig.Exporters.HTTP != nil {
+			exporterConfig = newConfig.Exporters.HTTP
+		} else {
+			return fmt.Errorf("http exporter config not found in new configuration")
+		}
+	case "prometheus":
+		if newConfig.Exporters.Prometheus != nil {
+			exporterConfig = newConfig.Exporters.Prometheus
+		} else {
+			return fmt.Errorf("prometheus exporter config not found in new configuration")
+		}
+	default:
+		return fmt.Errorf("unknown exporter type: %s", exporterType)
+	}
+
+	// Call the Reload method
+	log.Printf("[INFO] Reloading %s exporter configuration", exporterType)
+	if err := reloadableExporter.Reload(exporterConfig); err != nil {
+		return fmt.Errorf("failed to reload %s exporter: %w", exporterType, err)
+	}
+
+	log.Printf("[INFO] Successfully reloaded %s exporter configuration", exporterType)
+	return nil
 }
 
 // emitReloadEvent emits a reload status event.

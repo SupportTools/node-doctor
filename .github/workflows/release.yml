@@ -390,7 +390,7 @@ jobs:
           echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- [Release Page](https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }})" >> $GITHUB_STEP_SUMMARY
-          echo "- [Docker Images](https://harbor.support.tools/harbor/projects/7/repositories/node-doctor)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Docker Images](https://hub.docker.com/r/supporttools/node-doctor)" >> $GITHUB_STEP_SUMMARY
 
   # Wait for Docker build from ci.yml to complete
   wait-for-docker:
@@ -404,14 +404,132 @@ jobs:
           echo "Check: https://github.com/${{ github.repository }}/actions/workflows/ci.yml"
           echo ""
           echo "Images will be available at:"
-          echo "  - harbor.support.tools/node-doctor/node-doctor:${{ github.ref_name }}"
-          echo "  - harbor.support.tools/node-doctor/node-doctor:latest"
+          echo "  - docker.io/supporttools/node-doctor:${{ github.ref_name }}"
+          echo "  - docker.io/supporttools/node-doctor:latest"
+
+  # Helm Chart Publishing
+  helm-publish:
+    name: Publish Helm Chart
+    runs-on: ubuntu-latest
+    needs: release
+    outputs:
+      chart-version: ${{ steps.get-chart-version.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install envsubst
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4.2.0
+
+      - name: Determine Chart Version
+        id: get-chart-version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=v${{ github.run_number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare values for helm lint
+        run: |
+          rm -f helm/node-doctor/Chart.yaml helm/node-doctor/values.yaml
+          export CHART_VERSION="${{ steps.get-chart-version.outputs.version }}"
+          export APP_VERSION="${{ github.ref_name }}"
+          export IMAGE_TAG="${{ github.ref_name }}"
+          envsubst < helm/node-doctor/Chart.yaml.template > helm/node-doctor/Chart.yaml
+          envsubst < helm/node-doctor/values.yaml.template > helm/node-doctor/values.yaml
+          ls -la helm/node-doctor/Chart.yaml helm/node-doctor/values.yaml
+          echo "=== Chart.yaml ==="
+          cat helm/node-doctor/Chart.yaml
+          echo "=== values.yaml (first 50 lines) ==="
+          head -50 helm/node-doctor/values.yaml
+
+      - name: Helm Lint
+        run: helm lint helm/node-doctor/
+
+      - name: Package Helm chart
+        run: |
+          export CHART_VERSION="${{ steps.get-chart-version.outputs.version }}"
+          export APP_VERSION="${{ github.ref_name }}"
+          export IMAGE_TAG="${{ github.ref_name }}"
+          echo "CHART_VERSION=${CHART_VERSION}"
+          echo "APP_VERSION=${APP_VERSION}"
+          echo "IMAGE_TAG=${IMAGE_TAG}"
+          envsubst < helm/node-doctor/Chart.yaml.template > helm/node-doctor/Chart.yaml
+          envsubst < helm/node-doctor/values.yaml.template > helm/node-doctor/values.yaml
+          mkdir -p helm/repo
+          helm package helm/node-doctor --destination helm/repo
+          ls -la helm/repo/
+
+      - name: Checkout helm-chart repository
+        uses: actions/checkout@v4
+        with:
+          repository: SupportTools/helm-chart
+          path: helm-chart
+          token: ${{ secrets.BOT_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-action@users.noreply.github.com"
+          git config --global user.name "GitHub Action"
+
+      - name: Update Helm repository
+        run: |
+          cp helm/repo/node-doctor-*.tgz helm-chart/
+          cd helm-chart
+          helm repo index . --url https://charts.support.tools/
+          git add .
+          git commit -m "Update Node Doctor Helm chart ${{ steps.get-chart-version.outputs.version }}"
+          git push
+
+      - name: Verify Chart Availability
+        run: |
+          helm repo add charts https://charts.support.tools/
+          MAX_TRIES=30
+          SLEEP_TIME=10
+          COUNTER=0
+          CHART_VERSION="${{ steps.get-chart-version.outputs.version }}"
+
+          while [ $COUNTER -lt $MAX_TRIES ]; do
+            helm repo update
+            if helm search repo charts/node-doctor --version $CHART_VERSION | grep -q $CHART_VERSION; then
+              echo "✅ Chart node-doctor version $CHART_VERSION found in repository"
+              exit 0
+            fi
+            echo "Waiting for chart to become available... (Attempt $((COUNTER+1))/$MAX_TRIES)"
+            sleep $SLEEP_TIME
+            let COUNTER=COUNTER+1
+          done
+
+          echo "❌ Chart did not become available within the timeout period"
+          exit 1
+
+      - name: Add Helm chart to release summary
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Helm Chart" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Chart Version:** ${{ steps.get-chart-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** https://charts.support.tools/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Install with:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "helm repo add supporttools https://charts.support.tools" >> $GITHUB_STEP_SUMMARY
+          echo "helm repo update" >> $GITHUB_STEP_SUMMARY
+          echo "helm install node-doctor supporttools/node-doctor --namespace node-doctor --create-namespace" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
   # Summary job
   release-complete:
     name: Release Complete
     runs-on: ubuntu-latest
-    needs: [release, wait-for-docker]
+    needs: [release, wait-for-docker, helm-publish]
     if: always()
     steps:
       - name: Check release status
@@ -420,10 +538,15 @@ jobs:
             echo "❌ Release job failed"
             exit 1
           fi
+          if [[ "${{ needs.helm-publish.result }}" != "success" ]]; then
+            echo "❌ Helm publish job failed"
+            exit 1
+          fi
           echo "✅ Release ${{ github.ref_name }} completed successfully!"
           echo ""
           echo "Next steps:"
           echo "1. Verify release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-          echo "2. Test Docker image: docker pull harbor.support.tools/node-doctor/node-doctor:${{ github.ref_name }}"
-          echo "3. Update documentation if needed"
-          echo "4. Announce release to users"
+          echo "2. Test Docker image: docker pull supporttools/node-doctor:${{ github.ref_name }}"
+          echo "3. Test Helm chart: helm install node-doctor supporttools/node-doctor --version ${{ github.ref_name }}"
+          echo "4. Update documentation if needed"
+          echo "5. Announce release to users"

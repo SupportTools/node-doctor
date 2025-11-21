@@ -337,9 +337,20 @@ func TestAPIServerMonitor_CheckAPIServer_Success(t *testing.T) {
 		t.Fatal("checkAPIServer() returned nil status")
 	}
 
-	// Should have no conditions (healthy)
-	if len(status.Conditions) > 0 {
-		t.Errorf("Expected no conditions, got %d", len(status.Conditions))
+	// Should have 2 conditions (APIServerReachable=True and APIServerLatencyHigh=False)
+	if len(status.Conditions) != 2 {
+		t.Errorf("Expected 2 conditions, got %d", len(status.Conditions))
+	}
+
+	// Verify APIServerReachable=True
+	foundReachable := false
+	for _, c := range status.Conditions {
+		if c.Type == "APIServerReachable" && c.Status == "True" {
+			foundReachable = true
+		}
+	}
+	if !foundReachable {
+		t.Error("Expected APIServerReachable=True condition")
 	}
 
 	// Should have no events (healthy and not slow)
@@ -440,19 +451,31 @@ func TestAPIServerMonitor_CheckAPIServer_ConsecutiveFailures(t *testing.T) {
 		t.Errorf("Second failure should not report condition yet, got %d conditions", len(status2.Conditions))
 	}
 
-	// Third failure - should report APIServerUnreachable condition
+	// Third failure - should report APIServerUnreachable and APIServerReachable=False conditions
 	status3, err := monitor.checkAPIServer(ctx)
 	if err != nil {
 		t.Fatalf("checkAPIServer() unexpected error: %v", err)
 	}
-	if len(status3.Conditions) != 1 {
-		t.Fatalf("Third failure should report condition, got %d conditions", len(status3.Conditions))
+	if len(status3.Conditions) != 2 {
+		t.Fatalf("Third failure should report 2 conditions, got %d conditions", len(status3.Conditions))
 	}
-	if status3.Conditions[0].Type != "APIServerUnreachable" {
-		t.Errorf("Expected APIServerUnreachable condition, got %s", status3.Conditions[0].Type)
+
+	// Verify both conditions are present
+	foundUnreachable := false
+	foundReachableFalse := false
+	for _, c := range status3.Conditions {
+		if c.Type == "APIServerUnreachable" && c.Status == "True" {
+			foundUnreachable = true
+		}
+		if c.Type == "APIServerReachable" && c.Status == "False" {
+			foundReachableFalse = true
+		}
 	}
-	if status3.Conditions[0].Status != "True" {
-		t.Errorf("Expected condition status True, got %s", status3.Conditions[0].Status)
+	if !foundUnreachable {
+		t.Error("Expected APIServerUnreachable=True condition")
+	}
+	if !foundReachableFalse {
+		t.Error("Expected APIServerReachable=False condition")
 	}
 }
 
@@ -510,15 +533,34 @@ func TestAPIServerMonitor_CheckAPIServer_Recovery(t *testing.T) {
 		t.Fatalf("checkAPIServer() unexpected error: %v", err)
 	}
 
-	// Should report APIServerUnreachable=False condition
-	if len(status.Conditions) != 1 {
-		t.Fatalf("Expected 1 condition for recovery, got %d", len(status.Conditions))
+	// Should report 3 conditions: APIServerReachable=True, APIServerLatencyHigh=False, and APIServerUnreachable=False
+	if len(status.Conditions) != 3 {
+		t.Fatalf("Expected 3 conditions for recovery, got %d", len(status.Conditions))
 	}
-	if status.Conditions[0].Type != "APIServerUnreachable" {
-		t.Errorf("Expected APIServerUnreachable condition, got %s", status.Conditions[0].Type)
+
+	// Verify all expected conditions are present
+	foundReachable := false
+	foundUnreachableFalse := false
+	foundLatencyNormal := false
+	for _, c := range status.Conditions {
+		if c.Type == "APIServerReachable" && c.Status == "True" {
+			foundReachable = true
+		}
+		if c.Type == "APIServerUnreachable" && c.Status == "False" {
+			foundUnreachableFalse = true
+		}
+		if c.Type == "APIServerLatencyHigh" && c.Status == "False" {
+			foundLatencyNormal = true
+		}
 	}
-	if status.Conditions[0].Status != "False" {
-		t.Errorf("Expected condition status False (recovered), got %s", status.Conditions[0].Status)
+	if !foundReachable {
+		t.Error("Expected APIServerReachable=True condition")
+	}
+	if !foundUnreachableFalse {
+		t.Error("Expected APIServerUnreachable=False condition")
+	}
+	if !foundLatencyNormal {
+		t.Error("Expected APIServerLatencyHigh=False condition")
 	}
 
 	// Should report recovery event

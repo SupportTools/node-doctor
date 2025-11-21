@@ -208,6 +208,123 @@ func (e *HTTPExporter) ExportProblem(ctx context.Context, problem *types.Problem
 	return nil
 }
 
+// Reload implements types.ReloadableExporter interface for configuration reload
+func (e *HTTPExporter) Reload(config interface{}) error {
+	// Type assert with safety check
+	httpConfig, ok := config.(*types.HTTPExporterConfig)
+	if !ok {
+		return fmt.Errorf("invalid config type for HTTP exporter: expected *types.HTTPExporterConfig, got %T", config)
+	}
+
+	// Validate before applying
+	if httpConfig == nil {
+		return fmt.Errorf("http exporter config cannot be nil")
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	log.Printf("[INFO] Reloading HTTP exporter configuration")
+
+	// Validate new configuration
+	if err := httpConfig.Validate(); err != nil {
+		return fmt.Errorf("new configuration validation failed: %w", err)
+	}
+
+	// Ensure we have at least one webhook
+	if len(httpConfig.Webhooks) == 0 {
+		return fmt.Errorf("no webhooks configured in new configuration")
+	}
+
+	oldConfig := e.config
+
+	// Check if worker pool needs to be recreated
+	if e.needsWorkerPoolRecreation(oldConfig, httpConfig) {
+		log.Printf("[INFO] Recreating worker pool due to configuration changes")
+
+		// Stop existing worker pool if running
+		if e.started && e.workerPool != nil {
+			if err := e.workerPool.Stop(); err != nil {
+				log.Printf("[WARN] Error stopping existing worker pool: %v", err)
+			}
+		}
+
+		// Create new worker pool
+		newWorkerPool, err := NewWorkerPool(httpConfig.Workers, httpConfig.QueueSize, e.settings.NodeName, e.stats)
+		if err != nil {
+			return fmt.Errorf("failed to create new worker pool: %w", err)
+		}
+
+		// Replace worker pool
+		e.workerPool = newWorkerPool
+
+		// Start new worker pool if exporter is running
+		if e.started {
+			if err := e.workerPool.Start(); err != nil {
+				return fmt.Errorf("failed to start new worker pool: %w", err)
+			}
+		}
+	} else {
+		// Worker pool configuration unchanged, no action needed
+		log.Printf("[DEBUG] Worker pool configuration unchanged")
+	}
+
+	// Update configuration
+	e.config = httpConfig
+
+	// Initialize stats for new webhooks
+	if e.started {
+		for _, webhook := range httpConfig.Webhooks {
+			if err := webhook.Validate(); err != nil {
+				log.Printf("[WARN] Invalid webhook %s in new config: %v", webhook.Name, err)
+				continue
+			}
+
+			// Initialize webhook stats
+			e.stats.GetWebhookStats(webhook.Name)
+		}
+	}
+
+	log.Printf("[INFO] Successfully reloaded HTTP exporter configuration")
+	log.Printf("[DEBUG] Config changes: workers %d->%d, queueSize %d->%d, timeout %v->%v, webhooks %d->%d",
+		oldConfig.Workers, httpConfig.Workers,
+		oldConfig.QueueSize, httpConfig.QueueSize,
+		oldConfig.Timeout, httpConfig.Timeout,
+		len(oldConfig.Webhooks), len(httpConfig.Webhooks))
+
+	return nil
+}
+
+// IsReloadable implements types.ReloadableExporter interface
+func (e *HTTPExporter) IsReloadable() bool {
+	return true
+}
+
+// needsWorkerPoolRecreation determines if the worker pool needs to be recreated
+// based on configuration changes that affect worker pool behavior.
+func (e *HTTPExporter) needsWorkerPoolRecreation(oldConfig, newConfig *types.HTTPExporterConfig) bool {
+	if oldConfig == nil {
+		return true // First time configuration
+	}
+
+	// Check if worker count changed
+	if oldConfig.Workers != newConfig.Workers {
+		return true
+	}
+
+	// Check if queue size changed
+	if oldConfig.QueueSize != newConfig.QueueSize {
+		return true
+	}
+
+	// Check if timeout changed significantly
+	if oldConfig.Timeout != newConfig.Timeout {
+		return true
+	}
+
+	return false
+}
+
 // GetStats returns current exporter statistics
 func (e *HTTPExporter) GetStats() StatsSnapshot {
 	return e.stats.GetSnapshot()

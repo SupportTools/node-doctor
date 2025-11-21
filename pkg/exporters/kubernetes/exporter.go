@@ -246,6 +246,139 @@ func (ke *KubernetesExporter) ExportProblem(ctx context.Context, problem *types.
 	return nil
 }
 
+// Reload implements types.ReloadableExporter interface for configuration reload.
+func (ke *KubernetesExporter) Reload(config interface{}) error {
+	// Type assert with safety check
+	kubeConfig, ok := config.(*types.KubernetesExporterConfig)
+	if !ok {
+		return fmt.Errorf("invalid config type for Kubernetes exporter: expected *types.KubernetesExporterConfig, got %T", config)
+	}
+
+	// Validate before applying
+	if kubeConfig == nil {
+		return fmt.Errorf("kubernetes exporter config cannot be nil")
+	}
+
+	ke.mu.Lock()
+	defer ke.mu.Unlock()
+
+	log.Printf("[INFO] Reloading Kubernetes exporter configuration")
+
+	// Validate new configuration
+	if err := kubeConfig.Validate(); err != nil {
+		return fmt.Errorf("new configuration validation failed: %w", err)
+	}
+
+	oldConfig := ke.config
+
+	// Check if client recreation is needed
+	if ke.needsClientRecreation(kubeConfig) {
+		log.Printf("[INFO] Recreating Kubernetes client due to configuration changes")
+
+		newClient, err := NewClient(kubeConfig, ke.settings)
+		if err != nil {
+			return fmt.Errorf("failed to create new Kubernetes client: %w", err)
+		}
+
+		// Replace client
+		ke.client = newClient
+
+		// Recreate managers with new client
+		ke.eventManager.Stop()
+		ke.conditionManager.Stop()
+
+		ke.eventManager = NewEventManager(newClient, kubeConfig)
+		ke.conditionManager = NewConditionManager(newClient, kubeConfig)
+
+		// Restart managers if exporter is running
+		if ke.started {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			ke.eventManager.Start(ctx)
+			ke.conditionManager.Start(ctx)
+			ke.conditionManager.AddCustomConditions()
+		}
+	} else {
+		// Configuration changes that don't require recreating managers
+		log.Printf("[DEBUG] Kubernetes exporter configuration unchanged")
+	}
+
+	// Update configuration
+	ke.config = kubeConfig
+
+	// Initialize new annotations if they were added
+	if ke.started && len(kubeConfig.Annotations) > 0 && !ke.annotationsEqual(oldConfig.Annotations, kubeConfig.Annotations) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		go ke.initializeAnnotations(ctx)
+	}
+
+	log.Printf("[INFO] Successfully reloaded Kubernetes exporter configuration")
+	log.Printf("[DEBUG] Config changes: conditions %d->%d, annotations %d->%d, namespace %s->%s, events.maxPerMinute %d->%d",
+		len(oldConfig.Conditions), len(kubeConfig.Conditions),
+		len(oldConfig.Annotations), len(kubeConfig.Annotations),
+		oldConfig.Namespace, kubeConfig.Namespace,
+		oldConfig.Events.MaxEventsPerMinute, kubeConfig.Events.MaxEventsPerMinute)
+
+	return nil
+}
+
+// IsReloadable implements types.ReloadableExporter interface.
+func (ke *KubernetesExporter) IsReloadable() bool {
+	return true
+}
+
+// needsClientRecreation determines if the Kubernetes client needs to be recreated
+// based on configuration changes that affect client behavior.
+func (ke *KubernetesExporter) needsClientRecreation(newConfig *types.KubernetesExporterConfig) bool {
+	if ke.config == nil {
+		return true // First time configuration
+	}
+
+	// Check if namespace changed
+	if ke.config.Namespace != newConfig.Namespace {
+		return true
+	}
+
+	// Check if update intervals changed significantly (affects rate limiting)
+	if ke.config.UpdateInterval != newConfig.UpdateInterval ||
+		ke.config.ResyncInterval != newConfig.ResyncInterval ||
+		ke.config.HeartbeatInterval != newConfig.HeartbeatInterval {
+		return true
+	}
+
+	// Check if event configuration changed significantly (affects event client behavior)
+	if ke.config.Events.MaxEventsPerMinute != newConfig.Events.MaxEventsPerMinute ||
+		ke.config.Events.EventTTL != newConfig.Events.EventTTL ||
+		ke.config.Events.DeduplicationWindow != newConfig.Events.DeduplicationWindow {
+		return true
+	}
+
+	return false
+}
+
+// annotationsEqual compares two annotation slices for equality
+func (ke *KubernetesExporter) annotationsEqual(old, new []types.AnnotationConfig) bool {
+	if len(old) != len(new) {
+		return false
+	}
+
+	oldMap := make(map[string]string)
+	for _, ann := range old {
+		oldMap[ann.Key] = ann.Value
+	}
+
+	for _, ann := range new {
+		if oldMap[ann.Key] != ann.Value {
+			return false
+		}
+	}
+
+	return true
+}
+
 // GetStats returns exporter statistics
 func (ke *KubernetesExporter) GetStats() map[string]interface{} {
 	ke.stats.mu.RLock()

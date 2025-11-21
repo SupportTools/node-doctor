@@ -1,36 +1,36 @@
-// Package detector provides test mocks for the Problem Detector.
 package detector
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
-// MockMonitor is a configurable mock implementation of types.Monitor for testing.
+// MockMonitor implements types.Monitor interface for testing.
 type MockMonitor struct {
-	mu            sync.RWMutex
-	name          string
-	statusChan    chan *types.Status
-	started       bool
-	stopped       bool
-	startError    error
-	statusUpdates []*types.Status
-	sendInterval  time.Duration
-	stopChan      chan struct{}
-	wg            sync.WaitGroup
+	mu               sync.RWMutex
+	name             string
+	statusChan       chan *types.Status
+	running          bool
+	startError       error
+	stopError        error
+	statusUpdates    []*types.Status
+	updateIndex      int
+	sendContinuously bool
+	sendInterval     time.Duration
+	stopChan         chan struct{}
 }
 
-// NewMockMonitor creates a new MockMonitor with the given name.
+// NewMockMonitor creates a new MockMonitor with default settings.
 func NewMockMonitor(name string) *MockMonitor {
 	return &MockMonitor{
-		name:         name,
-		statusChan:   make(chan *types.Status, 10),
-		sendInterval: 100 * time.Millisecond, // Default send interval
-		stopChan:     make(chan struct{}),
+		name:          name,
+		statusChan:    make(chan *types.Status, 1000),
+		sendInterval:  100 * time.Millisecond,
+		stopChan:      make(chan struct{}),
+		statusUpdates: []*types.Status{},
 	}
 }
 
@@ -42,19 +42,30 @@ func (m *MockMonitor) SetStartError(err error) *MockMonitor {
 	return m
 }
 
-// SetSendInterval configures how frequently the monitor sends status updates.
-func (m *MockMonitor) SetSendInterval(interval time.Duration) *MockMonitor {
+// SetStopError configures the monitor to return an error on Stop().
+func (m *MockMonitor) SetStopError(err error) *MockMonitor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sendInterval = interval
+	m.stopError = err
 	return m
 }
 
-// AddStatusUpdate adds a status update to be sent by this monitor.
+// AddStatusUpdate adds a status update to be sent by the monitor.
 func (m *MockMonitor) AddStatusUpdate(status *types.Status) *MockMonitor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.statusUpdates = append(m.statusUpdates, status)
+	return m
+}
+
+// SetContinuousSending configures the monitor to send status updates continuously.
+func (m *MockMonitor) SetContinuousSending(enabled bool, interval time.Duration) *MockMonitor {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendContinuously = enabled
+	if interval > 0 {
+		m.sendInterval = interval
+	}
 	return m
 }
 
@@ -67,16 +78,13 @@ func (m *MockMonitor) Start() (<-chan *types.Status, error) {
 		return nil, m.startError
 	}
 
-	if m.started {
-		return nil, fmt.Errorf("monitor %s already started", m.name)
+	if m.running {
+		return m.statusChan, nil
 	}
 
-	m.started = true
-	m.stopped = false
-	m.stopChan = make(chan struct{})
+	m.running = true
 
-	// Start sending status updates in background
-	m.wg.Add(1)
+	// Start background goroutine to send status updates
 	go m.sendStatusUpdates()
 
 	return m.statusChan, nil
@@ -85,94 +93,87 @@ func (m *MockMonitor) Start() (<-chan *types.Status, error) {
 // Stop implements types.Monitor interface.
 func (m *MockMonitor) Stop() {
 	m.mu.Lock()
-	if m.stopped || !m.started {
-		m.mu.Unlock()
+	defer m.mu.Unlock()
+
+	if !m.running {
 		return
 	}
-	m.stopped = true
+
+	m.running = false
 	close(m.stopChan)
-	m.mu.Unlock()
-
-	// Wait for sending goroutine to finish
-	m.wg.Wait()
-
-	m.mu.Lock()
-	close(m.statusChan)
-	m.mu.Unlock()
 }
 
-// sendStatusUpdates sends configured status updates at the specified interval.
-func (m *MockMonitor) sendStatusUpdates() {
-	defer m.wg.Done()
+// GetName returns the monitor name (helper for testing).
+func (m *MockMonitor) GetName() string {
+	return m.name
+}
 
+// IsRunning returns whether the monitor is currently running.
+func (m *MockMonitor) IsRunning() bool {
 	m.mu.RLock()
-	updates := make([]*types.Status, len(m.statusUpdates))
-	copy(updates, m.statusUpdates)
-	interval := m.sendInterval
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
+	return m.running
+}
 
-	ticker := time.NewTicker(interval)
+// sendStatusUpdates sends configured status updates.
+func (m *MockMonitor) sendStatusUpdates() {
+	ticker := time.NewTicker(m.sendInterval)
 	defer ticker.Stop()
-
-	updateIndex := 0
 
 	for {
 		select {
 		case <-m.stopChan:
 			return
 		case <-ticker.C:
-			if updateIndex < len(updates) {
+			m.mu.Lock()
+			if !m.running {
+				m.mu.Unlock()
+				return
+			}
+
+			// Send next status update if available
+			if m.updateIndex < len(m.statusUpdates) {
+				status := m.statusUpdates[m.updateIndex]
 				select {
-				case m.statusChan <- updates[updateIndex]:
-					updateIndex++
-				case <-m.stopChan:
-					return
+				case m.statusChan <- status:
+					m.updateIndex++
+				default:
+					// Channel full, skip
 				}
 			}
+
+			// If continuous sending is disabled and we've sent all updates, stop
+			if !m.sendContinuously && m.updateIndex >= len(m.statusUpdates) {
+				m.mu.Unlock()
+				return
+			}
+
+			m.mu.Unlock()
 		}
 	}
 }
 
-// IsStarted returns whether the monitor has been started.
-func (m *MockMonitor) IsStarted() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.started
-}
-
-// IsStopped returns whether the monitor has been stopped.
-func (m *MockMonitor) IsStopped() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.stopped
-}
-
-// GetName returns the monitor's name.
-func (m *MockMonitor) GetName() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.name
-}
-
-// MockExporter is a configurable mock implementation of types.Exporter for testing.
+// MockExporter implements types.Exporter interface for testing.
 type MockExporter struct {
-	mu                 sync.RWMutex
-	name               string
-	statusExports      []*types.Status
-	problemExports     []*types.Problem
-	statusExportError  error
-	problemExportError error
-	exportDelay        time.Duration
+	mu                  sync.RWMutex
+	name                string
+	statusExports       []*types.Status
+	problemExports      []*types.Problem
+	statusExportError   error
+	problemExportError  error
+	exportDelay         time.Duration
 }
 
-// NewMockExporter creates a new MockExporter with the given name.
+// NewMockExporter creates a new MockExporter.
 func NewMockExporter(name string) *MockExporter {
 	return &MockExporter{
-		name: name,
+		name:           name,
+		statusExports:  []*types.Status{},
+		problemExports: []*types.Problem{},
 	}
 }
 
-// SetStatusExportError configures the exporter to return an error on ExportStatus().
+// SetStatusExportError configures the exporter to return an error on ExportStatus.
 func (m *MockExporter) SetStatusExportError(err error) *MockExporter {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -180,7 +181,7 @@ func (m *MockExporter) SetStatusExportError(err error) *MockExporter {
 	return m
 }
 
-// SetProblemExportError configures the exporter to return an error on ExportProblem().
+// SetProblemExportError configures the exporter to return an error on ExportProblem.
 func (m *MockExporter) SetProblemExportError(err error) *MockExporter {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -188,12 +189,17 @@ func (m *MockExporter) SetProblemExportError(err error) *MockExporter {
 	return m
 }
 
-// SetExportDelay configures a delay for all export operations.
+// SetExportDelay configures a delay for export operations.
 func (m *MockExporter) SetExportDelay(delay time.Duration) *MockExporter {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.exportDelay = delay
 	return m
+}
+
+// GetName implements types.Exporter interface.
+func (m *MockExporter) GetName() string {
+	return m.name
 }
 
 // ExportStatus implements types.Exporter interface.
@@ -252,88 +258,79 @@ func (m *MockExporter) GetProblemExports() []*types.Problem {
 	return result
 }
 
-// GetStatusExportCount returns the number of status exports received.
-func (m *MockExporter) GetStatusExportCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.statusExports)
-}
-
-// GetProblemExportCount returns the number of problem exports received.
-func (m *MockExporter) GetProblemExportCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.problemExports)
-}
-
-// Reset clears all recorded exports.
-func (m *MockExporter) Reset() {
+// ClearExports clears all recorded exports.
+func (m *MockExporter) ClearExports() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.statusExports = nil
-	m.problemExports = nil
+	m.statusExports = []*types.Status{}
+	m.problemExports = []*types.Problem{}
 }
 
-// GetName returns the exporter's name.
-func (m *MockExporter) GetName() string {
+// GetExportCounts returns the count of exports for testing.
+func (m *MockExporter) GetExportCounts() (statusCount, problemCount int) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.name
+	return len(m.statusExports), len(m.problemExports)
 }
 
-// TestHelper provides utility functions for creating test data.
+// MockMonitorFactory is a configurable mock implementation of MonitorFactory for testing.
+type MockMonitorFactory struct {
+	mu         sync.RWMutex
+	createFunc func(config types.MonitorConfig) (types.Monitor, error)
+	monitors   map[string]*MockMonitor
+}
+
+// NewMockMonitorFactory creates a new MockMonitorFactory.
+func NewMockMonitorFactory() *MockMonitorFactory {
+	return &MockMonitorFactory{
+		monitors: make(map[string]*MockMonitor),
+	}
+}
+
+// SetCreateFunc sets a custom create function for the factory.
+func (m *MockMonitorFactory) SetCreateFunc(createFunc func(config types.MonitorConfig) (types.Monitor, error)) *MockMonitorFactory {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createFunc = createFunc
+	return m
+}
+
+// AddMonitor pre-configures a monitor for a specific name.
+func (m *MockMonitorFactory) AddMonitor(name string, monitor *MockMonitor) *MockMonitorFactory {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.monitors[name] = monitor
+	return m
+}
+
+// CreateMonitor implements MonitorFactory interface.
+func (m *MockMonitorFactory) CreateMonitor(config types.MonitorConfig) (types.Monitor, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Use custom create function if set
+	if m.createFunc != nil {
+		return m.createFunc(config)
+	}
+
+	// Check for pre-configured monitor
+	if monitor, exists := m.monitors[config.Name]; exists {
+		return monitor, nil
+	}
+
+	// Return a new mock monitor by default
+	return NewMockMonitor(config.Name), nil
+}
+
+// TestHelper provides utilities for creating test objects.
 type TestHelper struct{}
 
-// NewTestHelper creates a new TestHelper instance.
+// NewTestHelper creates a new TestHelper.
 func NewTestHelper() *TestHelper {
 	return &TestHelper{}
 }
 
-// CreateTestStatus creates a status with test events and conditions.
-func (h *TestHelper) CreateTestStatus(source string) *types.Status {
-	status := types.NewStatus(source)
-
-	// Add test events
-	status.AddEvent(types.NewEvent(types.EventError, "TestError", "Test error message"))
-	status.AddEvent(types.NewEvent(types.EventWarning, "TestWarning", "Test warning message"))
-	status.AddEvent(types.NewEvent(types.EventInfo, "TestInfo", "Test info message"))
-
-	// Add test conditions
-	status.AddCondition(types.NewCondition("TestCondition", types.ConditionFalse, "TestReason", "Test condition failed"))
-	status.AddCondition(types.NewCondition("HealthyCondition", types.ConditionTrue, "TestReason", "Test condition passed"))
-
-	return status
-}
-
-// CreateErrorStatus creates a status with only error events and false conditions.
-func (h *TestHelper) CreateErrorStatus(source string) *types.Status {
-	status := types.NewStatus(source)
-	status.AddEvent(types.NewEvent(types.EventError, "CriticalError", "Critical system failure"))
-	status.AddCondition(types.NewCondition("SystemHealth", types.ConditionFalse, "SystemFailure", "System is unhealthy"))
-	return status
-}
-
-// CreateWarningStatus creates a status with only warning events.
-func (h *TestHelper) CreateWarningStatus(source string) *types.Status {
-	status := types.NewStatus(source)
-	status.AddEvent(types.NewEvent(types.EventWarning, "PerformanceWarning", "System performance degraded"))
-	return status
-}
-
-// CreateHealthyStatus creates a status with only healthy conditions and info events.
-func (h *TestHelper) CreateHealthyStatus(source string) *types.Status {
-	status := types.NewStatus(source)
-	status.AddEvent(types.NewEvent(types.EventInfo, "HealthCheck", "System is healthy"))
-	status.AddCondition(types.NewCondition("SystemHealth", types.ConditionTrue, "HealthCheck", "System is operating normally"))
-	return status
-}
-
-// CreateEmptyStatus creates a status with no events or conditions.
-func (h *TestHelper) CreateEmptyStatus(source string) *types.Status {
-	return types.NewStatus(source)
-}
-
-// CreateTestConfig creates a minimal test configuration.
+// CreateTestConfig creates a minimal test configuration with valid defaults.
 func (h *TestHelper) CreateTestConfig() *types.NodeDoctorConfig {
 	config := &types.NodeDoctorConfig{
 		APIVersion: "v1",
@@ -344,9 +341,42 @@ func (h *TestHelper) CreateTestConfig() *types.NodeDoctorConfig {
 		Settings: types.GlobalSettings{
 			NodeName: "test-node",
 		},
+		Monitors: []types.MonitorConfig{
+			{
+				Name:     "test-monitor",
+				Type:     "test",
+				Enabled:  true,
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+			},
+		},
 	}
 
 	// Apply defaults to ensure valid configuration
 	config.ApplyDefaults()
 	return config
+}
+
+// CreateTestMonitorConfig creates a monitor config with valid defaults.
+func (h *TestHelper) CreateTestMonitorConfig(name, monitorType string) types.MonitorConfig {
+	return types.MonitorConfig{
+		Name:     name,
+		Type:     monitorType,
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+	}
+}
+
+// CreateTestStatus creates a status with test data.
+func (h *TestHelper) CreateTestStatus(source string) *types.Status {
+	status := types.NewStatus(source)
+	status.AddEvent(types.NewEvent(types.EventInfo, "TestReason", "Test message"))
+	status.AddCondition(types.NewCondition("TestCondition", types.ConditionTrue, "TestReason", "Test condition"))
+	return status
+}
+
+// CreateTestProblem creates a problem with test data.
+func (h *TestHelper) CreateTestProblem(problemType, source string, severity types.ProblemSeverity) *types.Problem {
+	return types.NewProblem(problemType, source, severity, "Test problem message")
 }

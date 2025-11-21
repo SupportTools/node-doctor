@@ -333,7 +333,7 @@ gh release download v1.2.3 --dir /tmp/release-test
 ls -lh /tmp/release-test
 
 # 5. Verify Docker images
-docker pull harbor.support.tools/node-doctor/node-doctor:v1.2.3
+docker pull supporttools/node-doctor:v1.2.3
 
 # 6. Test binary
 cd /tmp/release-test
@@ -370,8 +370,8 @@ Use this checklist for every stable release:
 - [ ] Monitor release workflow: `gh run watch`
 - [ ] Verify GitHub release created
 - [ ] Verify artifacts uploaded and signed
-- [ ] Verify Docker images pushed to Harbor
-- [ ] Test Docker image: `docker pull harbor.support.tools/node-doctor/node-doctor:vX.Y.Z`
+- [ ] Verify Docker images pushed to Docker Hub
+- [ ] Test Docker image: `docker pull supporttools/node-doctor:vX.Y.Z`
 - [ ] Test binary download and execution
 
 ### Post-Release
@@ -435,8 +435,8 @@ Each release creates:
    - `checksums.txt.asc` - GPG-signed checksums
 
 4. **Docker Images**:
-   - `harbor.support.tools/node-doctor/node-doctor:vX.Y.Z`
-   - `harbor.support.tools/node-doctor/node-doctor:latest` (stable only)
+   - `supporttools/node-doctor:vX.Y.Z`
+   - `supporttools/node-doctor:latest` (stable only)
 
 5. **Documentation**:
    - Complete docs/ directory
@@ -616,7 +616,7 @@ gh release delete v1.2.3 --yes
 
 # 3. Revert to previous stable version
 kubectl set image daemonset/node-doctor \
-  node-doctor=harbor.support.tools/node-doctor/node-doctor:v1.2.2 \
+  node-doctor=supporttools/node-doctor:v1.2.2 \
   -n kube-system
 
 # 4. Fix the issue and create new release
@@ -637,7 +637,7 @@ gh workflow run rollback-release.yml \
 
 # 2. Rollback Kubernetes deployment to previous version
 kubectl set image daemonset/node-doctor \
-  node-doctor=harbor.support.tools/node-doctor/node-doctor:v1.2.2 \
+  node-doctor=supporttools/node-doctor:v1.2.2 \
   -n kube-system
 
 # 3. Verify rollback

@@ -12,7 +12,7 @@ on:
 
 env:
   GO_VERSION: '1.21'
-  REGISTRY: harbor.support.tools/node-doctor
+  REGISTRY: docker.io/supporttools
 
 jobs:
   # Lint job - runs golangci-lint
@@ -160,12 +160,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Harbor Registry
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: harbor.support.tools
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Extract tag name
         id: tag

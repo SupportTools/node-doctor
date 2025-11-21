@@ -110,8 +110,8 @@ release:
 
     **Docker Image (Recommended for Kubernetes):**
     ```bash
-    # Multi-arch image available on Harbor
-    docker pull harbor.support.tools/node-doctor/node-doctor:{{ .Tag }}
+    # Multi-arch image available on Docker Hub
+    docker pull supporttools/node-doctor:{{ .Tag }}
 
     # Deploy to Kubernetes
     kubectl apply -f https://github.com/supporttools/node-doctor/releases/download/{{ .Tag }}/rbac.yaml
@@ -160,9 +160,9 @@ release:
 
     ### 📊 Docker Images
 
-    Multi-architecture images are available on Harbor:
-    - `harbor.support.tools/node-doctor/node-doctor:{{ .Tag }}`
-    - `harbor.support.tools/node-doctor/node-doctor:latest` (if stable release)
+    Multi-architecture images are available on Docker Hub:
+    - `supporttools/node-doctor:{{ .Tag }}`
+    - `supporttools/node-doctor:latest` (if stable release)
 
     Supported platforms: `linux/amd64`, `linux/arm64`
 

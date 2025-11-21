@@ -6,7 +6,8 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/supporttools/node-doctor)](https://goreportcard.com/report/github.com/supporttools/node-doctor)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/supporttools/node-doctor?include_prereleases)](https://github.com/supporttools/node-doctor/releases)
-[![Docker](https://img.shields.io/badge/docker-harbor.support.tools-blue)](https://harbor.support.tools/harbor/projects/7/repositories/node-doctor)
+[![Docker](https://img.shields.io/badge/docker-DockerHub-blue)](https://hub.docker.com/r/supporttools/node-doctor)
+[![Helm](https://img.shields.io/badge/helm-charts.support.tools-blue)](https://charts.support.tools)
 
 Kubernetes node health monitoring and auto-remediation system. Node Doctor runs as a DaemonSet on each node, performing comprehensive health checks and automatically fixing common problems.
 
@@ -91,6 +92,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed architecture infor
 
 ## Quick Start
 
+> **Detailed Guide**: For comprehensive instructions including Grafana dashboard import and configuration options, see the [Quick Start Guide](docs/quick-start.md).
+
 ### Prerequisites
 
 - Kubernetes 1.20+
@@ -107,7 +110,45 @@ See [docs/architecture.md](docs/architecture.md) for detailed architecture infor
 
 ### Installation
 
-#### Option 1: Kubernetes DaemonSet (Recommended)
+#### Option 1: Helm Chart (Recommended)
+
+The easiest way to deploy Node Doctor is using the Helm chart:
+
+```bash
+# Add the SupportTools Helm repository
+helm repo add supporttools https://charts.support.tools
+helm repo update
+
+# Install Node Doctor
+helm install node-doctor supporttools/node-doctor \
+  --namespace node-doctor \
+  --create-namespace
+
+# Verify deployment
+kubectl get daemonset -n node-doctor node-doctor
+kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor
+```
+
+**Custom Installation with Values:**
+
+```bash
+# Install with custom values
+helm install node-doctor supporttools/node-doctor \
+  --namespace node-doctor \
+  --create-namespace \
+  -f custom-values.yaml
+
+# Or override specific values
+helm install node-doctor supporttools/node-doctor \
+  --namespace node-doctor \
+  --create-namespace \
+  --set settings.logLevel=debug \
+  --set settings.enableRemediation=false
+```
+
+See [helm/node-doctor/README.md](helm/node-doctor/README.md) for complete Helm chart documentation and configuration options.
+
+#### Option 2: Kubernetes DaemonSet (Manual)
 
 1. **Deploy Node Doctor as a DaemonSet**:
 
@@ -134,7 +175,7 @@ curl http://localhost:8080/health
 kubectl get nodes -o json | jq '.items[].status.conditions'
 ```
 
-#### Option 2: Standalone Binary (For Testing/Development)
+#### Option 3: Standalone Binary (For Testing/Development)
 
 Download pre-built binaries from the [releases page](https://github.com/supporttools/node-doctor/releases):
 
@@ -178,19 +219,19 @@ gpg --verify node-doctor_linux_amd64.tar.gz.asc node-doctor_linux_amd64.tar.gz
 # Both verifications should pass for production deployments ✅
 ```
 
-#### Option 3: Docker Image
+#### Option 4: Docker Image
 
-Pull multi-architecture images from Harbor:
+Pull multi-architecture images from Docker Hub:
 
 ```bash
 # Pull latest stable release
-docker pull harbor.support.tools/node-doctor/node-doctor:latest
+docker pull supporttools/node-doctor:latest
 
 # Pull specific version
-docker pull harbor.support.tools/node-doctor/node-doctor:v1.0.0
+docker pull supporttools/node-doctor:v1.0.0
 
 # Run locally for testing
-docker run --rm harbor.support.tools/node-doctor/node-doctor:latest --help
+docker run --rm supporttools/node-doctor:latest --help
 ```
 
 Supported platforms: `linux/amd64`, `linux/arm64`
@@ -466,6 +507,7 @@ node-doctor/
 
 ## Documentation
 
+- [Quick Start Guide](docs/quick-start.md) - Deploy, configure, and import dashboards
 - [Architecture](docs/architecture.md) - System architecture and design
 - [Monitors](docs/monitors.md) - Health check monitor implementations
 - [Remediation](docs/remediation.md) - Auto-remediation system

@@ -95,7 +95,7 @@ make push-all-images VERSION=v123
 ```
 - Pushes all images to Harbor registry
 - Pushes both version-specific and `latest` tags
-- **Requires**: Docker login to `harbor.support.tools`
+- **Requires**: Docker login to Docker Hub
 
 ### 4. Helm Chart Release
 ```bash
@@ -193,7 +193,7 @@ VERSION                 # Build version (default: timestamp)
 
 ### Optional (defaults provided)
 ```bash
-REGISTRY                # Docker registry (default: harbor.support.tools/{{PROJECT_NAME}})
+REGISTRY                # Docker registry (default: docker.io/supporttools)
 CHART_REPO_PATH         # Helm chart repo path (default: ../helm-chart-private)
 CHART_REPO_URL          # Chart URL (default: https://charts-private.support.tools)
 ```

@@ -637,10 +637,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "valid HTTP exporter with webhook",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 100,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 				Webhooks: []WebhookEndpoint{
 					{
 						Name:         "test-webhook",
@@ -664,10 +664,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "enabled exporter without webhooks",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 100,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 			},
 			wantErr: true,
 			errMsg:  "at least one webhook must be configured",
@@ -675,10 +675,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "invalid workers count",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  0,
+				Enabled:   true,
+				Workers:   0,
 				QueueSize: 100,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 				Webhooks: []WebhookEndpoint{
 					{URL: "https://example.com/webhook"},
 				},
@@ -689,10 +689,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "invalid queue size",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 0,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 				Webhooks: []WebhookEndpoint{
 					{URL: "https://example.com/webhook"},
 				},
@@ -703,10 +703,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "invalid timeout",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 100,
-				Timeout:  0,
+				Timeout:   0,
 				Webhooks: []WebhookEndpoint{
 					{URL: "https://example.com/webhook"},
 				},
@@ -717,10 +717,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "webhook without URL",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 100,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 				Webhooks: []WebhookEndpoint{
 					{Name: "test"},
 				},
@@ -731,10 +731,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "webhook with invalid URL",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 100,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 				Webhooks: []WebhookEndpoint{
 					{URL: "invalid-url"},
 				},
@@ -745,10 +745,10 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 		{
 			name: "duplicate webhook names",
 			input: HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  3,
+				Enabled:   true,
+				Workers:   3,
 				QueueSize: 100,
-				Timeout:  30 * time.Second,
+				Timeout:   30 * time.Second,
 				Webhooks: []WebhookEndpoint{
 					{
 						Name:         "test",
@@ -1750,14 +1750,14 @@ func TestComplexConfigurationValidation(t *testing.T) {
 				},
 			},
 			HTTP: &HTTPExporterConfig{
-				Enabled:  true,
-				Workers:  5,
+				Enabled:   true,
+				Workers:   5,
 				QueueSize: 100,
 				Webhooks: []WebhookEndpoint{
 					{
-						Name: "test-webhook",
-						URL:  "https://example.com/webhook",
-						SendStatus: true,
+						Name:         "test-webhook",
+						URL:          "https://example.com/webhook",
+						SendStatus:   true,
 						SendProblems: true,
 					},
 				},
@@ -2405,18 +2405,18 @@ func TestValidateWithRegistry(t *testing.T) {
 				},
 				Monitors: []MonitorConfig{
 					{
-						Name:       "cpu-monitor",
-						Type:       "system-cpu-check",
-						Interval:   30 * time.Second,
-						Timeout:    10 * time.Second,
-						DependsOn:  []string{"memory-monitor"},
+						Name:      "cpu-monitor",
+						Type:      "system-cpu-check",
+						Interval:  30 * time.Second,
+						Timeout:   10 * time.Second,
+						DependsOn: []string{"memory-monitor"},
 					},
 					{
-						Name:       "memory-monitor",
-						Type:       "system-memory-check",
-						Interval:   30 * time.Second,
-						Timeout:    10 * time.Second,
-						DependsOn:  []string{"cpu-monitor"},
+						Name:      "memory-monitor",
+						Type:      "system-memory-check",
+						Interval:  30 * time.Second,
+						Timeout:   10 * time.Second,
+						DependsOn: []string{"cpu-monitor"},
 					},
 				},
 				Remediation: RemediationConfig{

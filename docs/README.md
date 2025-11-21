@@ -6,8 +6,9 @@ Central navigation for all project documentation.
 
 New to the project? Start here:
 
-1. **[Task Execution Workflow](development/task-execution-workflow.md)** - Mandatory development process
-2. **[Template README](../README.md)** - Template usage guide
+1. **[Quick Start Guide](quick-start.md)** - Deploy Node Doctor, import dashboards, configure monitors
+2. **[Task Execution Workflow](development/task-execution-workflow.md)** - Mandatory development process
+3. **[Template README](../README.md)** - Template usage guide
 
 ## 📚 Core Documentation
 
@@ -106,6 +107,8 @@ docs/
 
 ### By Question
 
+- **"How do I deploy Node Doctor?"** → [Quick Start Guide](quick-start.md)
+- **"How do I import Grafana dashboards?"** → [Quick Start Guide](quick-start.md#import-grafana-dashboards)
 - **"How do I start a new feature?"** → [Feature Development Workflow](workflows/feature-development.md)
 - **"What's the development process?"** → [Task Execution Workflow](development/task-execution-workflow.md)
 - **"How do I validate before pushing?"** → [Local CI/CD Validation](development/local-cicd-validation-guide.md)

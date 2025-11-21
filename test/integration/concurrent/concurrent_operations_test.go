@@ -322,7 +322,7 @@ func TestRaceConditionDetection(t *testing.T) {
 		config,
 		[]types.Monitor{monitor1, monitor2},
 		[]types.Exporter{exporter},
-		"", // no config file in tests
+		"",  // no config file in tests
 		nil, // no monitor factory in tests
 	)
 	test.AssertNoError(t, err)
@@ -393,10 +393,10 @@ func TestRaceConditionDetection(t *testing.T) {
 
 // mockMonitor is a thread-safe mock Monitor implementation
 type mockMonitor struct {
-	name      string
-	statusCh  chan *types.Status
-	started   bool
-	mu        sync.Mutex
+	name     string
+	statusCh chan *types.Status
+	started  bool
+	mu       sync.Mutex
 }
 
 func newMockMonitor(name string) *mockMonitor {
@@ -441,9 +441,9 @@ func (m *mockMonitor) SendStatus(status *types.Status) {
 
 // mockExporter is a thread-safe mock Exporter implementation
 type mockExporter struct {
-	mu        sync.RWMutex
-	statuses  []*types.Status
-	problems  []*types.Problem
+	mu       sync.RWMutex
+	statuses []*types.Status
+	problems []*types.Problem
 }
 
 func newMockExporter() *mockExporter {

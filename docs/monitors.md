@@ -14,6 +14,7 @@ This document provides comprehensive information about all monitor types availab
   - [DNS Monitor](#dns-monitor)
   - [Gateway Monitor](#gateway-monitor)
   - [Connectivity Monitor](#connectivity-monitor)
+  - [CNI Monitor](#cni-monitor)
 - [Kubernetes Monitors](#kubernetes-monitors)
   - [Kubelet Monitor](#kubelet-monitor)
   - [API Server Monitor](#api-server-monitor)
@@ -491,6 +492,200 @@ events:
     reason: EndpointUnexpectedStatus
     message: "Endpoint kubernetes-api returned 401, expected 200"
 ```
+
+---
+
+### CNI Monitor
+
+Monitors CNI (Container Network Interface) health and cross-node network connectivity. This monitor is critical for detecting network partitions and ensuring nodes can communicate with each other in the cluster.
+
+**Monitor Type:** `network-cni-check`
+
+**Source Files:**
+- `pkg/monitors/network/cni.go`
+- `pkg/monitors/network/cni_health.go`
+- `pkg/monitors/network/peer_discovery.go`
+
+**Configuration:**
+
+```yaml
+monitors:
+  - name: cni-health
+    type: network-cni-check
+    interval: 30s
+    timeout: 15s
+    config:
+      discovery:
+        method: kubernetes            # kubernetes or static
+        namespace: node-doctor        # Namespace for peer discovery
+        labelSelector: app=node-doctor
+        refreshInterval: 5m           # How often to refresh peer list
+        staticPeers: []               # For static method: list of IPs
+      connectivity:
+        pingCount: 3                  # Pings per peer
+        pingTimeout: 5s               # Timeout per ping
+        warningLatency: 50ms          # Latency warning threshold
+        criticalLatency: 200ms        # Latency critical threshold
+        failureThreshold: 3           # Consecutive failures before alert
+        minReachablePeers: 80         # Minimum % of peers that must be reachable
+      cniHealth:
+        enabled: true                 # Enable CNI config/interface checks
+        configPath: /etc/cni/net.d    # CNI configuration directory
+        checkInterfaces: false        # Check for specific interfaces
+        expectedInterfaces: []        # Expected interface names
+```
+
+**Default Values:**
+
+**Discovery:**
+- `method`: kubernetes
+- `namespace`: node-doctor
+- `labelSelector`: app=node-doctor
+- `refreshInterval`: 5 minutes
+
+**Connectivity:**
+- `pingCount`: 3
+- `pingTimeout`: 5 seconds
+- `warningLatency`: 50ms
+- `criticalLatency`: 200ms
+- `failureThreshold`: 3
+- `minReachablePeers`: 80%
+
+**CNI Health:**
+- `enabled`: true
+- `configPath`: /etc/cni/net.d
+- `checkInterfaces`: false
+
+**Key Features:**
+
+1. **Peer Discovery**
+   - Kubernetes API-based discovery of other node-doctor instances
+   - Automatic exclusion of self (current node)
+   - Background refresh of peer list
+   - Static peer configuration for non-Kubernetes environments
+
+2. **Cross-Node Connectivity**
+   - ICMP ping mesh to all discovered peers
+   - Latency measurement with configurable thresholds
+   - Network partition detection when peer reachability drops below threshold
+   - Per-peer failure tracking with consecutive failure counts
+
+3. **CNI Health Validation**
+   - CNI configuration file detection and validation
+   - Support for multiple CNI plugins (Calico, Flannel, Weave, Cilium, etc.)
+   - Network interface discovery and health checking
+   - Expected interface validation
+
+4. **Network Partition Detection**
+   - Reports `NetworkPartitioned` condition when insufficient peers reachable
+   - Configurable minimum reachable percentage threshold
+   - Automatic recovery detection
+
+**Discovery Methods:**
+
+1. **Kubernetes Discovery (default)**
+   - Uses Kubernetes API to list pods matching label selector
+   - Requires RBAC permissions for pod list/watch
+   - Automatically discovers node-doctor instances on other nodes
+   - Uses host network IPs for connectivity testing
+
+2. **Static Discovery**
+   - Manual list of peer IP addresses
+   - Useful for testing or non-Kubernetes environments
+   - No Kubernetes API dependency
+
+**CNI Plugin Detection:**
+
+The monitor automatically detects common CNI plugins:
+- **Calico**: `calico-*` interfaces, `10-calico.conflist`
+- **Flannel**: `flannel.1` interface, `10-flannel.conflist`
+- **Weave**: `weave*` interfaces
+- **Cilium**: `cilium_host`, `cilium_net`, `lxc*` interfaces
+- **Canal**: Combined Calico/Flannel
+
+**Events Generated:**
+- `NoPeersFound` (Warning): No peer instances discovered
+- `PeerUnreachable` (Error): Peer node unreachable after failure threshold
+- `HighPeerLatency` (Warning): Latency to peer exceeds threshold
+- `CNIConnectivitySummary` (Info): Summary of peer connectivity
+- `CNIConfigError` (Error): CNI configuration validation failed
+- `CNIInterfaceWarning` (Warning): Expected interfaces not found
+
+**Conditions:**
+- `NetworkPartitioned`: True when insufficient peers reachable
+- `NetworkDegraded`: True when high latency detected to peers
+- `CNIHealthy`: Overall CNI plugin health status
+- `CNIConfigValid`: CNI configuration file validity
+- `CNIInterfacesHealthy`: Expected network interfaces present
+
+**Example Status:**
+
+```yaml
+events:
+  - severity: Info
+    reason: CNIConnectivitySummary
+    message: "Peer connectivity: 4/5 reachable (80%), avg latency=12.50ms"
+  - severity: Warning
+    reason: HighPeerLatency
+    message: "High latency to peer node-3: 250.00ms (critical threshold: 200.00ms)"
+conditions:
+  - type: NetworkPartitioned
+    status: "False"
+    reason: SufficientPeerReachability
+    message: "80% of peers are reachable (4/5)"
+  - type: NetworkDegraded
+    status: "True"
+    reason: HighLatencyDetected
+    message: "High latency detected to 1 peers: [node-3 (250.00ms)]"
+  - type: CNIHealthy
+    status: "True"
+    reason: CNIOperational
+    message: "CNI plugin configuration and interfaces are healthy"
+```
+
+**Network Partition Example:**
+
+```yaml
+events:
+  - severity: Error
+    reason: PeerUnreachable
+    message: "Peer node-2 has been unreachable for 3 consecutive checks"
+  - severity: Error
+    reason: PeerUnreachable
+    message: "Peer node-3 has been unreachable for 5 consecutive checks"
+conditions:
+  - type: NetworkPartitioned
+    status: "True"
+    reason: InsufficientPeerReachability
+    message: "Only 40% of peers are reachable (threshold: 80%). Unreachable: [node-2, node-3]"
+```
+
+**RBAC Requirements:**
+
+The CNI monitor requires pod list permissions for Kubernetes-based peer discovery:
+
+```yaml
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+```
+
+**Architecture Notes:**
+
+Since node-doctor runs with `hostNetwork: true`, the CNI monitor:
+- Uses node IPs (not pod IPs) for connectivity testing
+- Can detect node-level network issues that affect CNI
+- Works even if CNI is completely broken (since it bypasses pod network)
+- Tests actual node-to-node connectivity that CNI relies on
+
+**Use Cases:**
+
+1. **Network Partition Detection**: Detect when a node becomes isolated from the cluster
+2. **CNI Health Monitoring**: Validate CNI plugin is properly configured
+3. **Network Latency Alerting**: Identify network performance degradation
+4. **Cross-Node Connectivity**: Ensure nodes can communicate for pod-to-pod traffic
+5. **Node Health Correlation**: A node that can't reach other nodes should be considered unhealthy
 
 ---
 
@@ -1379,7 +1574,7 @@ func TestCustomMonitor(t *testing.T) {
 
 Node Doctor provides a comprehensive monitoring framework with:
 
-- **11 Built-in Monitors** covering system, network, Kubernetes, and custom checks
+- **12 Built-in Monitors** covering system, network, Kubernetes, and custom checks
 - **Pluggable Architecture** for easy extension
 - **Thread-Safe Design** for production reliability
 - **Failure Threshold Tracking** to prevent false positives

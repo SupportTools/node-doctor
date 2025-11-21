@@ -19,10 +19,10 @@ func TestNewConfigWatcher(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		configPath        string
-		debounceInterval  time.Duration
-		expectError       bool
+		name             string
+		configPath       string
+		debounceInterval time.Duration
+		expectError      bool
 	}{
 		{
 			name:             "Valid config path",

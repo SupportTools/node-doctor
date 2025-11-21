@@ -186,7 +186,7 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 		config,
 		[]types.Monitor{monitor1, monitor2, monitor3},
 		[]types.Exporter{mockExporter},
-		"", // no config file in tests
+		"",  // no config file in tests
 		nil, // no monitor factory in tests
 	)
 	test.AssertNoError(t, err, "Failed to create problem detector")
@@ -204,7 +204,7 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 
 	// Send statuses from all monitors concurrently
 	var sendWg sync.WaitGroup
-	for i, mon := range []* mockMonitor{monitor1, monitor2, monitor3} {
+	for i, mon := range []*mockMonitor{monitor1, monitor2, monitor3} {
 		sendWg.Add(1)
 		go func(m *mockMonitor, idx int) {
 			defer sendWg.Done()
@@ -348,10 +348,10 @@ func TestProblemDeduplication(t *testing.T) {
 
 // mockMonitor is a mock Monitor implementation for testing
 type mockMonitor struct {
-	name      string
-	statusCh  chan *types.Status
-	started   bool
-	mu        sync.Mutex
+	name     string
+	statusCh chan *types.Status
+	started  bool
+	mu       sync.Mutex
 }
 
 func newMockMonitor(name string) *mockMonitor {
@@ -391,9 +391,9 @@ func (m *mockMonitor) SendStatus(status *types.Status) {
 
 // mockExporter is a mock Exporter implementation for testing
 type mockExporter struct {
-	mu        sync.RWMutex
-	statuses  []*types.Status
-	problems  []*types.Problem
+	mu       sync.RWMutex
+	statuses []*types.Status
+	problems []*types.Problem
 }
 
 func newMockExporter() *mockExporter {

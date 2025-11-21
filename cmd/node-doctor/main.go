@@ -215,7 +215,7 @@ func main() {
 
 	// Start the detector
 	log.Printf("[INFO] Starting detector...")
-	if err := det.Run(ctx); err != nil {
+	if err := det.Start(); err != nil {
 		log.Fatalf("Failed to start detector: %v", err)
 	}
 
