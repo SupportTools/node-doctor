@@ -1283,14 +1283,12 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 	for i := range c.Patterns {
 		// Validate regex safety to prevent ReDoS attacks
 		if err := validateRegexSafety(c.Patterns[i].Regex); err != nil {
-			compiledFailed++
 			return fmt.Errorf("regex safety validation failed for pattern %s: %w", c.Patterns[i].Name, err)
 		}
 
 		// Compile with timeout to prevent resource exhaustion during compilation
 		compiled, err := compileWithTimeout(c.Patterns[i].Regex, 100*time.Millisecond)
 		if err != nil {
-			compiledFailed++
 			return fmt.Errorf("regex compilation failed for pattern %s: %w", c.Patterns[i].Name, err)
 		}
 		c.Patterns[i].compiled = compiled

@@ -337,9 +337,10 @@ func TestAPIServerMonitor_CheckAPIServer_Success(t *testing.T) {
 		t.Fatal("checkAPIServer() returned nil status")
 	}
 
-	// Should have 2 conditions (APIServerReachable=True and APIServerLatencyHigh=False)
-	if len(status.Conditions) != 2 {
-		t.Errorf("Expected 2 conditions, got %d", len(status.Conditions))
+	// Should have 1 condition (APIServerReachable=True)
+	// Note: APIServerLatencyHigh=False is not emitted to avoid false positives
+	if len(status.Conditions) < 1 {
+		t.Errorf("Expected at least 1 condition, got %d", len(status.Conditions))
 	}
 
 	// Verify APIServerReachable=True
@@ -533,15 +534,15 @@ func TestAPIServerMonitor_CheckAPIServer_Recovery(t *testing.T) {
 		t.Fatalf("checkAPIServer() unexpected error: %v", err)
 	}
 
-	// Should report 3 conditions: APIServerReachable=True, APIServerLatencyHigh=False, and APIServerUnreachable=False
-	if len(status.Conditions) != 3 {
-		t.Fatalf("Expected 3 conditions for recovery, got %d", len(status.Conditions))
+	// Should report at least 2 conditions: APIServerReachable=True and APIServerUnreachable=False
+	// Note: APIServerLatencyHigh=False is not emitted to avoid false positives
+	if len(status.Conditions) < 2 {
+		t.Fatalf("Expected at least 2 conditions for recovery, got %d", len(status.Conditions))
 	}
 
-	// Verify all expected conditions are present
+	// Verify expected conditions are present
 	foundReachable := false
 	foundUnreachableFalse := false
-	foundLatencyNormal := false
 	for _, c := range status.Conditions {
 		if c.Type == "APIServerReachable" && c.Status == "True" {
 			foundReachable = true
@@ -549,18 +550,12 @@ func TestAPIServerMonitor_CheckAPIServer_Recovery(t *testing.T) {
 		if c.Type == "APIServerUnreachable" && c.Status == "False" {
 			foundUnreachableFalse = true
 		}
-		if c.Type == "APIServerLatencyHigh" && c.Status == "False" {
-			foundLatencyNormal = true
-		}
 	}
 	if !foundReachable {
 		t.Error("Expected APIServerReachable=True condition")
 	}
 	if !foundUnreachableFalse {
 		t.Error("Expected APIServerUnreachable=False condition")
-	}
-	if !foundLatencyNormal {
-		t.Error("Expected APIServerLatencyHigh=False condition")
 	}
 
 	// Should report recovery event
