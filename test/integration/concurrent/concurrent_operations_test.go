@@ -54,7 +54,7 @@ func TestConcurrentMonitorStatusUpdates(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pd.Run(ctx)
+		pd.Run()
 	}()
 
 	// Give detector time to start
@@ -256,7 +256,7 @@ func TestConcurrentExporterOperations(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pd.Run(ctx)
+		pd.Run()
 	}()
 
 	time.Sleep(100 * time.Millisecond)
@@ -332,7 +332,7 @@ func TestRaceConditionDetection(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pd.Run(ctx)
+		pd.Run()
 	}()
 
 	time.Sleep(100 * time.Millisecond)

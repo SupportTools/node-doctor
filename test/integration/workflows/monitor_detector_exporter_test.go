@@ -45,7 +45,7 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		detectorErr = pd.Run(ctx)
+		detectorErr = pd.Run()
 	}()
 
 	// Give detector time to start
@@ -196,7 +196,7 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pd.Run(ctx)
+		pd.Run()
 	}()
 
 	// Give detector time to start
@@ -286,7 +286,7 @@ func TestProblemDeduplication(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pd.Run(ctx)
+		pd.Run()
 	}()
 
 	time.Sleep(100 * time.Millisecond)
