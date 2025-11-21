@@ -226,6 +226,9 @@ func CreateTestConfigWithMonitors(monitors []types.MonitorConfig) *types.NodeDoc
 
 // TestConfigReloadEndToEnd tests the complete reload workflow from file change to monitor restart
 func TestConfigReloadEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
 	helper := NewReloadTestHelper(t)
 	defer helper.Cleanup()
 
@@ -320,6 +323,9 @@ func TestConfigReloadEndToEnd(t *testing.T) {
 
 // TestConfigReloadWithValidationFailure tests that invalid config is rejected and system continues with old config
 func TestConfigReloadWithValidationFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
 	helper := NewReloadTestHelper(t)
 	defer helper.Cleanup()
 
@@ -407,6 +413,9 @@ exporters:
 
 // TestConfigReloadConcurrentSafety tests that multiple concurrent reload attempts don't cause races
 func TestConfigReloadConcurrentSafety(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
 	helper := NewReloadTestHelper(t)
 	defer helper.Cleanup()
 
@@ -482,6 +491,9 @@ func TestConfigReloadConcurrentSafety(t *testing.T) {
 
 // TestConfigReloadExporterUpdates tests that exporter configuration changes are applied
 func TestConfigReloadExporterUpdates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
 	helper := NewReloadTestHelper(t)
 	defer helper.Cleanup()
 
@@ -548,6 +560,9 @@ func TestConfigReloadExporterUpdates(t *testing.T) {
 
 // TestConfigReloadMonitorLifecycle tests that monitor handles are properly managed during reload
 func TestConfigReloadMonitorLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
 	helper := NewReloadTestHelper(t)
 	defer helper.Cleanup()
 
@@ -631,6 +646,9 @@ func TestConfigReloadMonitorLifecycle(t *testing.T) {
 
 // TestConfigReloadPartialFailureRecovery tests that critical errors during reload prevent config update
 func TestConfigReloadPartialFailureRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
 	helper := NewReloadTestHelper(t)
 	defer helper.Cleanup()
 
