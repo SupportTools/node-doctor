@@ -1,12 +1,33 @@
 # Node Doctor
 
+[![CI](https://github.com/supporttools/node-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/supporttools/node-doctor/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/supporttools/node-doctor/branch/main/graph/badge.svg)](https://codecov.io/gh/supporttools/node-doctor)
 [![Go Version](https://img.shields.io/badge/go-1.21+-blue.svg)](https://golang.org)
+[![Go Report Card](https://goreportcard.com/badge/github.com/supporttools/node-doctor)](https://goreportcard.com/report/github.com/supporttools/node-doctor)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/supporttools/node-doctor?include_prereleases)](https://github.com/supporttools/node-doctor/releases)
 [![Docker](https://img.shields.io/badge/docker-harbor.support.tools-blue)](https://harbor.support.tools/harbor/projects/7/repositories/node-doctor)
-[![Status](https://img.shields.io/badge/status-in%20development-yellow.svg)]()
 
 Kubernetes node health monitoring and auto-remediation system. Node Doctor runs as a DaemonSet on each node, performing comprehensive health checks and automatically fixing common problems.
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+- [Health Checks](#health-checks)
+- [Remediation](#remediation)
+- [HTTP Endpoints](#http-endpoints)
+- [Prometheus Metrics](#prometheus-metrics)
+- [Examples](#examples)
+- [Kubernetes Integration](#kubernetes-integration)
+- [Development](#development)
+- [Documentation](#documentation)
+- [Comparison with Node Problem Detector](#comparison-with-node-problem-detector)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
 
 ## Features
 
@@ -74,6 +95,15 @@ See [docs/architecture.md](docs/architecture.md) for detailed architecture infor
 
 - Kubernetes 1.20+
 - Node OS: Linux
+
+### Version Compatibility
+
+| Component | Minimum Version | Recommended |
+|-----------|-----------------|-------------|
+| Go | 1.21 | 1.22+ |
+| Kubernetes | 1.20 | 1.28+ |
+| Node OS | Linux kernel 4.15+ | 5.4+ |
+| Container Runtime | containerd 1.6+, Docker 20.10+ | containerd 1.7+ |
 
 ### Installation
 
@@ -467,36 +497,39 @@ Node Doctor is based on Node Problem Detector but adds significant enhancements:
 
 ## Roadmap
 
-### Phase 1: Core Framework (Current)
+### Phase 1: Core Framework ✅
 - ✅ Architecture design
 - ✅ Documentation
-- ⏳ Core types implementation
-- ⏳ Monitor interface
-- ⏳ Problem detector
+- ✅ Core types implementation
+- ✅ Monitor interface
+- ✅ Problem detector (orchestrator)
 
-### Phase 2: Basic Monitors
-- ⏳ System health monitors
-- ⏳ Network health monitors
-- ⏳ Kubernetes component monitors
+### Phase 2: Basic Monitors ✅
+- ✅ System health monitors (CPU, memory, disk)
+- ✅ Network health monitors (DNS, gateway, connectivity)
+- ✅ Kubernetes component monitors (kubelet, API server, runtime)
+- ✅ Custom plugin execution
+- ✅ Log pattern matching
 
-### Phase 3: Exporters
-- ⏳ Kubernetes exporter
-- ⏳ HTTP exporter
-- ⏳ Prometheus exporter
+### Phase 3: Exporters ✅
+- ✅ Kubernetes exporter (conditions, events, annotations)
+- ✅ HTTP exporter (health endpoints)
+- ✅ Prometheus exporter (metrics)
 
-### Phase 4: Remediation
-- ⏳ Remediation framework
-- ⏳ Safety mechanisms
-- ⏳ Remediator implementations
+### Phase 4: Remediation ✅
+- ✅ Remediation framework
+- ✅ Safety mechanisms (circuit breaker, rate limiting, cooldowns)
+- ✅ Remediator implementations (systemd, network, disk, runtime, custom)
 
-### Phase 5: Testing & Polish
-- ⏳ Unit tests
-- ⏳ Integration tests
-- ⏳ E2E tests
+### Phase 5: Testing & Polish (In Progress)
+- ✅ Unit tests
+- ✅ Integration tests
+- ✅ E2E tests
 - ⏳ Performance optimization
+- ⏳ Production hardening
 
 ### Future Enhancements
-- Dynamic configuration reload
+- ⏳ Dynamic configuration reload
 - Machine learning for anomaly detection
 - Advanced remediation (node drain, cordon, reboot)
 - Multi-cluster aggregation
