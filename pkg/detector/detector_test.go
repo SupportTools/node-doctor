@@ -16,14 +16,14 @@ func TestNewProblemDetector(t *testing.T) {
 	factory := NewMockMonitorFactory()
 
 	tests := []struct {
-		name         string
-		config       *types.NodeDoctorConfig
-		monitors     []types.Monitor
-		exporters    []types.Exporter
-		configPath   string
-		factory      MonitorFactory
-		wantError    bool
-		errorMsg     string
+		name       string
+		config     *types.NodeDoctorConfig
+		monitors   []types.Monitor
+		exporters  []types.Exporter
+		configPath string
+		factory    MonitorFactory
+		wantError  bool
+		errorMsg   string
 	}{
 		{
 			name:       "valid configuration",
@@ -212,7 +212,7 @@ func TestStatusToProblems_Events(t *testing.T) {
 		name               string
 		status             *types.Status
 		expectedCount      int
-		containsTypes      []string  // Check for presence, not order
+		containsTypes      []string // Check for presence, not order
 		containsSeverities []types.ProblemSeverity
 	}{
 		{

@@ -155,13 +155,13 @@ func (m *MockMonitor) sendStatusUpdates() {
 
 // MockExporter implements types.Exporter interface for testing.
 type MockExporter struct {
-	mu                  sync.RWMutex
-	name                string
-	statusExports       []*types.Status
-	problemExports      []*types.Problem
-	statusExportError   error
-	problemExportError  error
-	exportDelay         time.Duration
+	mu                 sync.RWMutex
+	name               string
+	statusExports      []*types.Status
+	problemExports     []*types.Problem
+	statusExportError  error
+	problemExportError error
+	exportDelay        time.Duration
 }
 
 // NewMockExporter creates a new MockExporter.

@@ -84,9 +84,9 @@ func TestValidate_ValidConfiguration(t *testing.T) {
 
 func TestValidate_MissingRequiredFields(t *testing.T) {
 	tests := []struct {
-		name        string
-		modifyFunc  func(*types.NodeDoctorConfig)
-		expectedErr string
+		name          string
+		modifyFunc    func(*types.NodeDoctorConfig)
+		expectedErr   string
 		expectedField string
 	}{
 		{
@@ -641,18 +641,18 @@ func TestValidateMonitorName(t *testing.T) {
 		errMsg    string
 	}{
 		{
-			name:  "valid name",
-			input: "test-monitor",
+			name:      "valid name",
+			input:     "test-monitor",
 			shouldErr: false,
 		},
 		{
-			name:  "valid with numbers",
-			input: "test-monitor-123",
+			name:      "valid with numbers",
+			input:     "test-monitor-123",
 			shouldErr: false,
 		},
 		{
-			name:  "valid with dots",
-			input: "test.monitor.name",
+			name:      "valid with dots",
+			input:     "test.monitor.name",
 			shouldErr: false,
 		},
 		{
@@ -753,9 +753,9 @@ func createValidConfig() *types.NodeDoctorConfig {
 				IntervalString: "30s",
 				TimeoutString:  "10s",
 				Config: map[string]interface{}{
-					"path":               "/var",
-					"warningThreshold":   80.0,
-					"criticalThreshold":  90.0,
+					"path":              "/var",
+					"warningThreshold":  80.0,
+					"criticalThreshold": 90.0,
 				},
 			},
 		},

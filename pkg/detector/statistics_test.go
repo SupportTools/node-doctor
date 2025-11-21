@@ -41,7 +41,7 @@ func TestStatistics_GetProblemsDeduplicated(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stats := NewStatistics()
 			if tt.setup != nil {
-				tt.setup(&stats)
+				tt.setup(stats)
 			}
 
 			got := stats.GetProblemsDeduplicated()

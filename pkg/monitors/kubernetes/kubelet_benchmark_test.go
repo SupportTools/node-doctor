@@ -37,9 +37,9 @@ func BenchmarkKubeletMonitor_Check_SingleThreaded(b *testing.B) {
 			"metricsURL":         "http://127.0.0.1:10250/metrics",
 			"checkSystemdStatus": true,
 			"checkPLEG":          true,
-			"plegThreshold": "5s",
+			"plegThreshold":      "5s",
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 		},
 	}
 
@@ -87,9 +87,9 @@ func BenchmarkKubeletMonitor_Check_Parallel(b *testing.B) {
 			"metricsURL":         "http://127.0.0.1:10250/metrics",
 			"checkSystemdStatus": true,
 			"checkPLEG":          true,
-			"plegThreshold": "5s",
+			"plegThreshold":      "5s",
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 		},
 	}
 
@@ -139,9 +139,9 @@ func BenchmarkKubeletMonitor_FailureTracking(b *testing.B) {
 			"metricsURL":         "http://127.0.0.1:10250/metrics",
 			"checkSystemdStatus": true,
 			"checkPLEG":          true,
-			"plegThreshold": "5s",
+			"plegThreshold":      "5s",
 			"failureThreshold":   1000, // High threshold to avoid triggering alerts
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 		},
 	}
 
@@ -198,9 +198,9 @@ func BenchmarkKubeletMonitor_FailureRecovery(b *testing.B) {
 			"metricsURL":         "http://127.0.0.1:10250/metrics",
 			"checkSystemdStatus": true,
 			"checkPLEG":          true,
-			"plegThreshold": "5s",
+			"plegThreshold":      "5s",
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 		},
 	}
 
@@ -252,16 +252,16 @@ func BenchmarkKubeletMonitor_CircuitBreaker(b *testing.B) {
 			"metricsURL":         "http://127.0.0.1:10250/metrics",
 			"checkSystemdStatus": true,
 			"checkPLEG":          true,
-			"plegThreshold": "5s",
+			"plegThreshold":      "5s",
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 			"circuitBreaker": map[string]interface{}{
-				"enabled":                true,
-				"failureThreshold":       5,
-				"openTimeout": "1s",
-				"halfOpenMaxRequests":    3,
-				"useExponentialBackoff":  false,
-				"maxBackoffTimeout":      "5m",
+				"enabled":               true,
+				"failureThreshold":      5,
+				"openTimeout":           "1s",
+				"halfOpenMaxRequests":   3,
+				"useExponentialBackoff": false,
+				"maxBackoffTimeout":     "5m",
 			},
 		},
 	}
@@ -304,16 +304,16 @@ func BenchmarkKubeletMonitor_StartStop(b *testing.B) {
 			Name:     fmt.Sprintf("kubelet-benchmark-%d", i),
 			Type:     "kubernetes-kubelet-check",
 			Enabled:  true,
-			Interval: 100 * time.Millisecond,   // Fast for benchmark
-			Timeout:  50 * time.Millisecond,    // Must be less than interval
+			Interval: 100 * time.Millisecond, // Fast for benchmark
+			Timeout:  50 * time.Millisecond,  // Must be less than interval
 			Config: map[string]interface{}{
 				"healthzURL":         "http://127.0.0.1:10248/healthz",
 				"metricsURL":         "http://127.0.0.1:10250/metrics",
 				"checkSystemdStatus": true,
 				"checkPLEG":          true,
-				"plegThreshold": "5s",
+				"plegThreshold":      "5s",
 				"failureThreshold":   3,
-				"httpTimeout": "5s",
+				"httpTimeout":        "5s",
 			},
 		}
 
@@ -372,9 +372,9 @@ func BenchmarkKubeletMonitor_MultiInstance(b *testing.B) {
 					"metricsURL":         "http://127.0.0.1:10250/metrics",
 					"checkSystemdStatus": true,
 					"checkPLEG":          true,
-					"plegThreshold": "5s",
+					"plegThreshold":      "5s",
 					"failureThreshold":   3,
-					"httpTimeout": "5s",
+					"httpTimeout":        "5s",
 				},
 			}
 

@@ -1238,6 +1238,7 @@ func TestKubeletMonitor_CircuitBreakerExponentialBackoff(t *testing.T) {
 		t.Error("Should allow attempt after doubled timeout")
 	}
 }
+
 // TestParseCircuitBreakerConfig tests the parseCircuitBreakerConfig function.
 func TestParseCircuitBreakerConfig(t *testing.T) {
 	tests := []struct {
@@ -1256,20 +1257,20 @@ func TestParseCircuitBreakerConfig(t *testing.T) {
 		{
 			name: "valid config with all fields",
 			configMap: map[string]interface{}{
-				"enabled":                true,
-				"failureThreshold":       5,
-				"openTimeout":            "30s",
-				"halfOpenMaxRequests":    3,
-				"useExponentialBackoff":  true,
-				"maxBackoffTimeout":      "5m",
+				"enabled":               true,
+				"failureThreshold":      5,
+				"openTimeout":           "30s",
+				"halfOpenMaxRequests":   3,
+				"useExponentialBackoff": true,
+				"maxBackoffTimeout":     "5m",
 			},
 			want: &CircuitBreakerConfig{
-				Enabled:                true,
-				FailureThreshold:       5,
-				OpenTimeout:            30 * time.Second,
-				HalfOpenMaxRequests:    3,
-				UseExponentialBackoff:  true,
-				MaxBackoffTimeout:      5 * time.Minute,
+				Enabled:               true,
+				FailureThreshold:      5,
+				OpenTimeout:           30 * time.Second,
+				HalfOpenMaxRequests:   3,
+				UseExponentialBackoff: true,
+				MaxBackoffTimeout:     5 * time.Minute,
 			},
 			wantErr: false,
 		},

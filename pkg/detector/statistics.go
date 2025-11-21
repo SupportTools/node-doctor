@@ -21,8 +21,8 @@ type Statistics struct {
 }
 
 // NewStatistics creates a new Statistics instance with current timestamp.
-func NewStatistics() Statistics {
-	return Statistics{
+func NewStatistics() *Statistics {
+	return &Statistics{
 		startTime: time.Now(),
 	}
 }

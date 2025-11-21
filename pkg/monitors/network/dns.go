@@ -54,10 +54,9 @@ type DNSMonitor struct {
 	resolver Resolver
 
 	// Failure tracking for NetworkUnreachable condition
-	mu                     sync.Mutex
-	clusterFailureCount    int
-	externalFailureCount   int
-	nameserverFailureCount int
+	mu                   sync.Mutex
+	clusterFailureCount  int
+	externalFailureCount int
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor

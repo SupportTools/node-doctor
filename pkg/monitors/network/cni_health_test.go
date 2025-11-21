@@ -103,7 +103,7 @@ func TestIsCNIConfigFile(t *testing.T) {
 		{"calico-kubeconfig", false},
 		{"README.md", false},
 		{"config.yaml", false},
-		{".conf", true}, // edge case - just extension
+		{".conf", true},      // edge case - just extension
 		{"test.CONF", false}, // case sensitive
 		{"", false},
 	}

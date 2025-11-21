@@ -75,8 +75,7 @@ func NewClient(config *types.KubernetesExporterConfig, settings *types.GlobalSet
 
 // initializeNodeUID retrieves and caches the node UID for event creation
 func (c *K8sClient) initializeNodeUID(ctx context.Context) error {
-	var err error
-	err = retry.OnError(
+	err := retry.OnError(
 		retry.DefaultBackoff,
 		func(err error) bool {
 			return errors.IsServiceUnavailable(err) || errors.IsTimeout(err) || errors.IsServerTimeout(err)

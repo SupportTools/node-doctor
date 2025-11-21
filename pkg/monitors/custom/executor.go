@@ -192,7 +192,7 @@ func (b *limitedBuffer) Write(p []byte) (n int, err error) {
 	remaining := b.limit - b.Len()
 	if remaining < len(p) {
 		// Write only what fits
-		n, err = b.Buffer.Write(p[:remaining])
+		_, err = b.Buffer.Write(p[:remaining])
 		return len(p), err // Return full length to prevent errors
 	}
 

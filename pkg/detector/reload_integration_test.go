@@ -17,13 +17,13 @@ import (
 
 // ReloadTestHelper provides utilities for integration testing config reload functionality
 type ReloadTestHelper struct {
-	configFile    string
-	detector      *ProblemDetector
-	factory       *MockMonitorFactory
-	events        []types.Event
-	eventsMu      sync.Mutex
-	tempDir       string
-	cleanupFunc   func()
+	configFile  string
+	detector    *ProblemDetector
+	factory     *MockMonitorFactory
+	events      []types.Event
+	eventsMu    sync.Mutex
+	tempDir     string
+	cleanupFunc func()
 }
 
 // NewReloadTestHelper creates a new test helper for reload integration tests
@@ -206,9 +206,9 @@ func CreateTestConfigWithMonitors(monitors []types.MonitorConfig) *types.NodeDoc
 				Enabled: true,
 				Webhooks: []types.WebhookEndpoint{
 					{
-						Name: "default",
-						URL:  "http://localhost:8080/webhook",
-						SendStatus: true,
+						Name:         "default",
+						URL:          "http://localhost:8080/webhook",
+						SendStatus:   true,
 						SendProblems: true,
 					},
 				},

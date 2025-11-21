@@ -15,14 +15,14 @@ import (
 
 // MonitorHandle represents a running monitor with its context and controls
 type MonitorHandle struct {
-	monitor      types.Monitor
-	config       types.MonitorConfig
-	statusCh     <-chan *types.Status
-	cancelFunc   context.CancelFunc
-	wg           *sync.WaitGroup
-	ctx          context.Context
-	stopped      bool
-	mu           sync.Mutex
+	monitor    types.Monitor
+	config     types.MonitorConfig
+	statusCh   <-chan *types.Status
+	cancelFunc context.CancelFunc
+	wg         *sync.WaitGroup
+	ctx        context.Context
+	stopped    bool
+	mu         sync.Mutex
 }
 
 // Stop stops the monitor gracefully with a timeout
@@ -82,25 +82,25 @@ func (mh *MonitorHandle) IsRunning() bool {
 
 // ProblemDetector manages monitors and exports their output
 type ProblemDetector struct {
-	mu                  sync.RWMutex
-	config              *types.NodeDoctorConfig
-	monitorHandles      []*MonitorHandle
-	exporters           []types.Exporter
-	statusChan          chan *types.Status
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
-	stats               Statistics
-	configWatcher       *reload.ConfigWatcher
-	reloadCoordinator   *reload.ReloadCoordinator
-	configFilePath      string
-	monitorFactory      MonitorFactory
-	configChangeCh      <-chan struct{}
-	reloadMutex         sync.Mutex // Protects reload operations
-	started             bool
-	seenProblems        map[string]*types.Problem // For deduplication
-	problemsMutex       sync.RWMutex              // Protects seenProblems
-	passedMonitors      []types.Monitor           // Monitors passed directly to constructor
+	mu                sync.RWMutex
+	config            *types.NodeDoctorConfig
+	monitorHandles    []*MonitorHandle
+	exporters         []types.Exporter
+	statusChan        chan *types.Status
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	stats             *Statistics
+	configWatcher     *reload.ConfigWatcher
+	reloadCoordinator *reload.ReloadCoordinator
+	configFilePath    string
+	monitorFactory    MonitorFactory
+	configChangeCh    <-chan struct{}
+	reloadMutex       sync.Mutex // Protects reload operations
+	started           bool
+	seenProblems      map[string]*types.Problem // For deduplication
+	problemsMutex     sync.RWMutex              // Protects seenProblems
+	passedMonitors    []types.Monitor           // Monitors passed directly to constructor
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -135,22 +135,23 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 	}
 	configWatcher, err := reload.NewConfigWatcher(configFilePath, debounceInterval)
 	if err != nil {
+		cancel() // Clean up the context we created
 		return nil, fmt.Errorf("failed to create config watcher: %w", err)
 	}
 
 	pd := &ProblemDetector{
-		config:            config,
-		monitorHandles:    make([]*MonitorHandle, 0),
-		exporters:         make([]types.Exporter, 0),
-		statusChan:        make(chan *types.Status, 1000),
-		ctx:               ctx,
-		cancel:            cancel,
-		stats:             monitorStats,
-		configWatcher:     configWatcher,
-		configFilePath:    configFilePath,
-		monitorFactory:    monitorFactory,
-		seenProblems:      make(map[string]*types.Problem),
-		passedMonitors:    monitors, // Store passed monitors to start in Start()
+		config:         config,
+		monitorHandles: make([]*MonitorHandle, 0),
+		exporters:      make([]types.Exporter, 0),
+		statusChan:     make(chan *types.Status, 1000),
+		ctx:            ctx,
+		cancel:         cancel,
+		stats:          monitorStats,
+		configWatcher:  configWatcher,
+		configFilePath: configFilePath,
+		monitorFactory: monitorFactory,
+		seenProblems:   make(map[string]*types.Problem),
+		passedMonitors: monitors, // Store passed monitors to start in Start()
 	}
 
 	// Create reload coordinator with callback and event emitter
@@ -186,9 +187,9 @@ func (pd *ProblemDetector) Run() error {
 	return pd.Start()
 }
 
-// GetStatistics returns the current statistics
+// GetStatistics returns the current statistics (copy to avoid lock sharing)
 func (pd *ProblemDetector) GetStatistics() Statistics {
-	return pd.stats
+	return pd.stats.Copy()
 }
 
 // Start starts the problem detector

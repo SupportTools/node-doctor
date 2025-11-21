@@ -16,11 +16,11 @@ import (
 // TestKubeletMonitor_VersionCompatibility tests kubelet monitor against different Kubernetes versions
 func TestKubeletMonitor_VersionCompatibility(t *testing.T) {
 	tests := []struct {
-		name           string
-		k8sVersion     string
-		expectWarning  bool
+		name            string
+		k8sVersion      string
+		expectWarning   bool
 		warningContains string
-		metricsFormat  string // "legacy" or "current"
+		metricsFormat   string // "legacy" or "current"
 	}{
 		{
 			name:          "Kubernetes 1.24.0 - Minimum supported",
@@ -47,18 +47,18 @@ func TestKubeletMonitor_VersionCompatibility(t *testing.T) {
 			metricsFormat: "current",
 		},
 		{
-			name:           "Kubernetes 1.31.0 - Untested version",
-			k8sVersion:     "v1.31.0",
-			expectWarning:  true,
+			name:            "Kubernetes 1.31.0 - Untested version",
+			k8sVersion:      "v1.31.0",
+			expectWarning:   true,
 			warningContains: "untested",
-			metricsFormat:  "current",
+			metricsFormat:   "current",
 		},
 		{
-			name:           "Kubernetes 1.23.0 - Below minimum",
-			k8sVersion:     "v1.23.0",
-			expectWarning:  true,
+			name:            "Kubernetes 1.23.0 - Below minimum",
+			k8sVersion:      "v1.23.0",
+			expectWarning:   true,
 			warningContains: "unsupported",
-			metricsFormat:  "legacy",
+			metricsFormat:   "legacy",
 		},
 		{
 			name:          "GKE version 1.28.0-gke.1234",
@@ -182,10 +182,10 @@ kubelet_pleg_relist_duration_seconds_count 67890
 // TestKubeletMonitor_PLEGMetricsCompatibility tests PLEG metrics parsing across versions
 func TestKubeletMonitor_PLEGMetricsCompatibility(t *testing.T) {
 	tests := []struct {
-		name         string
-		k8sVersion   string
-		metricsData  string
-		expectPLEG   bool
+		name          string
+		k8sVersion    string
+		metricsData   string
+		expectPLEG    bool
 		expectedValue float64
 	}{
 		{
@@ -196,7 +196,7 @@ kubelet_pleg_relist_duration_seconds{quantile="0.5"} 0.001
 kubelet_pleg_relist_duration_seconds{quantile="0.9"} 0.003
 kubelet_pleg_relist_duration_seconds{quantile="0.99"} 0.005
 `,
-			expectPLEG:   true,
+			expectPLEG:    true,
 			expectedValue: 0.005,
 		},
 		{
@@ -207,7 +207,7 @@ kubelet_pleg_relist_duration_seconds{quantile="0.5"} 0.002
 kubelet_pleg_relist_duration_seconds{quantile="0.9"} 0.004
 kubelet_pleg_relist_duration_seconds{quantile="0.99"} 0.006
 `,
-			expectPLEG:   true,
+			expectPLEG:    true,
 			expectedValue: 0.006,
 		},
 		{
@@ -218,14 +218,14 @@ kubelet_pleg_relist_duration_seconds{quantile="0.5"} 0.001
 kubelet_pleg_relist_duration_seconds{quantile="0.9"} 0.002
 kubelet_pleg_relist_duration_seconds{quantile="0.99"} 0.003
 `,
-			expectPLEG:   true,
+			expectPLEG:    true,
 			expectedValue: 0.003,
 		},
 		{
-			name:         "Missing PLEG metric",
-			k8sVersion:   "v1.28.0",
-			metricsData:  `# Other metrics only`,
-			expectPLEG:   false,
+			name:          "Missing PLEG metric",
+			k8sVersion:    "v1.28.0",
+			metricsData:   `# Other metrics only`,
+			expectPLEG:    false,
 			expectedValue: 0.0,
 		},
 	}
@@ -270,12 +270,12 @@ kubelet_pleg_relist_duration_seconds{quantile="0.99"} 0.003
 // TestKubeletMonitor_EndpointCompatibility tests healthz and metrics endpoint availability
 func TestKubeletMonitor_EndpointCompatibility(t *testing.T) {
 	tests := []struct {
-		name           string
-		k8sVersion     string
-		healthzPort    string
-		metricsPort    string
-		expectHealthz  bool
-		expectMetrics  bool
+		name          string
+		k8sVersion    string
+		healthzPort   string
+		metricsPort   string
+		expectHealthz bool
+		expectMetrics bool
 	}{
 		{
 			name:          "Kubernetes 1.24 - Standard ports",
@@ -380,11 +380,11 @@ func TestKubeletMonitor_AuthenticationCompatibility(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		k8sVersion  string
-		authType    string
-		expectAuth  bool
-		authHeader  string
+		name       string
+		k8sVersion string
+		authType   string
+		expectAuth bool
+		authHeader string
 	}{
 		{
 			name:       "Kubernetes 1.24 - No auth (healthz)",

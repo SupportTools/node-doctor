@@ -506,8 +506,8 @@ func (d *DiskMonitor) checkIOHealth(ctx context.Context, status *types.Status) e
 
 // parseDiskInfo converts filesystem statistics to DiskInfo.
 func (d *DiskMonitor) parseDiskInfo(path string, fsStats *FilesystemStats) *DiskInfo {
-	// Constants for readonly flag
-	const ST_RDONLY = 0x0001
+	// Constants for readonly flag (following syscall naming convention)
+	const stRdonly = 0x0001 //nolint:revive // matches syscall constant naming
 
 	// Calculate sizes in bytes
 	totalSpace := fsStats.Blocks * uint64(fsStats.BlockSize)
@@ -529,7 +529,7 @@ func (d *DiskMonitor) parseDiskInfo(path string, fsStats *FilesystemStats) *Disk
 	}
 
 	// Check readonly status
-	isReadonly := (fsStats.Flags & ST_RDONLY) != 0
+	isReadonly := (fsStats.Flags & stRdonly) != 0
 
 	return &DiskInfo{
 		Path:           path,

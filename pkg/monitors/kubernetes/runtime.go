@@ -539,6 +539,7 @@ func (m *RuntimeMonitor) checkRuntime(ctx context.Context) (*types.Status, error
 	}
 
 	// Update failure tracking and report conditions
+	_ = errors // errors are collected but reported via events; keep for potential future logging
 	m.updateFailureTracking(healthy, status)
 
 	// If all checks passed, add success event

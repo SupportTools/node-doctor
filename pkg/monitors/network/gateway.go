@@ -381,10 +381,8 @@ func (m *GatewayMonitor) trackGatewayChange(newGateway string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.lastGateway != "" && m.lastGateway != newGateway {
-		// Log gateway change (in a real implementation, this would use a proper logger)
-		// For now, we just track it silently
-	}
+	// Note: Gateway changes are tracked but not currently logged
+	// The state change is preserved for potential future metrics/events
 	m.lastGateway = newGateway
 }
 

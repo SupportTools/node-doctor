@@ -2,6 +2,7 @@ package prometheus
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // NewRegistry creates a new Prometheus registry with the given constant labels
@@ -10,10 +11,10 @@ func NewRegistry(constLabels prometheus.Labels) *prometheus.Registry {
 	registry := prometheus.NewRegistry()
 
 	// Add Go runtime metrics
-	registry.MustRegister(prometheus.NewGoCollector())
+	registry.MustRegister(collectors.NewGoCollector())
 
 	// Add process metrics
-	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	return registry
 }

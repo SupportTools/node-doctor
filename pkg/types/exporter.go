@@ -26,11 +26,11 @@ type ExporterReloadResult struct {
 
 // ExporterReloadSummary provides a summary of all exporter reload operations
 type ExporterReloadSummary struct {
-	TotalExporters    int                     // Total number of exporters
-	ReloadableCount   int                     // Number of exporters that support reload
-	SuccessfulReloads int                     // Number of successful reloads
-	FailedReloads     int                     // Number of failed reloads
-	Results           []ExporterReloadResult  // Detailed results for each exporter
+	TotalExporters    int                    // Total number of exporters
+	ReloadableCount   int                    // Number of exporters that support reload
+	SuccessfulReloads int                    // Number of successful reloads
+	FailedReloads     int                    // Number of failed reloads
+	Results           []ExporterReloadResult // Detailed results for each exporter
 }
 
 // AddResult adds a reload result to the summary

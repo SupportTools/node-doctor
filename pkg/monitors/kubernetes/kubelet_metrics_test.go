@@ -205,19 +205,19 @@ func TestNewKubeletMonitorMetrics(t *testing.T) {
 
 	// Verify metric names and types
 	expectedMetricNames := map[string]string{
-		"node_doctor_kubelet_monitor_check_duration_seconds":           "histogram",
-		"node_doctor_kubelet_monitor_health_check_duration_seconds":    "histogram",
-		"node_doctor_kubelet_monitor_systemd_check_duration_seconds":   "histogram",
-		"node_doctor_kubelet_monitor_pleg_check_duration_seconds":      "histogram",
-		"node_doctor_kubelet_monitor_checks_total":                     "counter",
-		"node_doctor_kubelet_monitor_consecutive_failures":             "gauge",
-		"node_doctor_kubelet_monitor_circuit_breaker_state":            "gauge",
-		"node_doctor_kubelet_monitor_circuit_breaker_transitions_total": "counter",
-		"node_doctor_kubelet_monitor_circuit_breaker_openings_total":   "counter",
-		"node_doctor_kubelet_monitor_circuit_breaker_recoveries_total": "counter",
+		"node_doctor_kubelet_monitor_check_duration_seconds":             "histogram",
+		"node_doctor_kubelet_monitor_health_check_duration_seconds":      "histogram",
+		"node_doctor_kubelet_monitor_systemd_check_duration_seconds":     "histogram",
+		"node_doctor_kubelet_monitor_pleg_check_duration_seconds":        "histogram",
+		"node_doctor_kubelet_monitor_checks_total":                       "counter",
+		"node_doctor_kubelet_monitor_consecutive_failures":               "gauge",
+		"node_doctor_kubelet_monitor_circuit_breaker_state":              "gauge",
+		"node_doctor_kubelet_monitor_circuit_breaker_transitions_total":  "counter",
+		"node_doctor_kubelet_monitor_circuit_breaker_openings_total":     "counter",
+		"node_doctor_kubelet_monitor_circuit_breaker_recoveries_total":   "counter",
 		"node_doctor_kubelet_monitor_circuit_breaker_backoff_multiplier": "gauge",
-		"node_doctor_kubelet_monitor_pleg_relist_duration_seconds":     "gauge",
-		"node_doctor_kubelet_monitor_pleg_parsing_duration_seconds":    "histogram",
+		"node_doctor_kubelet_monitor_pleg_relist_duration_seconds":       "gauge",
+		"node_doctor_kubelet_monitor_pleg_parsing_duration_seconds":      "histogram",
 	}
 
 	foundMetrics := make(map[string]string)

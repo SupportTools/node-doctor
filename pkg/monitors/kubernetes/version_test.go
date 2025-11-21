@@ -522,11 +522,11 @@ func TestDefaultKubeletVersionClient_GetVersion_WithAuth(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		auth             *AuthConfig
-		wantAuthHeader   string
-		wantErr          bool
-		errContains      string
+		name           string
+		auth           *AuthConfig
+		wantAuthHeader string
+		wantErr        bool
+		errContains    string
 	}{
 		{
 			name:           "No authentication",

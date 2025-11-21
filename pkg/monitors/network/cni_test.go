@@ -219,14 +219,14 @@ func TestValidateCNIConfig(t *testing.T) {
 
 func TestCNIMonitor_CheckCNI(t *testing.T) {
 	tests := []struct {
-		name                  string
-		peers                 []Peer
-		pingResults           map[string][]PingResult
-		pingErr               map[string]error
-		minReachablePeers     int
-		expectPartitioned     bool
-		expectDegraded        bool
-		expectReachableCount  int
+		name                 string
+		peers                []Peer
+		pingResults          map[string][]PingResult
+		pingErr              map[string]error
+		minReachablePeers    int
+		expectPartitioned    bool
+		expectDegraded       bool
+		expectReachableCount int
 	}{
 		{
 			name: "all peers reachable - healthy",

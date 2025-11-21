@@ -3,8 +3,8 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"strings"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,9 +37,9 @@ func TestStress_Concurrent_100Checks(t *testing.T) {
 			"metricsURL":         "http://localhost:10250/metrics",
 			"checkSystemdStatus": true,
 			"checkPLEG":          true,
-			"plegThreshold": "5s",
+			"plegThreshold":      "5s",
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 		},
 	}
 
@@ -245,7 +245,7 @@ func TestStress_Concurrent_StartStop(t *testing.T) {
 						"checkSystemdStatus": false,
 						"checkPLEG":          false,
 						"failureThreshold":   3,
-						"httpTimeout": "5s",
+						"httpTimeout":        "5s",
 					},
 				}
 
@@ -312,7 +312,7 @@ func TestStress_MultiInstance(t *testing.T) {
 				"checkSystemdStatus": false,
 				"checkPLEG":          false,
 				"failureThreshold":   3,
-				"httpTimeout": "5s",
+				"httpTimeout":        "5s",
 			},
 		}
 
@@ -370,7 +370,7 @@ func TestStress_MemoryLeak(t *testing.T) {
 			"checkSystemdStatus": false,
 			"checkPLEG":          false,
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 		},
 	}
 
@@ -464,11 +464,11 @@ func TestStress_CircuitBreaker_Concurrent(t *testing.T) {
 			"checkSystemdStatus": false,
 			"checkPLEG":          false,
 			"failureThreshold":   3,
-			"httpTimeout": "5s",
+			"httpTimeout":        "5s",
 			"circuitBreaker": map[string]interface{}{
 				"enabled":          true,
 				"failureThreshold": 5,
-				"openTimeout": "1s",
+				"openTimeout":      "1s",
 			},
 		},
 	}
@@ -634,7 +634,6 @@ func TestStress_SameInstance_ConcurrentStartStop(t *testing.T) {
 	t.Logf("✓ Same-instance concurrent Start() operations handled correctly")
 	t.Logf("✓ Note: Concurrent Stop() calls not tested due to known BaseMonitor limitation")
 }
-
 
 // mockStressKubeletClient is a thread-safe mock implementation for stress testing
 type mockStressKubeletClient struct {

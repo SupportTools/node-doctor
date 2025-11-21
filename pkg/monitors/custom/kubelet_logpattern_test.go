@@ -512,13 +512,13 @@ func TestKubeletPatternComplexity(t *testing.T) {
 			regex := pattern.Regex
 
 			// Count various regex elements that increase complexity
-			complexityScore += strings.Count(regex, ".*") * 3      // Greedy quantifiers
-			complexityScore += strings.Count(regex, ".+") * 3      // Greedy quantifiers
-			complexityScore += strings.Count(regex, "(?:") * 2     // Non-capturing groups
-			complexityScore += strings.Count(regex, "(") * 1       // Capturing groups
-			complexityScore += strings.Count(regex, "[") * 1       // Character classes
-			complexityScore += strings.Count(regex, "\\b") * 1     // Word boundaries
-			complexityScore += len(regex) / 10                     // Pattern length factor
+			complexityScore += strings.Count(regex, ".*") * 3  // Greedy quantifiers
+			complexityScore += strings.Count(regex, ".+") * 3  // Greedy quantifiers
+			complexityScore += strings.Count(regex, "(?:") * 2 // Non-capturing groups
+			complexityScore += strings.Count(regex, "(") * 1   // Capturing groups
+			complexityScore += strings.Count(regex, "[") * 1   // Character classes
+			complexityScore += strings.Count(regex, "\\b") * 1 // Word boundaries
+			complexityScore += len(regex) / 10                 // Pattern length factor
 
 			// Patterns should have reasonable complexity (under 50)
 			if complexityScore > 50 {
@@ -532,15 +532,15 @@ func TestKubeletPatternComplexity(t *testing.T) {
 // TestKubeletPatternWordBoundaries tests that patterns use proper word boundaries where needed
 func TestKubeletPatternWordBoundaries(t *testing.T) {
 	testCases := []struct {
-		name          string
-		pattern       string
-		shouldMatch   string
+		name           string
+		pattern        string
+		shouldMatch    string
 		shouldNotMatch string
 	}{
 		{
-			name:          "kubelet-oom word boundary",
-			pattern:       "\\bkubelet\\b.*(?:OOM|out of memory|memory cgroup out of memory)",
-			shouldMatch:   "kubelet: OOM detected",
+			name:           "kubelet-oom word boundary",
+			pattern:        "\\bkubelet\\b.*(?:OOM|out of memory|memory cgroup out of memory)",
+			shouldMatch:    "kubelet: OOM detected",
 			shouldNotMatch: "mykubelet: OOM detected", // Should not match substring
 		},
 	}
@@ -623,27 +623,27 @@ func TestBackwardCompatibility(t *testing.T) {
 func TestKubeletPatternCoverage(t *testing.T) {
 	// Realistic log entries that should be caught by kubelet patterns
 	realisticLogs := []struct {
-		logEntry string
+		logEntry        string
 		expectedPattern string
 	}{
 		{
-			logEntry: "Nov 16 10:00:00 node1 kubelet[1234]: E1116 10:00:00.123456 1234 kubelet.go:123] PLEG is not healthy: pleg has yet to be successful",
+			logEntry:        "Nov 16 10:00:00 node1 kubelet[1234]: E1116 10:00:00.123456 1234 kubelet.go:123] PLEG is not healthy: pleg has yet to be successful",
 			expectedPattern: "kubelet-pleg-unhealthy",
 		},
 		{
-			logEntry: "Nov 16 10:01:00 node1 kubelet[1234]: I1116 10:01:00.234567 1234 eviction_manager.go:456] eviction manager: evicting pod default/nginx-abc123 due to disk pressure",
+			logEntry:        "Nov 16 10:01:00 node1 kubelet[1234]: I1116 10:01:00.234567 1234 eviction_manager.go:456] eviction manager: evicting pod default/nginx-abc123 due to disk pressure",
 			expectedPattern: "kubelet-eviction",
 		},
 		{
-			logEntry: "Nov 16 10:02:00 node1 kubelet[1234]: E1116 10:02:00.345678 1234 kuberuntime.go:789] Failed to pull image \"nginx:latest\": rpc error: code = Unknown desc = failed to pull and unpack image \"docker.io/library/nginx:latest\": failed to resolve reference \"docker.io/library/nginx:latest\": failed to do request: Head \"https://registry-1.docker.io/v2/library/nginx/manifests/latest\": dial tcp: lookup registry-1.docker.io: no such host",
+			logEntry:        "Nov 16 10:02:00 node1 kubelet[1234]: E1116 10:02:00.345678 1234 kuberuntime.go:789] Failed to pull image \"nginx:latest\": rpc error: code = Unknown desc = failed to pull and unpack image \"docker.io/library/nginx:latest\": failed to resolve reference \"docker.io/library/nginx:latest\": failed to do request: Head \"https://registry-1.docker.io/v2/library/nginx/manifests/latest\": dial tcp: lookup registry-1.docker.io: no such host",
 			expectedPattern: "kubelet-image-pull-failed",
 		},
 		{
-			logEntry: "Nov 16 10:03:00 node1 kubelet[1234]: E1116 10:03:00.456789 1234 pod_workers.go:123] container runtime error: failed to create container",
+			logEntry:        "Nov 16 10:03:00 node1 kubelet[1234]: E1116 10:03:00.456789 1234 pod_workers.go:123] container runtime error: failed to create container",
 			expectedPattern: "kubelet-runtime-error",
 		},
 		{
-			logEntry: "Nov 16 10:04:00 node1 kubelet[1234]: W1116 10:04:00.567890 1234 kubelet_node_status.go:456] Node status: NotReady",
+			logEntry:        "Nov 16 10:04:00 node1 kubelet[1234]: W1116 10:04:00.567890 1234 kubelet_node_status.go:456] Node status: NotReady",
 			expectedPattern: "kubelet-node-not-ready",
 		},
 	}

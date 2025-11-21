@@ -13,15 +13,15 @@ import (
 
 const (
 	// Default configuration values for CNI monitor
-	defaultCNIPingCount             = 3
-	defaultCNIPingTimeout           = 5 * time.Second
-	defaultCNIWarningLatency        = 50 * time.Millisecond
-	defaultCNICriticalLatency       = 200 * time.Millisecond
-	defaultCNIFailureThreshold      = 3
-	defaultCNIMinReachablePeers     = 80 // percentage
-	defaultCNIRefreshInterval       = 5 * time.Minute
-	defaultCNINamespace             = "node-doctor"
-	defaultCNILabelSelector         = "app=node-doctor"
+	defaultCNIPingCount         = 3
+	defaultCNIPingTimeout       = 5 * time.Second
+	defaultCNIWarningLatency    = 50 * time.Millisecond
+	defaultCNICriticalLatency   = 200 * time.Millisecond
+	defaultCNIFailureThreshold  = 3
+	defaultCNIMinReachablePeers = 80 // percentage
+	defaultCNIRefreshInterval   = 5 * time.Minute
+	defaultCNINamespace         = "node-doctor"
+	defaultCNILabelSelector     = "app=node-doctor"
 )
 
 // CNIMonitorConfig holds the configuration for the CNI connectivity monitor.
