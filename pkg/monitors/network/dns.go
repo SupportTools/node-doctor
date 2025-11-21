@@ -332,51 +332,20 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 
 // checkClusterDNS checks cluster DNS resolution.
 func (m *DNSMonitor) checkClusterDNS(ctx context.Context, status *types.Status) bool {
-	allSuccess := true
-
-	for _, domain := range m.config.ClusterDomains {
-		start := time.Now()
-		addrs, err := m.resolver.LookupHost(ctx, domain)
-		latency := time.Since(start)
-
-		if err != nil {
-			allSuccess = false
-			status.AddEvent(types.NewEvent(
-				types.EventError,
-				"ClusterDNSResolutionFailed",
-				fmt.Sprintf("Failed to resolve cluster domain %s: %v", domain, err),
-			))
-			continue
-		}
-
-		if len(addrs) == 0 {
-			allSuccess = false
-			status.AddEvent(types.NewEvent(
-				types.EventWarning,
-				"ClusterDNSNoRecords",
-				fmt.Sprintf("No A records found for cluster domain %s", domain),
-			))
-			continue
-		}
-
-		// Check latency
-		if latency > m.config.LatencyThreshold {
-			status.AddEvent(types.NewEvent(
-				types.EventWarning,
-				"HighClusterDNSLatency",
-				fmt.Sprintf("Cluster DNS resolution for %s took %v (threshold: %v)", domain, latency, m.config.LatencyThreshold),
-			))
-		}
-	}
-
-	return allSuccess
+	return m.checkDNSDomains(ctx, status, m.config.ClusterDomains, "Cluster")
 }
 
 // checkExternalDNS checks external DNS resolution.
 func (m *DNSMonitor) checkExternalDNS(ctx context.Context, status *types.Status) bool {
+	return m.checkDNSDomains(ctx, status, m.config.ExternalDomains, "External")
+}
+
+// checkDNSDomains is a helper function that checks DNS resolution for a list of domains.
+// The domainType parameter is used to construct event names (e.g., "Cluster" or "External").
+func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, domains []string, domainType string) bool {
 	allSuccess := true
 
-	for _, domain := range m.config.ExternalDomains {
+	for _, domain := range domains {
 		start := time.Now()
 		addrs, err := m.resolver.LookupHost(ctx, domain)
 		latency := time.Since(start)
@@ -385,8 +354,8 @@ func (m *DNSMonitor) checkExternalDNS(ctx context.Context, status *types.Status)
 			allSuccess = false
 			status.AddEvent(types.NewEvent(
 				types.EventError,
-				"ExternalDNSResolutionFailed",
-				fmt.Sprintf("Failed to resolve external domain %s: %v", domain, err),
+				domainType+"DNSResolutionFailed",
+				fmt.Sprintf("Failed to resolve %s domain %s: %v", strings.ToLower(domainType), domain, err),
 			))
 			continue
 		}
@@ -395,8 +364,8 @@ func (m *DNSMonitor) checkExternalDNS(ctx context.Context, status *types.Status)
 			allSuccess = false
 			status.AddEvent(types.NewEvent(
 				types.EventWarning,
-				"ExternalDNSNoRecords",
-				fmt.Sprintf("No A records found for external domain %s", domain),
+				domainType+"DNSNoRecords",
+				fmt.Sprintf("No A records found for %s domain %s", strings.ToLower(domainType), domain),
 			))
 			continue
 		}
@@ -405,8 +374,8 @@ func (m *DNSMonitor) checkExternalDNS(ctx context.Context, status *types.Status)
 		if latency > m.config.LatencyThreshold {
 			status.AddEvent(types.NewEvent(
 				types.EventWarning,
-				"HighExternalDNSLatency",
-				fmt.Sprintf("External DNS resolution for %s took %v (threshold: %v)", domain, latency, m.config.LatencyThreshold),
+				"High"+domainType+"DNSLatency",
+				fmt.Sprintf("%s DNS resolution for %s took %v (threshold: %v)", domainType, domain, latency, m.config.LatencyThreshold),
 			))
 		}
 	}

@@ -477,7 +477,11 @@ func calculateNestedQuantifierScore(pattern string) int {
 	}
 
 	for _, nq := range nestedQuantifiers {
-		if matched, err := regexp.MatchString(nq, pattern); err == nil && matched {
+		matched, err := regexp.MatchString(nq, pattern)
+		if err != nil {
+			continue // Skip invalid patterns (shouldn't happen with our hardcoded patterns)
+		}
+		if matched {
 			return 20 // Binary: found = dangerous
 		}
 	}
