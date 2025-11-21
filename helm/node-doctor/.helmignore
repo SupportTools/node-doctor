@@ -24,10 +24,6 @@
 *.tmproj
 .vscode/
 
-# Documentation
-*.md
-!README.md
-
 # Test files
 *_test.yaml
 test/
