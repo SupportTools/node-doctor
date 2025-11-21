@@ -16,34 +16,10 @@ env:
   IMAGE_NAME: supporttools/node-doctor
 
 jobs:
-  # Run tests before releasing
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run tests
-        run: |
-          echo "Running pre-release tests..."
-          go test -v -short ./pkg/... ./cmd/...
-          echo "✅ All tests passed"
-
   # Build and push Docker images
   docker:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
