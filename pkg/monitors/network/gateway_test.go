@@ -722,3 +722,73 @@ func TestNewGatewayMonitor(t *testing.T) {
 		})
 	}
 }
+
+// TestGatewayMonitor_getGatewayIP tests the getGatewayIP method.
+func TestGatewayMonitor_getGatewayIP(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     *GatewayMonitorConfig
+		wantIP     string
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "manual gateway configured",
+			config: &GatewayMonitorConfig{
+				ManualGateway:     "192.168.1.1",
+				AutoDetectGateway: false,
+			},
+			wantIP:  "192.168.1.1",
+			wantErr: false,
+		},
+		{
+			name: "manual gateway takes precedence over auto-detect",
+			config: &GatewayMonitorConfig{
+				ManualGateway:     "10.0.0.1",
+				AutoDetectGateway: true, // should be ignored when manual is set
+			},
+			wantIP:  "10.0.0.1",
+			wantErr: false,
+		},
+		{
+			name: "no gateway and auto-detect disabled",
+			config: &GatewayMonitorConfig{
+				ManualGateway:     "",
+				AutoDetectGateway: false,
+			},
+			wantErr:    true,
+			errContain: "no gateway configured",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			monitor := &GatewayMonitor{
+				name:   "test-gateway",
+				config: tt.config,
+			}
+
+			ip, err := monitor.getGatewayIP()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("getGatewayIP() expected error, got nil")
+					return
+				}
+				if tt.errContain != "" && !strings.Contains(err.Error(), tt.errContain) {
+					t.Errorf("getGatewayIP() error = %v, want error containing %q", err, tt.errContain)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("getGatewayIP() unexpected error: %v", err)
+				return
+			}
+
+			if ip != tt.wantIP {
+				t.Errorf("getGatewayIP() = %q, want %q", ip, tt.wantIP)
+			}
+		})
+	}
+}

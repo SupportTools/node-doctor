@@ -904,3 +904,227 @@ func BenchmarkDNSResolution(b *testing.B) {
 		_, _ = monitor.checkDNS(ctx)
 	}
 }
+
+// TestValidateDNSConfig_EdgeCases tests additional edge cases for DNS config validation.
+func TestValidateDNSConfig_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    types.MonitorConfig
+		wantError bool
+		errorMsg  string
+	}{
+		{
+			name: "invalid latency threshold - negative",
+			config: types.MonitorConfig{
+				Name:     "test-dns",
+				Type:     "network-dns-check",
+				Interval: 60 * time.Second,
+				Timeout:  5 * time.Second,
+				Config: map[string]interface{}{
+					"clusterDomains":   []interface{}{"kubernetes.default.svc.cluster.local"},
+					"latencyThreshold": "-1s",
+				},
+			},
+			wantError: true,
+			errorMsg:  "latencyThreshold must be positive",
+		},
+		{
+			name: "valid config with customQueries only",
+			config: types.MonitorConfig{
+				Name:     "test-dns",
+				Type:     "network-dns-check",
+				Interval: 60 * time.Second,
+				Timeout:  5 * time.Second,
+				Config: map[string]interface{}{
+					"customQueries": []interface{}{
+						map[string]interface{}{
+							"domain":     "example.com",
+							"recordType": "A",
+						},
+					},
+				},
+			},
+			wantError: false,
+		},
+		{
+			name: "invalid config parsing - malformed customQueries",
+			config: types.MonitorConfig{
+				Name:     "test-dns",
+				Type:     "network-dns-check",
+				Interval: 60 * time.Second,
+				Timeout:  5 * time.Second,
+				Config: map[string]interface{}{
+					"customQueries": "not-an-array",
+				},
+			},
+			wantError: true,
+			errorMsg:  "customQueries must be an array",
+		},
+		{
+			name: "invalid config parsing - customQueries entry not object",
+			config: types.MonitorConfig{
+				Name:     "test-dns",
+				Type:     "network-dns-check",
+				Interval: 60 * time.Second,
+				Timeout:  5 * time.Second,
+				Config: map[string]interface{}{
+					"customQueries": []interface{}{"not-an-object"},
+				},
+			},
+			wantError: true,
+			errorMsg:  "customQueries[0] must be an object",
+		},
+		{
+			name: "invalid config parsing - customQueries domain not string",
+			config: types.MonitorConfig{
+				Name:     "test-dns",
+				Type:     "network-dns-check",
+				Interval: 60 * time.Second,
+				Timeout:  5 * time.Second,
+				Config: map[string]interface{}{
+					"customQueries": []interface{}{
+						map[string]interface{}{
+							"domain": 12345,
+						},
+					},
+				},
+			},
+			wantError: true,
+			errorMsg:  "customQueries[0].domain must be a string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateDNSConfig(tt.config)
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error but got none")
+				} else if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckCustomQueries tests the checkCustomQueries method.
+func TestCheckCustomQueries(t *testing.T) {
+	tests := []struct {
+		name           string
+		queries        []DNSQuery
+		setupMock      func(*mockResolver)
+		wantEventTypes []string
+	}{
+		{
+			name: "unsupported record type - MX",
+			queries: []DNSQuery{
+				{Domain: "example.com", RecordType: "MX"},
+			},
+			setupMock:      func(m *mockResolver) {},
+			wantEventTypes: []string{"UnsupportedQueryType"},
+		},
+		{
+			name: "unsupported record type - AAAA",
+			queries: []DNSQuery{
+				{Domain: "example.com", RecordType: "AAAA"},
+			},
+			setupMock:      func(m *mockResolver) {},
+			wantEventTypes: []string{"UnsupportedQueryType"},
+		},
+		{
+			name: "successful A record query",
+			queries: []DNSQuery{
+				{Domain: "example.com", RecordType: "A"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.responses["example.com"] = []string{"93.184.216.34"}
+			},
+			wantEventTypes: []string{},
+		},
+		{
+			name: "A record query with empty record type defaults to A",
+			queries: []DNSQuery{
+				{Domain: "example.com", RecordType: ""},
+			},
+			setupMock: func(m *mockResolver) {
+				m.responses["example.com"] = []string{"93.184.216.34"}
+			},
+			wantEventTypes: []string{},
+		},
+		{
+			name: "DNS query failure",
+			queries: []DNSQuery{
+				{Domain: "nonexistent.invalid", RecordType: "A"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.errors["nonexistent.invalid"] = fmt.Errorf("no such host")
+			},
+			wantEventTypes: []string{"CustomDNSQueryFailed"},
+		},
+		{
+			name: "no records found",
+			queries: []DNSQuery{
+				{Domain: "norecords.example.com", RecordType: "A"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.responses["norecords.example.com"] = []string{}
+			},
+			wantEventTypes: []string{"CustomDNSNoRecords"},
+		},
+		{
+			name: "high latency warning",
+			queries: []DNSQuery{
+				{Domain: "slow.example.com", RecordType: "A"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.responses["slow.example.com"] = []string{"1.2.3.4"}
+				m.latencies["slow.example.com"] = 2 * time.Second
+			},
+			wantEventTypes: []string{"HighCustomDNSLatency"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockResolver()
+			tt.setupMock(mock)
+
+			monitor := &DNSMonitor{
+				config: &DNSMonitorConfig{
+					CustomQueries:    tt.queries,
+					LatencyThreshold: 500 * time.Millisecond,
+				},
+				resolver: mock,
+			}
+
+			status := types.NewStatus("test-dns")
+			ctx := context.Background()
+			monitor.checkCustomQueries(ctx, status)
+
+			// Check for expected event types
+			events := status.Events
+			eventTypes := make([]string, len(events))
+			for i, e := range events {
+				eventTypes[i] = e.Reason
+			}
+
+			if len(eventTypes) != len(tt.wantEventTypes) {
+				t.Errorf("got %d events, want %d. Got types: %v, want: %v",
+					len(eventTypes), len(tt.wantEventTypes), eventTypes, tt.wantEventTypes)
+				return
+			}
+
+			for i, wantType := range tt.wantEventTypes {
+				if eventTypes[i] != wantType {
+					t.Errorf("event[%d] type = %s, want %s", i, eventTypes[i], wantType)
+				}
+			}
+		})
+	}
+}

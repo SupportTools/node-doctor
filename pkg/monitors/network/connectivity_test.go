@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -692,4 +693,357 @@ type mockHTTPClientFunc struct {
 
 func (m *mockHTTPClientFunc) CheckEndpoint(ctx context.Context, endpoint EndpointConfig) (*EndpointResult, error) {
 	return m.checkFunc(ctx, endpoint)
+}
+
+// TestParseEndpointConfig_EdgeCases tests edge cases in endpoint configuration parsing.
+func TestParseEndpointConfig_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  map[string]interface{}
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "url is not a string",
+			config: map[string]interface{}{
+				"url": 12345,
+			},
+			wantErr: true,
+			errMsg:  "url must be a string",
+		},
+		{
+			name: "name is not a string",
+			config: map[string]interface{}{
+				"url":  "https://example.com",
+				"name": 12345,
+			},
+			wantErr: true,
+			errMsg:  "name must be a string",
+		},
+		{
+			name: "method is not a string",
+			config: map[string]interface{}{
+				"url":    "https://example.com",
+				"method": 12345,
+			},
+			wantErr: true,
+			errMsg:  "method must be a string",
+		},
+		{
+			name: "invalid method",
+			config: map[string]interface{}{
+				"url":    "https://example.com",
+				"method": "POST",
+			},
+			wantErr: true,
+			errMsg:  "invalid HTTP method",
+		},
+		{
+			name: "expectedStatusCode is not a number",
+			config: map[string]interface{}{
+				"url":                "https://example.com",
+				"expectedStatusCode": "200",
+			},
+			wantErr: true,
+			errMsg:  "expectedStatusCode must be an integer",
+		},
+		{
+			name: "expectedStatusCode as float64",
+			config: map[string]interface{}{
+				"url":                "https://example.com",
+				"expectedStatusCode": float64(201),
+			},
+			wantErr: false,
+		},
+		{
+			name: "followRedirects is not a bool",
+			config: map[string]interface{}{
+				"url":             "https://example.com",
+				"followRedirects": "true",
+			},
+			wantErr: true,
+			errMsg:  "followRedirects must be a boolean",
+		},
+		{
+			name: "valid minimal config",
+			config: map[string]interface{}{
+				"url": "https://example.com",
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseEndpointConfig(tt.config)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestNewConnectivityMonitor_EdgeCases tests edge cases in monitor creation.
+func TestNewConnectivityMonitor_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  types.MonitorConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "too many endpoints",
+			config: types.MonitorConfig{
+				Name:     "test-monitor",
+				Type:     "network-connectivity-check",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Enabled:  true,
+				Config: map[string]interface{}{
+					"endpoints": func() []interface{} {
+						endpoints := make([]interface{}, 51) // exceeds maxEndpoints (50)
+						for i := 0; i < 51; i++ {
+							endpoints[i] = map[string]interface{}{
+								"url": fmt.Sprintf("https://example%d.com", i),
+							}
+						}
+						return endpoints
+					}(),
+				},
+			},
+			wantErr: true,
+			errMsg:  "too many endpoints",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			_, err := NewConnectivityMonitor(ctx, tt.config)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestIsValidHTTPMethod tests HTTP method validation.
+func TestIsValidHTTPMethod(t *testing.T) {
+	tests := []struct {
+		method string
+		valid  bool
+	}{
+		{"GET", true},
+		{"HEAD", true},
+		{"OPTIONS", true},
+		{"get", true},    // lowercase
+		{"head", true},   // lowercase
+		{"options", true}, // lowercase
+		{"Get", true},    // mixed case
+		{"POST", false},
+		{"PUT", false},
+		{"DELETE", false},
+		{"PATCH", false},
+		{"", false},
+		{"INVALID", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			got := isValidHTTPMethod(tt.method)
+			if got != tt.valid {
+				t.Errorf("isValidHTTPMethod(%q) = %v, want %v", tt.method, got, tt.valid)
+			}
+		})
+	}
+}
+
+// TestValidateURL tests URL validation for connectivity endpoints.
+func TestValidateURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid https URL",
+			url:     "https://example.com",
+			wantErr: false,
+		},
+		{
+			name:    "valid http URL",
+			url:     "http://example.com",
+			wantErr: false,
+		},
+		{
+			name:    "valid URL with path",
+			url:     "https://example.com/api/v1/health",
+			wantErr: false,
+		},
+		{
+			name:    "valid URL with port",
+			url:     "https://example.com:8443",
+			wantErr: false,
+		},
+		{
+			name:    "missing scheme",
+			url:     "example.com",
+			wantErr: true,
+			errMsg:  "scheme",
+		},
+		{
+			name:    "unsupported scheme - ftp",
+			url:     "ftp://example.com",
+			wantErr: true,
+			errMsg:  "unsupported URL scheme",
+		},
+		{
+			name:    "unsupported scheme - file",
+			url:     "file:///etc/passwd",
+			wantErr: true,
+			errMsg:  "unsupported URL scheme",
+		},
+		{
+			name:    "missing host",
+			url:     "https://",
+			wantErr: true,
+			errMsg:  "host",
+		},
+		{
+			name:    "empty string",
+			url:     "",
+			wantErr: true,
+			errMsg:  "scheme",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateURL(tt.url)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestParseConnectivityConfig_EdgeCases tests edge cases in connectivity config parsing.
+func TestParseConnectivityConfig_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  map[string]interface{}
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil config",
+			config:  nil,
+			wantErr: true,
+			errMsg:  "connectivity monitor requires configuration",
+		},
+		{
+			name: "failureThreshold invalid type",
+			config: map[string]interface{}{
+				"failureThreshold": "not-a-number",
+				"endpoints": []interface{}{
+					map[string]interface{}{"url": "https://example.com"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "failureThreshold must be an integer",
+		},
+		{
+			name: "failureThreshold as float64",
+			config: map[string]interface{}{
+				"failureThreshold": float64(3),
+				"endpoints": []interface{}{
+					map[string]interface{}{"url": "https://example.com"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "failureThreshold too low",
+			config: map[string]interface{}{
+				"failureThreshold": 0,
+				"endpoints": []interface{}{
+					map[string]interface{}{"url": "https://example.com"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "failureThreshold must be at least 1",
+		},
+		{
+			name: "endpoints not a list",
+			config: map[string]interface{}{
+				"endpoints": "not-a-list",
+			},
+			wantErr: true,
+			errMsg:  "endpoints must be a list",
+		},
+		{
+			name: "endpoint not a map",
+			config: map[string]interface{}{
+				"endpoints": []interface{}{"not-a-map"},
+			},
+			wantErr: true,
+			errMsg:  "endpoint 0 must be a map",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseConnectivityConfig(tt.config)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error but got none")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error = %v, want error containing %q", err, tt.errMsg)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
 }
