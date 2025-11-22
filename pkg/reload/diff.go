@@ -167,9 +167,23 @@ func exportersEqual(a, b *types.ExporterConfigs) bool {
 			len(a.HTTP.Webhooks) != len(b.HTTP.Webhooks) {
 			return false
 		}
+		// Compare webhook contents
+		for i := range a.HTTP.Webhooks {
+			if !webhookEqual(&a.HTTP.Webhooks[i], &b.HTTP.Webhooks[i]) {
+				return false
+			}
+		}
 	}
 
 	return true
+}
+
+// webhookEqual checks if two webhook endpoints are equal.
+func webhookEqual(a, b *types.WebhookEndpoint) bool {
+	return a.Name == b.Name &&
+		a.URL == b.URL &&
+		a.SendStatus == b.SendStatus &&
+		a.SendProblems == b.SendProblems
 }
 
 // remediationEqual checks if remediation configurations are equal.
