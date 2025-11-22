@@ -785,3 +785,456 @@ func TestHTTPExporterMultipleWebhooks(t *testing.T) {
 		// Good - timeout means no request was received
 	}
 }
+
+// TestHTTPExporter_IsReloadable tests the IsReloadable method.
+func TestHTTPExporter_IsReloadable(t *testing.T) {
+	config := &types.HTTPExporterConfig{
+		Enabled:   true,
+		Workers:   1,
+		QueueSize: 5,
+		Timeout:   30 * time.Second,
+		Retry: types.RetryConfig{
+			MaxAttempts: 2,
+			BaseDelay:   100 * time.Millisecond,
+			MaxDelay:    1 * time.Second,
+		},
+		Webhooks: []types.WebhookEndpoint{
+			{
+				Name:    "test-webhook",
+				URL:     "https://example.com/webhook",
+				Timeout: 30 * time.Second,
+				Auth:    types.AuthConfig{Type: "none"},
+				Retry: &types.RetryConfig{
+					MaxAttempts: 1,
+					BaseDelay:   1 * time.Second,
+					MaxDelay:    30 * time.Second,
+				},
+				SendStatus: true,
+			},
+		},
+	}
+
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewHTTPExporter(config, settings)
+	if err != nil {
+		t.Fatalf("Failed to create HTTP exporter: %v", err)
+	}
+
+	// HTTP exporter should always be reloadable
+	if !exporter.IsReloadable() {
+		t.Error("Expected IsReloadable() to return true")
+	}
+}
+
+// TestHTTPExporter_Reload tests the Reload method with various scenarios.
+func TestHTTPExporter_Reload(t *testing.T) {
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(WebhookResponse{Success: true})
+	}))
+	defer server.Close()
+
+	baseConfig := &types.HTTPExporterConfig{
+		Enabled:   true,
+		Workers:   1,
+		QueueSize: 5,
+		Timeout:   30 * time.Second,
+		Retry: types.RetryConfig{
+			MaxAttempts: 2,
+			BaseDelay:   100 * time.Millisecond,
+			MaxDelay:    1 * time.Second,
+		},
+		Webhooks: []types.WebhookEndpoint{
+			{
+				Name:    "test-webhook",
+				URL:     server.URL,
+				Timeout: 30 * time.Second,
+				Auth:    types.AuthConfig{Type: "none"},
+				Retry: &types.RetryConfig{
+					MaxAttempts: 1,
+					BaseDelay:   1 * time.Second,
+					MaxDelay:    30 * time.Second,
+				},
+				SendStatus: true,
+			},
+		},
+	}
+
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	tests := []struct {
+		name        string
+		newConfig   interface{}
+		expectError bool
+		startFirst  bool
+	}{
+		{
+			name:        "wrong config type",
+			newConfig:   "invalid-config",
+			expectError: true,
+			startFirst:  false,
+		},
+		{
+			name:        "nil config",
+			newConfig:   (*types.HTTPExporterConfig)(nil),
+			expectError: true,
+			startFirst:  false,
+		},
+		{
+			name: "empty webhooks",
+			newConfig: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   1,
+				QueueSize: 5,
+				Timeout:   30 * time.Second,
+				Retry: types.RetryConfig{
+					MaxAttempts: 2,
+					BaseDelay:   100 * time.Millisecond,
+					MaxDelay:    1 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{},
+			},
+			expectError: true,
+			startFirst:  false,
+		},
+		{
+			name: "valid config without worker pool recreation",
+			newConfig: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   1,        // Same as initial
+				QueueSize: 5,        // Same as initial
+				Timeout:   30 * time.Second, // Same as initial
+				Retry: types.RetryConfig{
+					MaxAttempts: 2,
+					BaseDelay:   100 * time.Millisecond,
+					MaxDelay:    1 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name:    "updated-webhook",
+						URL:     server.URL,
+						Timeout: 30 * time.Second,
+						Auth:    types.AuthConfig{Type: "none"},
+						Retry: &types.RetryConfig{
+							MaxAttempts: 1,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    30 * time.Second,
+						},
+						SendStatus: true,
+					},
+				},
+			},
+			expectError: false,
+			startFirst:  true,
+		},
+		{
+			name: "valid config with worker count change",
+			newConfig: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   2,        // Changed from 1 to 2
+				QueueSize: 5,
+				Timeout:   30 * time.Second,
+				Retry: types.RetryConfig{
+					MaxAttempts: 2,
+					BaseDelay:   100 * time.Millisecond,
+					MaxDelay:    1 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name:    "test-webhook",
+						URL:     server.URL,
+						Timeout: 30 * time.Second,
+						Auth:    types.AuthConfig{Type: "none"},
+						Retry: &types.RetryConfig{
+							MaxAttempts: 1,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    30 * time.Second,
+						},
+						SendStatus: true,
+					},
+				},
+			},
+			expectError: false,
+			startFirst:  true,
+		},
+		{
+			name: "valid config with queue size change",
+			newConfig: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   1,
+				QueueSize: 10,       // Changed from 5 to 10
+				Timeout:   30 * time.Second,
+				Retry: types.RetryConfig{
+					MaxAttempts: 2,
+					BaseDelay:   100 * time.Millisecond,
+					MaxDelay:    1 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name:    "test-webhook",
+						URL:     server.URL,
+						Timeout: 30 * time.Second,
+						Auth:    types.AuthConfig{Type: "none"},
+						Retry: &types.RetryConfig{
+							MaxAttempts: 1,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    30 * time.Second,
+						},
+						SendStatus: true,
+					},
+				},
+			},
+			expectError: false,
+			startFirst:  true,
+		},
+		{
+			name: "valid config with timeout change",
+			newConfig: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   1,
+				QueueSize: 5,
+				Timeout:   60 * time.Second, // Changed from 30s to 60s
+				Retry: types.RetryConfig{
+					MaxAttempts: 2,
+					BaseDelay:   100 * time.Millisecond,
+					MaxDelay:    1 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name:    "test-webhook",
+						URL:     server.URL,
+						Timeout: 30 * time.Second,
+						Auth:    types.AuthConfig{Type: "none"},
+						Retry: &types.RetryConfig{
+							MaxAttempts: 1,
+							BaseDelay:   1 * time.Second,
+							MaxDelay:    30 * time.Second,
+						},
+						SendStatus: true,
+					},
+				},
+			},
+			expectError: false,
+			startFirst:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create new exporter for each test
+			exporter, err := NewHTTPExporter(baseConfig, settings)
+			if err != nil {
+				t.Fatalf("Failed to create HTTP exporter: %v", err)
+			}
+			defer exporter.Stop()
+
+			if tt.startFirst {
+				ctx := context.Background()
+				if err := exporter.Start(ctx); err != nil {
+					t.Fatalf("Failed to start exporter: %v", err)
+				}
+			}
+
+			err = exporter.Reload(tt.newConfig)
+			if (err != nil) != tt.expectError {
+				t.Errorf("Reload() error = %v, expectError = %v", err, tt.expectError)
+			}
+		})
+	}
+}
+
+// TestHTTPExporter_needsWorkerPoolRecreation tests the needsWorkerPoolRecreation method.
+func TestHTTPExporter_needsWorkerPoolRecreation(t *testing.T) {
+	config := &types.HTTPExporterConfig{
+		Enabled:   true,
+		Workers:   2,
+		QueueSize: 10,
+		Timeout:   30 * time.Second,
+		Retry: types.RetryConfig{
+			MaxAttempts: 2,
+			BaseDelay:   100 * time.Millisecond,
+			MaxDelay:    1 * time.Second,
+		},
+		Webhooks: []types.WebhookEndpoint{
+			{
+				Name:    "test-webhook",
+				URL:     "https://example.com/webhook",
+				Timeout: 30 * time.Second,
+				Auth:    types.AuthConfig{Type: "none"},
+				Retry: &types.RetryConfig{
+					MaxAttempts: 1,
+					BaseDelay:   1 * time.Second,
+					MaxDelay:    30 * time.Second,
+				},
+				SendStatus: true,
+			},
+		},
+	}
+
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewHTTPExporter(config, settings)
+	if err != nil {
+		t.Fatalf("Failed to create HTTP exporter: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		oldConfig *types.HTTPExporterConfig
+		newConfig *types.HTTPExporterConfig
+		expected  bool
+	}{
+		{
+			name:      "nil old config",
+			oldConfig: nil,
+			newConfig: config,
+			expected:  true,
+		},
+		{
+			name:      "same config",
+			oldConfig: config,
+			newConfig: config,
+			expected:  false,
+		},
+		{
+			name:      "worker count changed",
+			oldConfig: config,
+			newConfig: &types.HTTPExporterConfig{
+				Workers:   4,
+				QueueSize: 10,
+				Timeout:   30 * time.Second,
+			},
+			expected: true,
+		},
+		{
+			name:      "queue size changed",
+			oldConfig: config,
+			newConfig: &types.HTTPExporterConfig{
+				Workers:   2,
+				QueueSize: 20,
+				Timeout:   30 * time.Second,
+			},
+			expected: true,
+		},
+		{
+			name:      "timeout changed",
+			oldConfig: config,
+			newConfig: &types.HTTPExporterConfig{
+				Workers:   2,
+				QueueSize: 10,
+				Timeout:   60 * time.Second,
+			},
+			expected: true,
+		},
+		{
+			name:      "no relevant changes",
+			oldConfig: config,
+			newConfig: &types.HTTPExporterConfig{
+				Workers:   2,
+				QueueSize: 10,
+				Timeout:   30 * time.Second,
+				Enabled:   false, // This change doesn't affect worker pool
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := exporter.needsWorkerPoolRecreation(tt.oldConfig, tt.newConfig)
+			if got != tt.expected {
+				t.Errorf("needsWorkerPoolRecreation() = %v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestHTTPExporter_performHealthCheck tests the performHealthCheck method.
+func TestHTTPExporter_performHealthCheck(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(WebhookResponse{Success: true})
+	}))
+	defer server.Close()
+
+	config := &types.HTTPExporterConfig{
+		Enabled:   true,
+		Workers:   1,
+		QueueSize: 5,
+		Timeout:   30 * time.Second,
+		Retry: types.RetryConfig{
+			MaxAttempts: 2,
+			BaseDelay:   100 * time.Millisecond,
+			MaxDelay:    1 * time.Second,
+		},
+		Webhooks: []types.WebhookEndpoint{
+			{
+				Name:    "healthy-webhook",
+				URL:     server.URL,
+				Timeout: 30 * time.Second,
+				Auth:    types.AuthConfig{Type: "none"},
+				Retry: &types.RetryConfig{
+					MaxAttempts: 1,
+					BaseDelay:   1 * time.Second,
+					MaxDelay:    30 * time.Second,
+				},
+				SendStatus: true,
+			},
+		},
+	}
+
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewHTTPExporter(config, settings)
+	if err != nil {
+		t.Fatalf("Failed to create HTTP exporter: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := exporter.Start(ctx); err != nil {
+		t.Fatalf("Failed to start exporter: %v", err)
+	}
+	defer exporter.Stop()
+
+	// Export a status to create webhook stats
+	status := &types.Status{
+		Source:    "test",
+		Timestamp: time.Now(),
+	}
+	_ = exporter.ExportStatus(ctx, status)
+
+	// Wait for export to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Perform health check - should not panic and should work with stats
+	exporter.performHealthCheck()
+
+	// Verify health status
+	health := exporter.GetHealthStatus()
+	if health["started"] != true {
+		t.Error("Expected exporter to be started after health check")
+	}
+}
+
+// TestHTTPExporter_min tests the min helper function.
+func TestHTTPExporter_min(t *testing.T) {
+	tests := []struct {
+		a, b, expected int
+	}{
+		{1, 2, 1},
+		{2, 1, 1},
+		{5, 5, 5},
+		{0, 10, 0},
+		{-1, 1, -1},
+		{-5, -2, -5},
+	}
+
+	for _, tt := range tests {
+		got := min(tt.a, tt.b)
+		if got != tt.expected {
+			t.Errorf("min(%d, %d) = %d, expected %d", tt.a, tt.b, got, tt.expected)
+		}
+	}
+}
