@@ -1,0 +1,37 @@
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+metadata:
+  name: full-config
+  namespace: kube-system
+settings:
+  nodeName: full-test-node
+  logLevel: debug
+  logFormat: text
+  dryRunMode: false
+monitors:
+  - name: noop-monitor
+    type: noop
+    enabled: true
+    interval: 30s
+  - name: disabled-monitor
+    type: noop
+    enabled: false
+    interval: 60s
+exporters:
+  kubernetes:
+    enabled: false
+  http:
+    enabled: false
+    port: 8081
+  prometheus:
+    enabled: false
+    port: 9090
+    path: /metrics
+remediation:
+  enabled: true
+  dryRun: true
+  globalCooldown: 5m
+  maxConcurrentRemediations: 1
+features:
+  enableProfiling: false
+  profilingPort: 6060

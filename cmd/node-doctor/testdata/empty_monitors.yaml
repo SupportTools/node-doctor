@@ -1,0 +1,13 @@
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+metadata:
+  name: empty-monitors-config
+settings:
+  nodeName: test-node
+  logLevel: info
+monitors: []
+exporters:
+  kubernetes:
+    enabled: false
+remediation:
+  enabled: false
