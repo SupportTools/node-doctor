@@ -827,3 +827,63 @@ func TestDiskRemediator_DefaultConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestDiskRemediator_LogInfof_NilLogger verifies logInfof handles nil logger.
+func TestDiskRemediator_LogInfof_NilLogger(t *testing.T) {
+	config := DiskConfig{
+		Operation:  DiskCleanJournalLogs,
+		TargetPath: "/var/log",
+	}
+
+	r, err := NewDiskRemediator(config)
+	if err != nil {
+		t.Fatalf("NewDiskRemediator() error: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	r.logInfof("test info message: %s", "value")
+}
+
+// TestDiskRemediator_LogWarnf_NilLogger verifies logWarnf handles nil logger.
+func TestDiskRemediator_LogWarnf_NilLogger(t *testing.T) {
+	config := DiskConfig{
+		Operation:  DiskCleanJournalLogs,
+		TargetPath: "/var/log",
+	}
+
+	r, err := NewDiskRemediator(config)
+	if err != nil {
+		t.Fatalf("NewDiskRemediator() error: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	r.logWarnf("test warning message: %s", "value")
+}
+
+// TestDiskRemediator_LogWithLogger verifies log methods work with logger set.
+func TestDiskRemediator_LogWithLogger(t *testing.T) {
+	config := DiskConfig{
+		Operation:  DiskCleanJournalLogs,
+		TargetPath: "/var/log",
+	}
+
+	r, err := NewDiskRemediator(config)
+	if err != nil {
+		t.Fatalf("NewDiskRemediator() error: %v", err)
+	}
+
+	logger := &mockLogger{}
+	r.SetLogger(logger)
+
+	r.logInfof("test info: %s", "value")
+	r.logWarnf("test warn: %s", "value")
+
+	if len(logger.infoMessages) != 1 {
+		t.Errorf("expected 1 info message, got %d", len(logger.infoMessages))
+	}
+	if len(logger.warnMessages) != 1 {
+		t.Errorf("expected 1 warn message, got %d", len(logger.warnMessages))
+	}
+}
