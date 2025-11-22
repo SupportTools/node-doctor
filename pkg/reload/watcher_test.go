@@ -420,3 +420,61 @@ func TestIsConfigFileEvent(t *testing.T) {
 		})
 	}
 }
+
+// TestNewConfigWatcher_EmptyPath tests that empty path returns error
+func TestNewConfigWatcher_EmptyPath(t *testing.T) {
+	watcher, err := NewConfigWatcher("", 100*time.Millisecond)
+	if err == nil {
+		t.Error("Expected error for empty config path")
+		if watcher != nil {
+			watcher.Stop()
+		}
+		return
+	}
+	if watcher != nil {
+		t.Error("Expected nil watcher for empty config path")
+		watcher.Stop()
+	}
+}
+
+// TestNewConfigWatcher_DefaultDebounce tests default debounce interval
+func TestNewConfigWatcher_DefaultDebounce(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+
+	if err := os.WriteFile(configPath, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test config: %v", err)
+	}
+
+	// Use zero debounce interval - should default to 500ms
+	watcher, err := NewConfigWatcher(configPath, 0)
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+	defer watcher.Stop()
+
+	if watcher.debounceInterval != 500*time.Millisecond {
+		t.Errorf("Expected default debounce of 500ms, got %v", watcher.debounceInterval)
+	}
+}
+
+// TestNewConfigWatcher_NegativeDebounce tests negative debounce interval
+func TestNewConfigWatcher_NegativeDebounce(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.yaml")
+
+	if err := os.WriteFile(configPath, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test config: %v", err)
+	}
+
+	// Use negative debounce interval - should default to 500ms
+	watcher, err := NewConfigWatcher(configPath, -100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to create watcher: %v", err)
+	}
+	defer watcher.Stop()
+
+	if watcher.debounceInterval != 500*time.Millisecond {
+		t.Errorf("Expected default debounce of 500ms, got %v", watcher.debounceInterval)
+	}
+}
