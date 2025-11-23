@@ -498,7 +498,7 @@ type KubeletMonitor struct {
 
 // init registers the kubelet monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "kubernetes-kubelet-check",
 		Factory:     NewKubeletMonitor,
 		Validator:   ValidateKubeletConfig,

@@ -502,7 +502,7 @@ func ValidateCapacityConfig(config types.MonitorConfig) error {
 
 // init registers the capacity monitor with the monitor registry
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "kubernetes-capacity-check",
 		Factory:     NewCapacityMonitor,
 		Validator:   ValidateCapacityConfig,

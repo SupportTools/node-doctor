@@ -58,7 +58,7 @@ type GatewayMonitor struct {
 
 // init registers the gateway monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "network-gateway-check",
 		Factory:     NewGatewayMonitor,
 		Validator:   ValidateGatewayConfig,

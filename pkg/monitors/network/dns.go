@@ -64,7 +64,7 @@ type DNSMonitor struct {
 
 // init registers the DNS monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "network-dns-check",
 		Factory:     NewDNSMonitor,
 		Validator:   ValidateDNSConfig,

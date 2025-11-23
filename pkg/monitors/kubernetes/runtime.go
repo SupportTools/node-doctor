@@ -182,7 +182,7 @@ type RuntimeMonitor struct {
 
 // init registers the runtime monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "kubernetes-runtime-check",
 		Factory:     NewRuntimeMonitor,
 		Validator:   ValidateRuntimeConfig,

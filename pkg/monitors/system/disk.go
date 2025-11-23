@@ -17,7 +17,7 @@ import (
 
 // Register the Disk monitor with the global registry during package initialization.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "system-disk",
 		Factory:     NewDiskMonitor,
 		Validator:   ValidateDiskConfig,

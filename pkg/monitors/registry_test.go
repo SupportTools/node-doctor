@@ -133,10 +133,10 @@ func TestNewRegistry(t *testing.T) {
 
 func TestRegistry_Register(t *testing.T) {
 	tests := []struct {
-		name        string
-		info        MonitorInfo
-		shouldPanic bool
-		panicMsg    string
+		name      string
+		info      MonitorInfo
+		wantErr   bool
+		errTarget error
 	}{
 		{
 			name: "valid registration",
@@ -146,7 +146,7 @@ func TestRegistry_Register(t *testing.T) {
 				Validator:   testValidator1,
 				Description: "Test monitor",
 			},
-			shouldPanic: false,
+			wantErr: false,
 		},
 		{
 			name: "valid registration without validator",
@@ -155,7 +155,7 @@ func TestRegistry_Register(t *testing.T) {
 				Factory:     testFactory1,
 				Description: "Test monitor without validator",
 			},
-			shouldPanic: false,
+			wantErr: false,
 		},
 		{
 			name: "empty type",
@@ -163,8 +163,8 @@ func TestRegistry_Register(t *testing.T) {
 				Type:    "",
 				Factory: testFactory1,
 			},
-			shouldPanic: true,
-			panicMsg:    "monitor type cannot be empty",
+			wantErr:   true,
+			errTarget: ErrEmptyMonitorType,
 		},
 		{
 			name: "nil factory",
@@ -172,8 +172,8 @@ func TestRegistry_Register(t *testing.T) {
 				Type:    "test-monitor",
 				Factory: nil,
 			},
-			shouldPanic: true,
-			panicMsg:    "monitor factory cannot be nil for type \"test-monitor\"",
+			wantErr:   true,
+			errTarget: ErrNilFactory,
 		},
 	}
 
@@ -181,25 +181,18 @@ func TestRegistry_Register(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewRegistry()
 
-			if tt.shouldPanic {
-				defer func() {
-					if r := recover(); r != nil {
-						if str, ok := r.(string); ok {
-							if str != tt.panicMsg {
-								t.Errorf("Expected panic message %q, got %q", tt.panicMsg, str)
-							}
-						} else {
-							t.Errorf("Expected string panic message, got %T: %v", r, r)
-						}
-					} else {
-						t.Error("Expected panic, but none occurred")
-					}
-				}()
-			}
+			err := registry.Register(tt.info)
 
-			registry.Register(tt.info)
-
-			if !tt.shouldPanic {
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				} else if tt.errTarget != nil && !errors.Is(err, tt.errTarget) {
+					t.Errorf("Expected error %v, got %v", tt.errTarget, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Expected no error, got %v", err)
+				}
 				// Verify registration succeeded
 				if !registry.IsRegistered(tt.info.Type) {
 					t.Errorf("Monitor type %q was not registered", tt.info.Type)
@@ -218,25 +211,85 @@ func TestRegistry_RegisterDuplicate(t *testing.T) {
 	}
 
 	// First registration should succeed
-	registry.Register(info)
+	err := registry.Register(info)
+	if err != nil {
+		t.Fatalf("First registration failed: %v", err)
+	}
 
-	// Second registration should panic
-	defer func() {
-		if r := recover(); r != nil {
-			expected := "monitor type \"test-monitor\" is already registered"
-			if str, ok := r.(string); ok {
-				if str != expected {
-					t.Errorf("Expected panic message %q, got %q", expected, str)
-				}
-			} else {
-				t.Errorf("Expected string panic message, got %T: %v", r, r)
-			}
-		} else {
-			t.Error("Expected panic on duplicate registration")
+	// Second registration should return error
+	err = registry.Register(info)
+	if err == nil {
+		t.Error("Expected error on duplicate registration, got nil")
+	}
+	if !errors.Is(err, ErrDuplicateMonitorType) {
+		t.Errorf("Expected ErrDuplicateMonitorType, got %v", err)
+	}
+}
+
+func TestRegistry_MustRegister(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		registry := NewRegistry()
+
+		// Should not panic with valid info
+		registry.MustRegister(MonitorInfo{
+			Type:    "test-monitor",
+			Factory: testFactory1,
+		})
+
+		if !registry.IsRegistered("test-monitor") {
+			t.Error("Monitor should be registered")
 		}
-	}()
+	})
 
-	registry.Register(info)
+	t.Run("panic on empty type", func(t *testing.T) {
+		registry := NewRegistry()
+
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Expected panic, but none occurred")
+			}
+		}()
+
+		registry.MustRegister(MonitorInfo{
+			Type:    "",
+			Factory: testFactory1,
+		})
+	})
+
+	t.Run("panic on nil factory", func(t *testing.T) {
+		registry := NewRegistry()
+
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Expected panic, but none occurred")
+			}
+		}()
+
+		registry.MustRegister(MonitorInfo{
+			Type:    "test-monitor",
+			Factory: nil,
+		})
+	})
+
+	t.Run("panic on duplicate", func(t *testing.T) {
+		registry := NewRegistry()
+
+		registry.MustRegister(MonitorInfo{
+			Type:    "test-monitor",
+			Factory: testFactory1,
+		})
+
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Expected panic on duplicate, but none occurred")
+			}
+		}()
+
+		registry.MustRegister(MonitorInfo{
+			Type:    "test-monitor",
+			Factory: testFactory1,
+		})
+	})
 }
 
 func TestRegistry_GetRegisteredTypes(t *testing.T) {
@@ -251,7 +304,7 @@ func TestRegistry_GetRegisteredTypes(t *testing.T) {
 	// Register some monitors
 	monitors := []string{"monitor-c", "monitor-a", "monitor-b"}
 	for _, monitorType := range monitors {
-		registry.Register(MonitorInfo{
+		registry.MustRegister(MonitorInfo{
 			Type:    monitorType,
 			Factory: testFactory1,
 		})
@@ -283,7 +336,7 @@ func TestRegistry_IsRegistered(t *testing.T) {
 	}
 
 	// Register a monitor
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "test-monitor",
 		Factory: testFactory1,
 	})
@@ -315,7 +368,7 @@ func TestRegistry_GetMonitorInfo(t *testing.T) {
 		Validator:   testValidator1,
 		Description: "Test monitor description",
 	}
-	registry.Register(originalInfo)
+	registry.MustRegister(originalInfo)
 
 	// Get monitor info
 	info = registry.GetMonitorInfo("test-monitor")
@@ -343,16 +396,16 @@ func TestRegistry_ValidateConfig(t *testing.T) {
 	registry := NewRegistry()
 
 	// Register test monitors
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:      "valid-monitor",
 		Factory:   testFactory1,
 		Validator: testValidator1,
 	})
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "no-validator",
 		Factory: testFactory2,
 	})
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:      "failing-validator",
 		Factory:   testFactory1,
 		Validator: failingValidator,
@@ -441,19 +494,19 @@ func TestRegistry_CreateMonitor(t *testing.T) {
 	registry := NewRegistry()
 
 	// Register test monitors
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "success-monitor",
 		Factory: testFactory1,
 	})
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "failing-monitor",
 		Factory: failingFactory,
 	})
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "context-monitor",
 		Factory: contextCancelFactory,
 	})
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "panicking-monitor",
 		Factory: panickingFactory,
 	})
@@ -564,11 +617,11 @@ func TestRegistry_CreateMonitorsFromConfigs(t *testing.T) {
 	registry := NewRegistry()
 
 	// Register test monitors
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "success-monitor",
 		Factory: testFactory1,
 	})
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "failing-monitor",
 		Factory: failingFactory,
 	})
@@ -668,7 +721,7 @@ func TestRegistry_GetRegistryStats(t *testing.T) {
 	// Register some monitors
 	monitors := []string{"monitor-c", "monitor-a", "monitor-b"}
 	for _, monitorType := range monitors {
-		registry.Register(MonitorInfo{
+		registry.MustRegister(MonitorInfo{
 			Type:    monitorType,
 			Factory: testFactory1,
 		})
@@ -697,13 +750,13 @@ func TestPackageLevelFunctions(t *testing.T) {
 	// Use a clean registry for testing
 	DefaultRegistry = NewRegistry()
 
-	// Test Register
+	// Test Register and MustRegister
 	info := MonitorInfo{
 		Type:        "package-test",
 		Factory:     testFactory1,
 		Description: "Package level test",
 	}
-	Register(info)
+	MustRegister(info)
 
 	// Test GetRegisteredTypes
 	registeredTypes := GetRegisteredTypes()
@@ -776,7 +829,7 @@ func TestConcurrentRegistration(t *testing.T) {
 			defer wg.Done()
 
 			// Each goroutine registers a different monitor type
-			registry.Register(MonitorInfo{
+			registry.MustRegister(MonitorInfo{
 				Type:    fmt.Sprintf("concurrent-monitor-%d", id),
 				Factory: testFactory1,
 			})
@@ -797,7 +850,7 @@ func TestConcurrentMonitorCreation(t *testing.T) {
 	registry := NewRegistry()
 
 	// Register a monitor
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "concurrent-test",
 		Factory: testFactory1,
 	})
@@ -841,7 +894,7 @@ func TestRaceDetector(t *testing.T) {
 	registry := NewRegistry()
 
 	// Register a monitor
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "race-test",
 		Factory: testFactory1,
 	})
@@ -880,7 +933,7 @@ func TestRaceDetector(t *testing.T) {
 // Benchmark tests
 func BenchmarkRegistry_CreateMonitor(b *testing.B) {
 	registry := NewRegistry()
-	registry.Register(MonitorInfo{
+	registry.MustRegister(MonitorInfo{
 		Type:    "benchmark-test",
 		Factory: testFactory1,
 	})
@@ -907,7 +960,7 @@ func BenchmarkRegistry_GetRegisteredTypes(b *testing.B) {
 
 	// Register many monitors
 	for i := 0; i < 100; i++ {
-		registry.Register(MonitorInfo{
+		registry.MustRegister(MonitorInfo{
 			Type:    fmt.Sprintf("benchmark-monitor-%d", i),
 			Factory: testFactory1,
 		})

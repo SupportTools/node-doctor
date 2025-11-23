@@ -475,7 +475,7 @@ func ValidatePluginConfig(config types.MonitorConfig) error {
 
 // init registers the plugin monitor
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "custom-plugin",
 		Factory:     NewPluginMonitor,
 		Validator:   ValidatePluginConfig,

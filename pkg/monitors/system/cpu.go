@@ -19,7 +19,7 @@ import (
 
 // Register the CPU monitor with the global registry during package initialization.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "system-cpu",
 		Factory:     NewCPUMonitor,
 		Validator:   ValidateCPUConfig,

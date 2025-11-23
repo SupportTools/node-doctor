@@ -106,7 +106,7 @@ type CNIMonitor struct {
 
 // init registers the CNI monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "network-cni-check",
 		Factory:     NewCNIMonitor,
 		Validator:   ValidateCNIConfig,

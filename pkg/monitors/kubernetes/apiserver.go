@@ -533,7 +533,7 @@ func ValidateAPIServerConfig(config types.MonitorConfig) error {
 
 // init registers the API server monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "kubernetes-apiserver-check",
 		Factory:     NewAPIServerMonitor,
 		Validator:   ValidateAPIServerConfig,

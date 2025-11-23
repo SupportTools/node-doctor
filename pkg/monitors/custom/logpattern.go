@@ -1410,7 +1410,7 @@ Performance Targets:
   - Warning logged if check duration >100ms
 `
 
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "custom-logpattern",
 		Factory:     NewLogPatternMonitor,
 		Validator:   ValidateLogPatternConfig,

@@ -9,7 +9,7 @@
 //
 //	// Monitor registration (typically in monitor package init())
 //	func init() {
-//		monitors.Register(monitors.MonitorInfo{
+//		monitors.MustRegister(monitors.MonitorInfo{
 //			Type:        "system-disk-check",
 //			Factory:     NewSystemDiskMonitor,
 //			Validator:   ValidateSystemDiskConfig,
@@ -26,6 +26,7 @@ package monitors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -94,36 +95,58 @@ func NewRegistry() *Registry {
 	}
 }
 
+// ErrEmptyMonitorType is returned when attempting to register a monitor with an empty type.
+var ErrEmptyMonitorType = errors.New("monitor type cannot be empty")
+
+// ErrNilFactory is returned when attempting to register a monitor with a nil factory.
+var ErrNilFactory = errors.New("monitor factory cannot be nil")
+
+// ErrDuplicateMonitorType is returned when attempting to register a monitor type that already exists.
+var ErrDuplicateMonitorType = errors.New("monitor type is already registered")
+
 // Register adds a new monitor type to the registry.
 // This function is typically called from monitor package init() functions
 // to self-register monitor implementations.
 //
-// Register panics if:
+// Register returns an error if:
 //   - info.Type is empty
 //   - info.Factory is nil
 //   - A monitor with the same type is already registered
 //
-// Panicking is appropriate here because registration happens at init time,
-// and registration conflicts indicate programming errors that should be
-// caught during development, not at runtime.
-func (r *Registry) Register(info MonitorInfo) {
+// For use in init() functions where panicking on error is desired, use MustRegister instead.
+func (r *Registry) Register(info MonitorInfo) error {
 	if info.Type == "" {
-		panic("monitor type cannot be empty")
+		return ErrEmptyMonitorType
 	}
 	if info.Factory == nil {
-		panic(fmt.Sprintf("monitor factory cannot be nil for type %q", info.Type))
+		return fmt.Errorf("%w for type %q", ErrNilFactory, info.Type)
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if _, exists := r.monitors[info.Type]; exists {
-		panic(fmt.Sprintf("monitor type %q is already registered", info.Type))
+		return fmt.Errorf("%w: %q", ErrDuplicateMonitorType, info.Type)
 	}
 
 	// Create a copy to avoid potential issues with pointer sharing
 	infoCopy := info
 	r.monitors[info.Type] = &infoCopy
+	return nil
+}
+
+// MustRegister adds a new monitor type to the registry and panics on error.
+// This is intended for use in init() functions where registration failures
+// indicate programming errors that should be caught during development.
+//
+// MustRegister panics if:
+//   - info.Type is empty
+//   - info.Factory is nil
+//   - A monitor with the same type is already registered
+func (r *Registry) MustRegister(info MonitorInfo) {
+	if err := r.Register(info); err != nil {
+		panic(fmt.Sprintf("monitor registration failed: %v", err))
+	}
 }
 
 // GetRegisteredTypes returns a sorted list of all registered monitor types.
@@ -313,8 +336,14 @@ type RegistryStats struct {
 
 // Register registers a monitor type with the default registry.
 // See Registry.Register for details.
-func Register(info MonitorInfo) {
-	DefaultRegistry.Register(info)
+func Register(info MonitorInfo) error {
+	return DefaultRegistry.Register(info)
+}
+
+// MustRegister registers a monitor type with the default registry and panics on error.
+// See Registry.MustRegister for details.
+func MustRegister(info MonitorInfo) {
+	DefaultRegistry.MustRegister(info)
 }
 
 // GetRegisteredTypes returns all registered monitor types from the default registry.

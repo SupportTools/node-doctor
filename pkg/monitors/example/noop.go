@@ -19,7 +19,7 @@ import (
 // Register the no-op monitor with the global registry during package initialization.
 // This demonstrates the self-registration pattern that all monitors should follow.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "noop",
 		Factory:     NewNoOpMonitor,
 		Validator:   ValidateNoOpConfig,

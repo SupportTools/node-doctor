@@ -21,7 +21,7 @@ import (
 
 // Register the Memory monitor with the global registry during package initialization.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "system-memory",
 		Factory:     NewMemoryMonitor,
 		Validator:   ValidateMemoryConfig,

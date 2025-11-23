@@ -46,7 +46,7 @@ type ConnectivityMonitor struct {
 
 // init registers the connectivity monitor with the monitor registry.
 func init() {
-	monitors.Register(monitors.MonitorInfo{
+	monitors.MustRegister(monitors.MonitorInfo{
 		Type:        "network-connectivity-check",
 		Factory:     NewConnectivityMonitor,
 		Validator:   ValidateConnectivityConfig,
