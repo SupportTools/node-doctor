@@ -114,7 +114,16 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
+      # ReDoS Protection: Compilation timeout (optional, default: 100ms)
+      # Range: 50-1000ms. Prevents malicious regex patterns from causing DoS.
+      # Increase if you have very complex patterns that legitimately need more time.
+      compilationTimeoutMs: 100
+
       # Patterns to match in logs (regex)
+      # All patterns are validated for safety to prevent ReDoS attacks:
+      # - Nested quantifiers like (a+)+ are rejected
+      # - Complexity scores are calculated (0-100 scale)
+      # - High complexity (>60) triggers warnings in logs
       patterns:
         # OOM killer patterns
         - pattern: "Out of memory: Kill process"

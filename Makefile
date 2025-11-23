@@ -218,7 +218,7 @@ test-integration:
 test-e2e:
 	@$(call print_status,"Running E2E tests...")
 	@if [ -d "test/e2e" ]; then \
-		go test ./test/e2e/... -v -timeout 10m; \
+		go test -tags=e2e ./test/e2e/... -v -timeout 10m; \
 	else \
 		$(call print_warning,"E2E tests not yet implemented (test/e2e/ does not exist)"); \
 	fi
