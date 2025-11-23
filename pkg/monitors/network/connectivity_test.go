@@ -860,10 +860,10 @@ func TestIsValidHTTPMethod(t *testing.T) {
 		{"GET", true},
 		{"HEAD", true},
 		{"OPTIONS", true},
-		{"get", true},    // lowercase
-		{"head", true},   // lowercase
+		{"get", true},     // lowercase
+		{"head", true},    // lowercase
 		{"options", true}, // lowercase
-		{"Get", true},    // mixed case
+		{"Get", true},     // mixed case
 		{"POST", false},
 		{"PUT", false},
 		{"DELETE", false},

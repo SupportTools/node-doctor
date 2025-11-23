@@ -8,12 +8,12 @@ import (
 // TestExporterReloadSummary_AddResult verifies AddResult method functionality.
 func TestExporterReloadSummary_AddResult(t *testing.T) {
 	tests := []struct {
-		name                      string
-		results                   []ExporterReloadResult
-		expectedTotal             int
-		expectedSuccessful        int
-		expectedFailed            int
-		expectedReloadableCount   int
+		name                    string
+		results                 []ExporterReloadResult
+		expectedTotal           int
+		expectedSuccessful      int
+		expectedFailed          int
+		expectedReloadableCount int
 	}{
 		{
 			name:                    "empty summary",
