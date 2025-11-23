@@ -618,3 +618,210 @@ func TestNilPointerHandling(t *testing.T) {
 		t.Error("expected GetMetadata on nil pointer to return empty string and false")
 	}
 }
+
+// TestProblemWithMetadata_NilMetadataMap verifies WithMetadata handles nil Metadata map.
+func TestProblemWithMetadata_NilMetadataMap(t *testing.T) {
+	// Create problem manually without initializing Metadata
+	problem := &Problem{
+		Type:       "test-type",
+		Resource:   "test-resource",
+		Severity:   ProblemWarning,
+		Message:    "Test message",
+		DetectedAt: time.Now(),
+		Metadata:   nil, // Explicitly nil
+	}
+
+	// WithMetadata should initialize the map
+	problem.WithMetadata("key1", "value1")
+
+	if problem.Metadata == nil {
+		t.Error("expected Metadata to be initialized")
+	}
+	if val, ok := problem.Metadata["key1"]; !ok || val != "value1" {
+		t.Errorf("expected Metadata[key1]=value1, got %v", problem.Metadata)
+	}
+}
+
+// TestConditionValidation_EdgeCases verifies Condition validation edge cases.
+func TestConditionValidation_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition Condition
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "missing reason",
+			condition: Condition{
+				Type:       "TestType",
+				Status:     ConditionTrue,
+				Transition: time.Now(),
+				Message:    "Test message",
+			},
+			wantErr:   true,
+			errSubstr: "reason",
+		},
+		{
+			name: "missing message",
+			condition: Condition{
+				Type:       "TestType",
+				Status:     ConditionTrue,
+				Transition: time.Now(),
+				Reason:     "TestReason",
+			},
+			wantErr:   true,
+			errSubstr: "message",
+		},
+		{
+			name: "missing transition time",
+			condition: Condition{
+				Type:    "TestType",
+				Status:  ConditionTrue,
+				Reason:  "TestReason",
+				Message: "Test message",
+			},
+			wantErr:   true,
+			errSubstr: "transition",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.condition.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && tt.errSubstr != "" {
+				if !stringContains(err.Error(), tt.errSubstr) {
+					t.Errorf("Error message %q should contain %q", err.Error(), tt.errSubstr)
+				}
+			}
+		})
+	}
+}
+
+// TestStatusValidation_EdgeCases verifies Status validation edge cases.
+func TestStatusValidation_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    *Status
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "missing timestamp",
+			status: &Status{
+				Source:     "test-monitor",
+				Events:     []Event{},
+				Conditions: []Condition{},
+			},
+			wantErr:   true,
+			errSubstr: "timestamp",
+		},
+		{
+			name: "invalid condition in status",
+			status: &Status{
+				Source:    "test-monitor",
+				Timestamp: time.Now(),
+				Events:    []Event{},
+				Conditions: []Condition{
+					{Type: "TestType"}, // missing required fields
+				},
+			},
+			wantErr:   true,
+			errSubstr: "condition",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.status.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && tt.errSubstr != "" {
+				if !stringContains(err.Error(), tt.errSubstr) {
+					t.Errorf("Error message %q should contain %q", err.Error(), tt.errSubstr)
+				}
+			}
+		})
+	}
+}
+
+// TestProblemValidation_EdgeCases verifies Problem validation edge cases.
+func TestProblemValidation_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		problem   *Problem
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "missing severity",
+			problem: &Problem{
+				Type:       "test-type",
+				Resource:   "test-resource",
+				Message:    "Test message",
+				DetectedAt: time.Now(),
+			},
+			wantErr:   true,
+			errSubstr: "severity",
+		},
+		{
+			name: "missing message",
+			problem: &Problem{
+				Type:       "test-type",
+				Resource:   "test-resource",
+				Severity:   ProblemWarning,
+				DetectedAt: time.Now(),
+			},
+			wantErr:   true,
+			errSubstr: "message",
+		},
+		{
+			name: "missing detected time",
+			problem: &Problem{
+				Type:     "test-type",
+				Resource: "test-resource",
+				Severity: ProblemWarning,
+				Message:  "Test message",
+			},
+			wantErr:   true,
+			errSubstr: "detected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.problem.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && tt.errSubstr != "" {
+				if !stringContains(err.Error(), tt.errSubstr) {
+					t.Errorf("Error message %q should contain %q", err.Error(), tt.errSubstr)
+				}
+			}
+		})
+	}
+}
+
+// TestGetMetadata_NilMetadataMap verifies GetMetadata handles nil Metadata map.
+func TestGetMetadata_NilMetadataMap(t *testing.T) {
+	problem := &Problem{
+		Type:       "test-type",
+		Resource:   "test-resource",
+		Severity:   ProblemWarning,
+		Message:    "Test message",
+		DetectedAt: time.Now(),
+		Metadata:   nil, // Explicitly nil
+	}
+
+	val, ok := problem.GetMetadata("nonexistent")
+	if ok {
+		t.Error("expected ok=false for nil Metadata map")
+	}
+	if val != "" {
+		t.Errorf("expected empty string, got %q", val)
+	}
+}

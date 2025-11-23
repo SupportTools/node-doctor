@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -448,6 +449,281 @@ func TestJsonMarshal(t *testing.T) {
 			}
 			if !tt.expectError && len(result) == 0 {
 				t.Error("jsonMarshal() returned empty result")
+			}
+		})
+	}
+}
+
+// TestConditionUpdateString tests the String method of ConditionUpdate
+func TestConditionUpdateString(t *testing.T) {
+	tests := []struct {
+		name     string
+		update   ConditionUpdate
+		expected string
+	}{
+		{
+			name: "true condition",
+			update: ConditionUpdate{
+				Type:    "TestCondition",
+				Status:  corev1.ConditionTrue,
+				Reason:  "TestReason",
+				Message: "Test message",
+			},
+			expected: "TestCondition=True: Test message",
+		},
+		{
+			name: "false condition",
+			update: ConditionUpdate{
+				Type:    "FailedCondition",
+				Status:  corev1.ConditionFalse,
+				Reason:  "Failed",
+				Message: "Something failed",
+			},
+			expected: "FailedCondition=False: Something failed",
+		},
+		{
+			name: "unknown condition",
+			update: ConditionUpdate{
+				Type:    "UnknownCondition",
+				Status:  corev1.ConditionUnknown,
+				Reason:  "Unknown",
+				Message: "Status is unknown",
+			},
+			expected: "UnknownCondition=Unknown: Status is unknown",
+		},
+		{
+			name: "empty message",
+			update: ConditionUpdate{
+				Type:    "EmptyMessage",
+				Status:  corev1.ConditionTrue,
+				Reason:  "EmptyReason",
+				Message: "",
+			},
+			expected: "EmptyMessage=True: ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.update.String()
+			if got != tt.expected {
+				t.Errorf("ConditionUpdate.String() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestConvertConditionsToNodeConditions tests the ConvertConditionsToNodeConditions function
+func TestConvertConditionsToNodeConditions(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name       string
+		conditions []types.Condition
+		wantCount  int
+	}{
+		{
+			name:       "empty conditions",
+			conditions: []types.Condition{},
+			wantCount:  0,
+		},
+		{
+			name:       "nil conditions",
+			conditions: nil,
+			wantCount:  0,
+		},
+		{
+			name: "single condition",
+			conditions: []types.Condition{
+				{
+					Type:       "TestCondition",
+					Status:     types.ConditionTrue,
+					Transition: now,
+					Reason:     "TestReason",
+					Message:    "Test message",
+				},
+			},
+			wantCount: 1,
+		},
+		{
+			name: "multiple conditions",
+			conditions: []types.Condition{
+				{
+					Type:       "Condition1",
+					Status:     types.ConditionTrue,
+					Transition: now,
+					Reason:     "Reason1",
+					Message:    "Message 1",
+				},
+				{
+					Type:       "Condition2",
+					Status:     types.ConditionFalse,
+					Transition: now,
+					Reason:     "Reason2",
+					Message:    "Message 2",
+				},
+				{
+					Type:       "Condition3",
+					Status:     types.ConditionUnknown,
+					Transition: now,
+					Reason:     "Reason3",
+					Message:    "Message 3",
+				},
+			},
+			wantCount: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ConvertConditionsToNodeConditions(tt.conditions)
+			if len(result) != tt.wantCount {
+				t.Errorf("ConvertConditionsToNodeConditions() returned %d conditions, want %d", len(result), tt.wantCount)
+			}
+
+			// Verify the conversion was correct for non-empty results
+			for i, cond := range result {
+				if tt.wantCount > 0 {
+					// Check that the condition type was set
+					if string(cond.Type) == "" {
+						t.Errorf("Condition %d has empty type", i)
+					}
+					// Check that status was mapped correctly
+					if cond.Status == "" {
+						t.Errorf("Condition %d has empty status", i)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestConvertConditionsToNodeConditionsStatusMapping tests status mapping in ConvertConditionsToNodeConditions
+func TestConvertConditionsToNodeConditionsStatusMapping(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name         string
+		inputStatus  types.ConditionStatus
+		expectStatus corev1.ConditionStatus
+	}{
+		{
+			name:         "True status",
+			inputStatus:  types.ConditionTrue,
+			expectStatus: corev1.ConditionTrue,
+		},
+		{
+			name:         "False status",
+			inputStatus:  types.ConditionFalse,
+			expectStatus: corev1.ConditionFalse,
+		},
+		{
+			name:         "Unknown status",
+			inputStatus:  types.ConditionUnknown,
+			expectStatus: corev1.ConditionUnknown,
+		},
+		{
+			name:         "Invalid status defaults to Unknown",
+			inputStatus:  types.ConditionStatus("Invalid"),
+			expectStatus: corev1.ConditionUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conditions := []types.Condition{
+				{
+					Type:       "TestCondition",
+					Status:     tt.inputStatus,
+					Transition: now,
+					Reason:     "TestReason",
+					Message:    "Test message",
+				},
+			}
+
+			result := ConvertConditionsToNodeConditions(conditions)
+			if len(result) != 1 {
+				t.Fatalf("Expected 1 condition, got %d", len(result))
+			}
+
+			if result[0].Status != tt.expectStatus {
+				t.Errorf("ConvertConditionsToNodeConditions() status = %v, want %v", result[0].Status, tt.expectStatus)
+			}
+		})
+	}
+}
+
+// TestConvertConditionsToNodeConditionsTypePrefixing tests that non-standard conditions get prefixed
+func TestConvertConditionsToNodeConditionsTypePrefixing(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name             string
+		inputType        string
+		shouldBePrefixed bool
+	}{
+		{
+			name:             "Ready is not prefixed (standard)",
+			inputType:        "Ready",
+			shouldBePrefixed: false,
+		},
+		{
+			name:             "MemoryPressure is not prefixed (standard)",
+			inputType:        "MemoryPressure",
+			shouldBePrefixed: false,
+		},
+		{
+			name:             "DiskPressure is not prefixed (standard)",
+			inputType:        "DiskPressure",
+			shouldBePrefixed: false,
+		},
+		{
+			name:             "PIDPressure is not prefixed (standard)",
+			inputType:        "PIDPressure",
+			shouldBePrefixed: false,
+		},
+		{
+			name:             "NetworkUnavailable is not prefixed (standard)",
+			inputType:        "NetworkUnavailable",
+			shouldBePrefixed: false,
+		},
+		{
+			name:             "CustomCondition is prefixed",
+			inputType:        "CustomCondition",
+			shouldBePrefixed: true,
+		},
+		{
+			name:             "ServiceFailed is prefixed",
+			inputType:        "ServiceFailed",
+			shouldBePrefixed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conditions := []types.Condition{
+				{
+					Type:       tt.inputType,
+					Status:     types.ConditionTrue,
+					Transition: now,
+					Reason:     "TestReason",
+					Message:    "Test message",
+				},
+			}
+
+			result := ConvertConditionsToNodeConditions(conditions)
+			if len(result) != 1 {
+				t.Fatalf("Expected 1 condition, got %d", len(result))
+			}
+
+			condType := string(result[0].Type)
+			hasPrefix := strings.HasPrefix(condType, "NodeDoctor")
+
+			if tt.shouldBePrefixed && !hasPrefix {
+				t.Errorf("Expected condition type %q to be prefixed with NodeDoctor, got %q", tt.inputType, condType)
+			}
+			if !tt.shouldBePrefixed && hasPrefix {
+				t.Errorf("Expected condition type %q to NOT be prefixed, got %q", tt.inputType, condType)
 			}
 		})
 	}

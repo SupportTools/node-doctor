@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -374,6 +375,49 @@ func TestClassifyHTTPError(t *testing.T) {
 				t.Errorf("classifyHTTPError() = %s, want %s", errorType, tt.wantType)
 			}
 		})
+	}
+}
+
+// TestClassifyHTTPError_NetworkErrors tests network-related error classification.
+func TestClassifyHTTPError_NetworkErrors(t *testing.T) {
+	// Test DNS error
+	dnsErr := &net.DNSError{
+		Err:  "no such host",
+		Name: "invalid.host",
+	}
+	if got := classifyHTTPError(dnsErr); got != "DNS" {
+		t.Errorf("classifyHTTPError(DNSError) = %s, want DNS", got)
+	}
+
+	// Test OpError with dial
+	opErr := &net.OpError{
+		Op:  "dial",
+		Net: "tcp",
+		Err: &net.DNSError{Err: "lookup failed"},
+	}
+	result := classifyHTTPError(opErr)
+	if result != "DNS" && result != "Connection" {
+		t.Errorf("classifyHTTPError(OpError with DNS) = %s, want DNS or Connection", result)
+	}
+
+	// Test OpError with dial operation
+	dialErr := &net.OpError{
+		Op:  "dial",
+		Net: "tcp",
+		Err: &net.AddrError{Err: "connection refused"},
+	}
+	if got := classifyHTTPError(dialErr); got != "Connection" {
+		t.Errorf("classifyHTTPError(dial OpError) = %s, want Connection", got)
+	}
+
+	// Test generic error falls back to Network
+	genericErr := &net.OpError{
+		Op:  "read",
+		Net: "tcp",
+		Err: &net.AddrError{Err: "connection reset"},
+	}
+	if got := classifyHTTPError(genericErr); got != "Network" {
+		t.Errorf("classifyHTTPError(generic network error) = %s, want Network", got)
 	}
 }
 

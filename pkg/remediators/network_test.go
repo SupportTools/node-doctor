@@ -755,3 +755,132 @@ func TestNetworkRemediator_InterfaceCheckFailure(t *testing.T) {
 		t.Errorf("Remediate() expected error for interface check failure, got nil")
 	}
 }
+
+// TestNetworkRemediator_LogWarnf_NilLogger verifies logWarnf handles nil logger.
+func TestNetworkRemediator_LogWarnf_NilLogger(t *testing.T) {
+	config := NetworkConfig{
+		Operation:     NetworkRestartInterface,
+		InterfaceName: "eth0",
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	r.logWarnf("test warning message: %s", "value")
+}
+
+// TestNetworkRemediator_LogInfof_NilLogger verifies logInfof handles nil logger.
+func TestNetworkRemediator_LogInfof_NilLogger(t *testing.T) {
+	config := NetworkConfig{
+		Operation:     NetworkRestartInterface,
+		InterfaceName: "eth0",
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	r.logInfof("test info message: %s", "value")
+}
+
+// TestNetworkRemediator_VerifyOperation_ResetRouting tests verifyOperation for reset routing.
+func TestNetworkRemediator_VerifyOperation_ResetRouting(t *testing.T) {
+	config := NetworkConfig{
+		Operation: NetworkResetRouting,
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	mockExec := &mockNetworkExecutor{
+		routingTable: "default via 192.168.1.1",
+	}
+	r.SetNetworkExecutor(mockExec)
+
+	problem := types.Problem{
+		Type:     "network-routing",
+		Resource: "routing-table",
+		Severity: types.ProblemWarning,
+	}
+
+	ctx := context.Background()
+	err = r.Remediate(ctx, problem)
+
+	// Should succeed with routing verification
+	if err != nil {
+		t.Errorf("Remediate() unexpected error: %v", err)
+	}
+}
+
+// TestNetworkRemediator_VerifyRoutingTable_Direct tests verifyRoutingTable directly.
+func TestNetworkRemediator_VerifyRoutingTable_Direct(t *testing.T) {
+	config := NetworkConfig{
+		Operation: NetworkResetRouting,
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	t.Run("success case", func(t *testing.T) {
+		mockExec := &mockNetworkExecutor{
+			routingTable: "default via 192.168.1.1",
+		}
+		r.SetNetworkExecutor(mockExec)
+
+		ctx := context.Background()
+		err := r.verifyRoutingTable(ctx)
+		if err != nil {
+			t.Errorf("verifyRoutingTable() unexpected error: %v", err)
+		}
+	})
+
+	t.Run("failure case", func(t *testing.T) {
+		mockExec := &mockNetworkExecutor{
+			shouldFailCommand: true, // This will cause routing table fetch to fail
+		}
+		r.SetNetworkExecutor(mockExec)
+
+		ctx := context.Background()
+		err := r.verifyRoutingTable(ctx)
+		if err == nil {
+			t.Error("verifyRoutingTable() expected error for routing table failure, got nil")
+		}
+	})
+}
+
+// TestNetworkRemediator_LogWithLogger tests log methods with logger set.
+func TestNetworkRemediator_LogWithLogger(t *testing.T) {
+	config := NetworkConfig{
+		Operation:     NetworkRestartInterface,
+		InterfaceName: "eth0",
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	logger := &mockLogger{}
+	r.SetLogger(logger)
+
+	r.logInfof("test info: %s", "value")
+	r.logWarnf("test warn: %s", "value")
+
+	if len(logger.infoMessages) != 1 {
+		t.Errorf("expected 1 info message, got %d", len(logger.infoMessages))
+	}
+	if len(logger.warnMessages) != 1 {
+		t.Errorf("expected 1 warn message, got %d", len(logger.warnMessages))
+	}
+}

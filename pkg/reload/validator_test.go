@@ -821,3 +821,1063 @@ func createValidConfig() *types.NodeDoctorConfig {
 
 	return config
 }
+
+// TestValidate_KubeletMonitorConfig tests kubelet monitor validation
+func TestValidate_KubeletMonitorConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        map[string]interface{}
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name: "valid kubelet config",
+			config: map[string]interface{}{
+				"port":     10250,
+				"endpoint": "/healthz",
+				"timeout":  "10s",
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "invalid port type",
+			config: map[string]interface{}{
+				"port": "invalid",
+			},
+			expectedField: "monitors[0].config.port",
+			expectedMsg:   "port must be a number",
+		},
+		{
+			name: "port out of range",
+			config: map[string]interface{}{
+				"port": 70000,
+			},
+			expectedField: "monitors[0].config.port",
+			expectedMsg:   "port must be between 1 and 65535",
+		},
+		{
+			name: "invalid endpoint type",
+			config: map[string]interface{}{
+				"endpoint": 123,
+			},
+			expectedField: "monitors[0].config.endpoint",
+			expectedMsg:   "endpoint must be a string",
+		},
+		{
+			name: "empty endpoint",
+			config: map[string]interface{}{
+				"endpoint": "",
+			},
+			expectedField: "monitors[0].config.endpoint",
+			expectedMsg:   "endpoint cannot be empty",
+		},
+		{
+			name: "invalid timeout type",
+			config: map[string]interface{}{
+				"timeout": 123,
+			},
+			expectedField: "monitors[0].config.timeout",
+			expectedMsg:   "timeout must be a string",
+		},
+		{
+			name: "invalid timeout format",
+			config: map[string]interface{}{
+				"timeout": "invalid-duration",
+			},
+			expectedField: "monitors[0].config.timeout",
+			expectedMsg:   "invalid timeout duration format",
+		},
+		{
+			name: "port as string",
+			config: map[string]interface{}{
+				"port": "8080",
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "port zero",
+			config: map[string]interface{}{
+				"port": 0,
+			},
+			expectedField: "monitors[0].config.port",
+			expectedMsg:   "port must be between 1 and 65535",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Monitors[0].Type = "kubelet"
+			cfg.Monitors[0].Config = tt.config
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_CapacityMonitorConfig tests capacity monitor validation
+func TestValidate_CapacityMonitorConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        map[string]interface{}
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name: "valid capacity config",
+			config: map[string]interface{}{
+				"cpu":      80.0,
+				"memory":   85.0,
+				"disk":     90.0,
+				"warning":  80.0,
+				"critical": 95.0,
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "cpu threshold over 100",
+			config: map[string]interface{}{
+				"cpu": 150.0,
+			},
+			expectedField: "monitors[0].config.cpu",
+			expectedMsg:   "threshold must be between 0 and 100",
+		},
+		{
+			name: "memory threshold negative",
+			config: map[string]interface{}{
+				"memory": -10.0,
+			},
+			expectedField: "monitors[0].config.memory",
+			expectedMsg:   "threshold must be between 0 and 100",
+		},
+		{
+			name: "disk threshold invalid type",
+			config: map[string]interface{}{
+				"disk": "high",
+			},
+			expectedField: "monitors[0].config.disk",
+			expectedMsg:   "threshold must be a number",
+		},
+		{
+			name: "warning threshold as int",
+			config: map[string]interface{}{
+				"warning": 80,
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "critical as string",
+			config: map[string]interface{}{
+				"critical": "90",
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "invalid string threshold",
+			config: map[string]interface{}{
+				"warning": "high",
+			},
+			expectedField: "monitors[0].config.warning",
+			expectedMsg:   "threshold must be a number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Monitors[0].Type = "capacity"
+			cfg.Monitors[0].Config = tt.config
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_LogPatternMonitorConfig tests log-pattern monitor validation
+func TestValidate_LogPatternMonitorConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        map[string]interface{}
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name: "valid log-pattern config",
+			config: map[string]interface{}{
+				"logFile": "/var/log/messages",
+				"pattern": "ERROR|FATAL",
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "nil config",
+			config: nil,
+			expectedField: "monitors[0].config",
+			expectedMsg:   "log pattern monitor requires configuration",
+		},
+		{
+			name: "missing logFile",
+			config: map[string]interface{}{
+				"pattern": "ERROR",
+			},
+			expectedField: "monitors[0].config.logFile",
+			expectedMsg:   "logFile is required",
+		},
+		{
+			name: "missing pattern",
+			config: map[string]interface{}{
+				"logFile": "/var/log/messages",
+			},
+			expectedField: "monitors[0].config.pattern",
+			expectedMsg:   "pattern is required",
+		},
+		{
+			name: "invalid logFile type",
+			config: map[string]interface{}{
+				"logFile": 123,
+				"pattern": "ERROR",
+			},
+			expectedField: "monitors[0].config.logFile",
+			expectedMsg:   "logFile must be a string",
+		},
+		{
+			name: "invalid pattern type",
+			config: map[string]interface{}{
+				"logFile": "/var/log/messages",
+				"pattern": 123,
+			},
+			expectedField: "monitors[0].config.pattern",
+			expectedMsg:   "pattern must be a string",
+		},
+		{
+			name: "relative logFile path",
+			config: map[string]interface{}{
+				"logFile": "var/log/messages",
+				"pattern": "ERROR",
+			},
+			expectedField: "monitors[0].config.logFile",
+			expectedMsg:   "file path must be absolute",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Monitors[0].Type = "log-pattern"
+			cfg.Monitors[0].Config = tt.config
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_ScriptMonitorConfig tests script monitor validation
+func TestValidate_ScriptMonitorConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        map[string]interface{}
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name: "valid script config",
+			config: map[string]interface{}{
+				"script":  "/usr/local/bin/check.sh",
+				"timeout": "30s",
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "nil config",
+			config: nil,
+			expectedField: "monitors[0].config",
+			expectedMsg:   "script monitor requires configuration",
+		},
+		{
+			name: "missing script",
+			config: map[string]interface{}{
+				"timeout": "30s",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "script path is required",
+		},
+		{
+			name: "invalid script type",
+			config: map[string]interface{}{
+				"script": 123,
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "script must be a string",
+		},
+		{
+			name: "invalid timeout type",
+			config: map[string]interface{}{
+				"script":  "/usr/local/bin/check.sh",
+				"timeout": 123,
+			},
+			expectedField: "monitors[0].config.timeout",
+			expectedMsg:   "timeout must be a string",
+		},
+		{
+			name: "invalid timeout format",
+			config: map[string]interface{}{
+				"script":  "/usr/local/bin/check.sh",
+				"timeout": "invalid",
+			},
+			expectedField: "monitors[0].config.timeout",
+			expectedMsg:   "invalid timeout duration format",
+		},
+		{
+			name: "relative script path",
+			config: map[string]interface{}{
+				"script": "scripts/check.sh",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "file path must be absolute",
+		},
+		{
+			name: "script with shell metacharacter semicolon",
+			config: map[string]interface{}{
+				"script": "/usr/local/bin/check.sh; rm -rf /",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "shell metacharacters",
+		},
+		{
+			name: "script with shell metacharacter pipe",
+			config: map[string]interface{}{
+				"script": "/usr/local/bin/check.sh | cat",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "shell metacharacters",
+		},
+		{
+			name: "script with shell metacharacter ampersand",
+			config: map[string]interface{}{
+				"script": "/usr/local/bin/check.sh & sleep 1",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "shell metacharacters",
+		},
+		{
+			name: "script with shell metacharacter backtick",
+			config: map[string]interface{}{
+				"script": "/usr/local/bin/`whoami`.sh",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "shell metacharacters",
+		},
+		{
+			name: "script with shell metacharacter dollar",
+			config: map[string]interface{}{
+				"script": "/usr/local/bin/$USER.sh",
+			},
+			expectedField: "monitors[0].config.script",
+			expectedMsg:   "shell metacharacters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Monitors[0].Type = "script"
+			cfg.Monitors[0].Config = tt.config
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_PrometheusMonitorConfig tests prometheus monitor validation
+func TestValidate_PrometheusMonitorConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        map[string]interface{}
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name: "valid prometheus config",
+			config: map[string]interface{}{
+				"url":   "http://prometheus:9090",
+				"query": "up{job=\"kubernetes\"}",
+			},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "nil config",
+			config: nil,
+			expectedField: "monitors[0].config",
+			expectedMsg:   "prometheus monitor requires configuration",
+		},
+		{
+			name: "missing url",
+			config: map[string]interface{}{
+				"query": "up{job=\"kubernetes\"}",
+			},
+			expectedField: "monitors[0].config.url",
+			expectedMsg:   "url is required",
+		},
+		{
+			name: "missing query",
+			config: map[string]interface{}{
+				"url": "http://prometheus:9090",
+			},
+			expectedField: "monitors[0].config.query",
+			expectedMsg:   "query is required",
+		},
+		{
+			name: "invalid url type",
+			config: map[string]interface{}{
+				"url":   123,
+				"query": "up",
+			},
+			expectedField: "monitors[0].config.url",
+			expectedMsg:   "url must be a string",
+		},
+		{
+			name: "invalid query type",
+			config: map[string]interface{}{
+				"url":   "http://prometheus:9090",
+				"query": 123,
+			},
+			expectedField: "monitors[0].config.query",
+			expectedMsg:   "query must be a string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Monitors[0].Type = "prometheus"
+			cfg.Monitors[0].Config = tt.config
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_PrometheusExporter tests prometheus exporter validation
+func TestValidate_PrometheusExporter(t *testing.T) {
+	tests := []struct {
+		name          string
+		port          int
+		path          string
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name:          "valid config",
+			port:          9100,
+			path:          "/metrics",
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name:          "port zero",
+			port:          0,
+			path:          "/metrics",
+			expectedField: "exporters.prometheus.port",
+			expectedMsg:   "port must be positive",
+		},
+		{
+			name:          "port negative",
+			port:          -1,
+			path:          "/metrics",
+			expectedField: "exporters.prometheus.port",
+			expectedMsg:   "port must be positive",
+		},
+		{
+			name:          "port below 1024",
+			port:          80,
+			path:          "/metrics",
+			expectedField: "exporters.prometheus.port",
+			expectedMsg:   "port must be between 1024 and 65535",
+		},
+		{
+			name:          "port above 65535",
+			port:          70000,
+			path:          "/metrics",
+			expectedField: "exporters.prometheus.port",
+			expectedMsg:   "port must be between 1024 and 65535",
+		},
+		{
+			name:          "empty path",
+			port:          9100,
+			path:          "",
+			expectedField: "exporters.prometheus.path",
+			expectedMsg:   "metrics path is required",
+		},
+		{
+			name:          "path without leading slash",
+			port:          9100,
+			path:          "metrics",
+			expectedField: "exporters.prometheus.path",
+			expectedMsg:   "path must start with '/'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Exporters.Prometheus.Port = tt.port
+			cfg.Exporters.Prometheus.Path = tt.path
+			// Disable other exporters
+			cfg.Exporters.Kubernetes.Enabled = false
+			cfg.Exporters.HTTP.Enabled = false
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_KubernetesExporter tests kubernetes exporter validation
+func TestValidate_KubernetesExporter(t *testing.T) {
+	tests := []struct {
+		name          string
+		namespace     string
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name:          "valid namespace",
+			namespace:     "kube-system",
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name:          "empty namespace",
+			namespace:     "",
+			expectedField: "exporters.kubernetes.namespace",
+			expectedMsg:   "namespace is required",
+		},
+		{
+			name:          "invalid namespace with uppercase",
+			namespace:     "Kube-System",
+			expectedField: "exporters.kubernetes.namespace",
+			expectedMsg:   "namespace must be a valid Kubernetes resource name",
+		},
+		{
+			name:          "namespace starting with dash",
+			namespace:     "-kube-system",
+			expectedField: "exporters.kubernetes.namespace",
+			expectedMsg:   "namespace must be a valid Kubernetes resource name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Exporters.Kubernetes.Namespace = tt.namespace
+			// Disable other exporters
+			cfg.Exporters.HTTP.Enabled = false
+			cfg.Exporters.Prometheus.Enabled = false
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_Remediation tests remediation config validation
+func TestValidate_Remediation(t *testing.T) {
+	tests := []struct {
+		name          string
+		modifyFunc    func(*types.RemediationConfig)
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name:          "valid remediation",
+			modifyFunc:    func(r *types.RemediationConfig) {},
+			expectedField: "",
+			expectedMsg:   "",
+		},
+		{
+			name: "negative cooldown",
+			modifyFunc: func(r *types.RemediationConfig) {
+				r.CooldownPeriod = -5 * time.Minute
+			},
+			expectedField: "remediation.cooldownPeriod",
+			expectedMsg:   "cooldown period cannot be negative",
+		},
+		{
+			name: "negative max attempts",
+			modifyFunc: func(r *types.RemediationConfig) {
+				r.MaxAttemptsGlobal = -1
+			},
+			expectedField: "remediation.maxAttemptsGlobal",
+			expectedMsg:   "max attempts cannot be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			tt.modifyFunc(&cfg.Remediation)
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if tt.expectedField == "" {
+				if !result.Valid {
+					t.Errorf("Expected valid config, got errors: %v", result.Errors)
+				}
+			} else {
+				if result.Valid {
+					t.Error("Expected validation to fail")
+				}
+				hasExpectedError := false
+				for _, err := range result.Errors {
+					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+						hasExpectedError = true
+						break
+					}
+				}
+				if !hasExpectedError {
+					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_HTTPWebhookConfig tests webhook config validation
+func TestValidate_HTTPWebhookConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		webhooks      []types.WebhookEndpoint
+		expectedField string
+		expectedMsg   string
+	}{
+		{
+			name: "webhook with zero timeout",
+			webhooks: []types.WebhookEndpoint{
+				{
+					Name:    "test",
+					URL:     "https://example.com/webhook",
+					Timeout: 0,
+				},
+			},
+			expectedField: "exporters.http.webhooks[0].timeout",
+			expectedMsg:   "timeout must be positive",
+		},
+		{
+			name: "webhook with negative timeout",
+			webhooks: []types.WebhookEndpoint{
+				{
+					Name:    "test",
+					URL:     "https://example.com/webhook",
+					Timeout: -5 * time.Second,
+				},
+			},
+			expectedField: "exporters.http.webhooks[0].timeout",
+			expectedMsg:   "timeout must be positive",
+		},
+		{
+			name: "webhook with empty URL",
+			webhooks: []types.WebhookEndpoint{
+				{
+					Name:    "test",
+					URL:     "",
+					Timeout: 30 * time.Second,
+				},
+			},
+			expectedField: "exporters.http.webhooks[0].url",
+			expectedMsg:   "webhook URL is required",
+		},
+		{
+			name: "too many webhooks",
+			webhooks: func() []types.WebhookEndpoint {
+				webhooks := make([]types.WebhookEndpoint, 60)
+				for i := range webhooks {
+					webhooks[i] = types.WebhookEndpoint{
+						Name:    "webhook-" + string(rune('a'+i%26)),
+						URL:     "https://example.com/webhook",
+						Timeout: 30 * time.Second,
+					}
+				}
+				return webhooks
+			}(),
+			expectedField: "exporters.http.webhooks",
+			expectedMsg:   "too many webhooks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := createValidConfig()
+			cfg.Exporters.HTTP.Webhooks = tt.webhooks
+			// Disable other exporters
+			cfg.Exporters.Kubernetes.Enabled = false
+			cfg.Exporters.Prometheus.Enabled = false
+
+			validator := NewConfigValidator()
+			result := validator.Validate(cfg)
+
+			if result.Valid {
+				t.Error("Expected validation to fail")
+			}
+			hasExpectedError := false
+			for _, err := range result.Errors {
+				if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
+					hasExpectedError = true
+					break
+				}
+			}
+			if !hasExpectedError {
+				t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
+			}
+		})
+	}
+}
+
+// TestValidate_MonitorTypeEmpty tests validation for empty monitor type
+func TestValidate_MonitorTypeEmpty(t *testing.T) {
+	cfg := createValidConfig()
+	cfg.Monitors[0].Type = ""
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Error("Expected validation to fail for empty monitor type")
+	}
+
+	hasTypeError := false
+	for _, err := range result.Errors {
+		if err.Field == "monitors[0].type" && strings.Contains(err.Message, "type is required") {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("Expected type required error, got: %v", result.Errors)
+	}
+}
+
+// TestValidate_InvalidMonitorType tests validation for unknown monitor type
+func TestValidate_InvalidMonitorType(t *testing.T) {
+	cfg := createValidConfig()
+	cfg.Monitors[0].Type = "unknown-type"
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Error("Expected validation to fail for unknown monitor type")
+	}
+
+	hasTypeError := false
+	for _, err := range result.Errors {
+		if err.Field == "monitors[0].type" && strings.Contains(err.Message, "unsupported monitor type") {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("Expected unsupported type error, got: %v", result.Errors)
+	}
+}
+
+// TestValidate_MonitorDependenciesExceedMax tests dependency limit validation
+func TestValidate_MonitorDependenciesExceedMax(t *testing.T) {
+	cfg := createValidConfig()
+	// Create many dependencies
+	deps := make([]string, 25)
+	for i := range deps {
+		deps[i] = "monitor-" + string(rune('a'+i%26))
+	}
+	cfg.Monitors[0].DependsOn = deps
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Error("Expected validation to fail for too many dependencies")
+	}
+
+	hasDepsError := false
+	for _, err := range result.Errors {
+		if strings.Contains(err.Field, "dependsOn") && strings.Contains(err.Message, "too many dependencies") {
+			hasDepsError = true
+			break
+		}
+	}
+	if !hasDepsError {
+		t.Errorf("Expected too many dependencies error, got: %v", result.Errors)
+	}
+}
+
+// TestValidate_InvalidKubernetesName tests various invalid kubernetes names
+func TestValidate_InvalidKubernetesName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"valid simple", "test", true},
+		{"valid with dash", "test-name", true},
+		{"valid with dot", "test.name", true},
+		{"valid with numbers", "test123", true},
+		{"empty", "", false},
+		{"too long", strings.Repeat("a", 64), false},
+		{"uppercase", "Test", false},
+		{"underscore", "test_name", false},
+		{"starts with dash", "-test", false},
+		{"ends with dash", "test-", false},
+		{"starts with dot", ".test", false},
+		{"ends with dot", "test.", false},
+		{"special char", "test@name", false},
+	}
+
+	validator := NewConfigValidator()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := validator.isValidKubernetesName(tt.input)
+			if result != tt.expected {
+				t.Errorf("isValidKubernetesName(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFormatValidationErrors_SingleError tests formatting with single error
+func TestFormatValidationErrors_SingleError(t *testing.T) {
+	errors := []ValidationError{
+		{Field: "field1", Message: "error message 1"},
+	}
+
+	result := FormatValidationErrors(errors)
+	expected := "field1: error message 1"
+
+	if result != expected {
+		t.Errorf("Expected %q, got %q", expected, result)
+	}
+}
+
+// TestValidate_NoMonitors tests validation when no monitors are configured
+func TestValidate_NoMonitors(t *testing.T) {
+	cfg := createValidConfig()
+	cfg.Monitors = []types.MonitorConfig{}
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Error("Expected validation to fail for empty monitors")
+	}
+
+	hasMonitorsError := false
+	for _, err := range result.Errors {
+		if err.Field == "monitors" && strings.Contains(err.Message, "at least one monitor") {
+			hasMonitorsError = true
+			break
+		}
+	}
+	if !hasMonitorsError {
+		t.Errorf("Expected monitors required error, got: %v", result.Errors)
+	}
+}
+
+// TestValidate_EmptyMonitorName tests validation when monitor name is empty
+func TestValidate_EmptyMonitorName(t *testing.T) {
+	cfg := createValidConfig()
+	cfg.Monitors[0].Name = ""
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Error("Expected validation to fail for empty monitor name")
+	}
+
+	hasNameError := false
+	for _, err := range result.Errors {
+		if err.Field == "monitors[0].name" && strings.Contains(err.Message, "name is required") {
+			hasNameError = true
+			break
+		}
+	}
+	if !hasNameError {
+		t.Errorf("Expected name required error, got: %v", result.Errors)
+	}
+}
+
+// TestValidate_InvalidMetadataName tests validation for invalid metadata name
+func TestValidate_InvalidMetadataName(t *testing.T) {
+	cfg := createValidConfig()
+	cfg.Metadata.Name = "Invalid-Name"
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Error("Expected validation to fail for invalid metadata name")
+	}
+
+	hasNameError := false
+	for _, err := range result.Errors {
+		if err.Field == "metadata.name" && strings.Contains(err.Message, "valid Kubernetes resource name") {
+			hasNameError = true
+			break
+		}
+	}
+	if !hasNameError {
+		t.Errorf("Expected invalid name error, got: %v", result.Errors)
+	}
+}

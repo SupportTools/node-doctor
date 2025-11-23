@@ -3,7 +3,6 @@ package detector
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -28,7 +27,7 @@ type ReloadTestHelper struct {
 
 // NewReloadTestHelper creates a new test helper for reload integration tests
 func NewReloadTestHelper(t *testing.T) *ReloadTestHelper {
-	tempDir, err := ioutil.TempDir("", "reload-test-*")
+	tempDir, err := os.MkdirTemp("", "reload-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -85,7 +84,7 @@ func (h *ReloadTestHelper) UpdateConfig(t *testing.T, newConfig *types.NodeDocto
 
 	// Write atomically like Kubernetes ConfigMap
 	tmpFile := h.configFile + ".tmp"
-	if err := ioutil.WriteFile(tmpFile, data, 0644); err != nil {
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
 		t.Fatalf("Failed to write temp config: %v", err)
 	}
 
@@ -106,11 +105,16 @@ func (h *ReloadTestHelper) WaitForReload(t *testing.T, timeout time.Duration) er
 	for time.Now().Before(deadline) {
 		h.eventsMu.Lock()
 		for _, event := range h.events {
-			// Match the actual event reasons emitted by the detector
-			if event.Reason == "ReloadSuccess" || event.Reason == "NoChanges" ||
-				event.Reason == "ReloadFailed" || event.Reason == "ReloadPartialFailure" {
+			// Match event reasons from both ReloadCoordinator (ConfigReload*) and detector (Reload*)
+			// ReloadCoordinator emits: ConfigReloadSucceeded, ConfigReloadFailed, ConfigReloadNoChanges
+			// Detector emits: ReloadSuccess, ReloadFailed, ReloadPartialFailure, NoChanges
+			isSuccess := event.Reason == "ReloadSuccess" || event.Reason == "ConfigReloadSucceeded" ||
+				event.Reason == "NoChanges" || event.Reason == "ConfigReloadNoChanges"
+			isFailure := event.Reason == "ReloadFailed" || event.Reason == "ConfigReloadFailed" || event.Reason == "ReloadPartialFailure"
+
+			if isSuccess || isFailure {
 				h.eventsMu.Unlock()
-				if event.Reason == "ReloadFailed" || event.Reason == "ReloadPartialFailure" {
+				if isFailure {
 					return fmt.Errorf("reload failed: %s", event.Message)
 				}
 				return nil
@@ -378,7 +382,7 @@ exporters:
 `
 
 	// Write invalid config directly
-	if err := ioutil.WriteFile(helper.configFile, []byte(invalidYAML), 0644); err != nil {
+	if err := os.WriteFile(helper.configFile, []byte(invalidYAML), 0644); err != nil {
 		t.Fatalf("Failed to write invalid config: %v", err)
 	}
 
@@ -507,7 +511,7 @@ func TestConfigReloadExporterUpdates(t *testing.T) {
 	initialConfig.Exporters.HTTP.Webhooks[0].URL = "http://localhost:8080/webhook1"
 
 	// Create reloadable mock exporter
-	mockExporter := NewMockReloadableExporter("http-exporter")
+	mockExporter := NewMockHTTPReloadableExporter("http-exporter")
 	helper.Setup(t, initialConfig)
 
 	// Replace exporter with reloadable one
@@ -735,8 +739,9 @@ func TestConfigReloadPartialFailureRecovery(t *testing.T) {
 	}
 }
 
-// MockReloadableExporter is a mock exporter that implements ReloadableExporter interface
-type MockReloadableExporter struct {
+// MockHTTPReloadableExporter is a mock HTTP exporter that implements ReloadableExporter interface.
+// The name contains "HTTP" so getExporterType recognizes it as an HTTP exporter.
+type MockHTTPReloadableExporter struct {
 	*MockExporter
 	reloadable  bool
 	reloadCount int
@@ -744,16 +749,16 @@ type MockReloadableExporter struct {
 	mu          sync.RWMutex
 }
 
-// NewMockReloadableExporter creates a new mock reloadable exporter
-func NewMockReloadableExporter(name string) *MockReloadableExporter {
-	return &MockReloadableExporter{
+// NewMockHTTPReloadableExporter creates a new mock reloadable HTTP exporter
+func NewMockHTTPReloadableExporter(name string) *MockHTTPReloadableExporter {
+	return &MockHTTPReloadableExporter{
 		MockExporter: NewMockExporter(name),
 		reloadable:   true,
 	}
 }
 
 // Reload implements ReloadableExporter interface
-func (m *MockReloadableExporter) Reload(config interface{}) error {
+func (m *MockHTTPReloadableExporter) Reload(config interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -763,28 +768,28 @@ func (m *MockReloadableExporter) Reload(config interface{}) error {
 }
 
 // IsReloadable implements ReloadableExporter interface
-func (m *MockReloadableExporter) IsReloadable() bool {
+func (m *MockHTTPReloadableExporter) IsReloadable() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.reloadable
 }
 
 // SetReloadable sets whether this exporter is reloadable
-func (m *MockReloadableExporter) SetReloadable(reloadable bool) {
+func (m *MockHTTPReloadableExporter) SetReloadable(reloadable bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.reloadable = reloadable
 }
 
 // GetReloadCount returns the number of times Reload was called
-func (m *MockReloadableExporter) GetReloadCount() int {
+func (m *MockHTTPReloadableExporter) GetReloadCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.reloadCount
 }
 
 // GetLastConfig returns the last config passed to Reload
-func (m *MockReloadableExporter) GetLastConfig() interface{} {
+func (m *MockHTTPReloadableExporter) GetLastConfig() interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.lastConfig

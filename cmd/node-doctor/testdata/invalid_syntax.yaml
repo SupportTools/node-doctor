@@ -1,0 +1,9 @@
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+metadata:
+  name: "invalid config
+  # Missing closing quote - invalid YAML syntax
+settings:
+  nodeName: test-node
+monitors:
+  - name: test-monitor

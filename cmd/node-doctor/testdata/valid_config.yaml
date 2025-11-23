@@ -1,0 +1,22 @@
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+metadata:
+  name: test-config
+settings:
+  nodeName: test-node
+  logLevel: info
+  logFormat: json
+monitors:
+  - name: test-noop
+    type: noop
+    enabled: true
+    interval: 30s
+exporters:
+  kubernetes:
+    enabled: false
+  http:
+    enabled: false
+  prometheus:
+    enabled: false
+remediation:
+  enabled: false

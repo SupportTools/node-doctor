@@ -626,6 +626,62 @@ func TestConcurrentStateQueries(t *testing.T) {
 	// If we get here without deadlock or race, test passes
 }
 
+// TestBaseRemediator_LogWarnf_NilLogger verifies logWarnf handles nil logger.
+func TestBaseRemediator_LogWarnf_NilLogger(t *testing.T) {
+	remediator, err := NewBaseRemediator("test", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to create remediator: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	remediator.logWarnf("test warning message: %s", "value")
+}
+
+// TestBaseRemediator_LogErrorf_NilLogger verifies logErrorf handles nil logger.
+func TestBaseRemediator_LogErrorf_NilLogger(t *testing.T) {
+	remediator, err := NewBaseRemediator("test", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to create remediator: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	remediator.logErrorf("test error message: %s", "value")
+}
+
+// TestBaseRemediator_LogWarnf_WithLogger verifies logWarnf logs with logger set.
+func TestBaseRemediator_LogWarnf_WithLogger(t *testing.T) {
+	remediator, err := NewBaseRemediator("test", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to create remediator: %v", err)
+	}
+	logger := &mockLogger{}
+	_ = remediator.SetLogger(logger)
+
+	remediator.logWarnf("test warning: %s", "value")
+
+	if len(logger.warnMessages) != 1 {
+		t.Errorf("expected 1 warn message, got %d", len(logger.warnMessages))
+	}
+}
+
+// TestBaseRemediator_LogErrorf_WithLogger verifies logErrorf logs with logger set.
+func TestBaseRemediator_LogErrorf_WithLogger(t *testing.T) {
+	remediator, err := NewBaseRemediator("test", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to create remediator: %v", err)
+	}
+	logger := &mockLogger{}
+	_ = remediator.SetLogger(logger)
+
+	remediator.logErrorf("test error: %s", "value")
+
+	if len(logger.errorMessages) != 1 {
+		t.Errorf("expected 1 error message, got %d", len(logger.errorMessages))
+	}
+}
+
 // TestEmbeddingPattern demonstrates embedding BaseRemediator
 func TestEmbeddingPattern(t *testing.T) {
 	// Define a concrete remediator that embeds BaseRemediator

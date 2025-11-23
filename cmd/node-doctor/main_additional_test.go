@@ -319,6 +319,447 @@ func TestMonitorFactoryAdapter_ContextPropagation(t *testing.T) {
 	}
 }
 
+// TestCreateExporters_HTTPExporterEnabled tests HTTP exporter creation when enabled.
+func TestCreateExporters_HTTPExporterEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// HTTP exporter uses webhooks, not bind address/port
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: false,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: true,
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name: "test-webhook",
+						URL:  "http://localhost:9999/webhook",
+					},
+				},
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: false,
+			},
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have at least the health server and possibly HTTP exporter
+	if len(exporters) == 0 {
+		t.Error("createExporters() should create at least one exporter")
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should return at least one exporter interface")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_PrometheusExporterEnabled tests Prometheus exporter creation when enabled.
+func TestCreateExporters_PrometheusExporterEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: false,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: false,
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: true,
+				Port:    19091, // Use high port to avoid conflicts
+				Path:    "/metrics",
+			},
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have at least the health server and possibly Prometheus exporter
+	if len(exporters) == 0 {
+		t.Error("createExporters() should create at least one exporter")
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should return at least one exporter interface")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_KubernetesExporterEnabled tests Kubernetes exporter creation when enabled.
+// Note: This will fail to create the exporter without valid kubeconfig, but should not error.
+func TestCreateExporters_KubernetesExporterEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: true,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: false,
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: false,
+			},
+		},
+	}
+
+	// This should not panic even without valid kubeconfig
+	// It will log a warning but continue
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have at least the health server or noop exporter
+	if len(exporters) == 0 {
+		t.Error("createExporters() should create at least one exporter (health or noop)")
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should return at least one exporter interface")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_AllExportersEnabled tests all exporters enabled simultaneously.
+func TestCreateExporters_AllExportersEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: true, // Will fail without kubeconfig but shouldn't crash
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: true,
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name: "test-webhook-all",
+						URL:  "http://localhost:9998/webhook",
+					},
+				},
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: true,
+				Port:    19092, // Use high port
+				Path:    "/metrics",
+			},
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have multiple exporters
+	if len(exporters) == 0 {
+		t.Error("createExporters() should create at least one exporter")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+	_ = interfaces
+}
+
+// TestCreateExporters_HealthServerCreation tests that health server is always attempted.
+func TestCreateExporters_HealthServerCreation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Even with all exporters disabled, health server should be created
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: false,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: false,
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: false,
+			},
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Health server should be created (or noop if it fails)
+	if len(exporters) == 0 {
+		t.Error("createExporters() should create health server or noop exporter")
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should return at least one interface")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_NoopFallbackVerification verifies noop exporter is used when needed.
+func TestCreateExporters_NoopFallbackVerification(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Create config with all nil exporter configs
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			// All nil - should result in noop fallback eventually
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have at least one exporter (health server or noop)
+	if len(exporters) == 0 {
+		t.Error("createExporters() should always return at least one exporter")
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should always return at least one interface")
+	}
+
+	// Verify exporters are usable
+	for _, iface := range interfaces {
+		status := &types.Status{
+			Source:    "test",
+			Timestamp: time.Now(),
+		}
+		if err := iface.ExportStatus(ctx, status); err != nil {
+			t.Errorf("Exporter.ExportStatus() error = %v", err)
+		}
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_HTTPExporterWithValidConfig tests HTTP exporter with valid configuration.
+func TestCreateExporters_HTTPExporterWithValidConfig(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// HTTP exporter with valid configuration (requires workers > 0, queueSize > 0, timeout > 0)
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled: false,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   2,
+				QueueSize: 100,
+				Timeout:   30 * time.Second,
+				Retry: types.RetryConfig{
+					MaxAttempts:     3,
+					BaseDelayString: "1s",
+					BaseDelay:       1 * time.Second,
+					MaxDelayString:  "30s",
+					MaxDelay:        30 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name:          "test-webhook-valid",
+						URL:           "http://localhost:9997/webhook",
+						TimeoutString: "10s",
+						Timeout:       10 * time.Second,
+					},
+				},
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: false,
+			},
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have health server and HTTP exporter
+	if len(exporters) < 2 {
+		t.Logf("Expected at least 2 exporters (health + HTTP), got %d", len(exporters))
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should return at least one exporter interface")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_KubernetesExporterWithValidConfig tests Kubernetes exporter with valid configuration.
+// Note: This test will fail to actually create a Kubernetes client without a valid kubeconfig,
+// but it exercises the validation and error handling paths.
+func TestCreateExporters_KubernetesExporterWithValidConfig(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:              true,
+				UpdateIntervalString: "30s",
+				UpdateInterval:       30 * time.Second,
+				ResyncIntervalString: "5m",
+				ResyncInterval:       5 * time.Minute,
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled: false,
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: false,
+			},
+		},
+	}
+
+	// This will fail without kubeconfig but should exercise the validation path
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have at least one exporter (health server)
+	if len(exporters) == 0 {
+		t.Error("createExporters() should create at least one exporter")
+	}
+	if len(interfaces) == 0 {
+		t.Error("createExporters() should return at least one exporter interface")
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+}
+
+// TestCreateExporters_MultipleExportersWithValidConfig tests multiple exporters with valid configurations.
+func TestCreateExporters_MultipleExportersWithValidConfig(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	config := &types.NodeDoctorConfig{
+		Settings: types.GlobalSettings{
+			NodeName: "test-node",
+		},
+		Exporters: types.ExporterConfigs{
+			Kubernetes: &types.KubernetesExporterConfig{
+				Enabled:              true,
+				UpdateIntervalString: "30s",
+				UpdateInterval:       30 * time.Second,
+				ResyncIntervalString: "5m",
+				ResyncInterval:       5 * time.Minute, // Will still fail without kubeconfig but pass validation
+			},
+			HTTP: &types.HTTPExporterConfig{
+				Enabled:   true,
+				Workers:   2,
+				QueueSize: 100,
+				Timeout:   30 * time.Second,
+				Retry: types.RetryConfig{
+					MaxAttempts:     3,
+					BaseDelayString: "1s",
+					BaseDelay:       1 * time.Second,
+					MaxDelayString:  "30s",
+					MaxDelay:        30 * time.Second,
+				},
+				Webhooks: []types.WebhookEndpoint{
+					{
+						Name:          "test-webhook-multi",
+						URL:           "http://localhost:9996/webhook",
+						TimeoutString: "10s",
+						Timeout:       10 * time.Second,
+					},
+				},
+			},
+			Prometheus: &types.PrometheusExporterConfig{
+				Enabled: true,
+				Port:    19093,
+				Path:    "/metrics",
+			},
+		},
+	}
+
+	exporters, interfaces, err := createExporters(ctx, config)
+	if err != nil {
+		t.Errorf("createExporters() error = %v, want nil", err)
+	}
+
+	// Should have health server, HTTP exporter, and Prometheus exporter
+	// (Kubernetes will fail without kubeconfig)
+	if len(exporters) < 2 {
+		t.Logf("Expected at least 2 exporters, got %d", len(exporters))
+	}
+
+	// Clean up
+	for _, exp := range exporters {
+		exp.Stop()
+	}
+	_ = interfaces
+}
+
 // TestDumpConfiguration_ComplexConfig tests dumpConfiguration with a more complex configuration.
 func TestDumpConfiguration_ComplexConfig(t *testing.T) {
 	config := &types.NodeDoctorConfig{

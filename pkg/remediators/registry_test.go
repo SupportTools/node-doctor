@@ -1458,3 +1458,39 @@ func TestSanitizeEventName(t *testing.T) {
 		})
 	}
 }
+
+// TestRemediatorRegistry_LogWarnf_NilLogger verifies logWarnf handles nil logger.
+func TestRemediatorRegistry_LogWarnf_NilLogger(t *testing.T) {
+	registry := NewRegistry(100, 1000)
+	// Don't set a logger - logger is nil by default
+
+	// This should not panic
+	registry.logWarnf("test warning message: %s", "value")
+}
+
+// TestRemediatorRegistry_LogErrorf_NilLogger verifies logErrorf handles nil logger.
+func TestRemediatorRegistry_LogErrorf_NilLogger(t *testing.T) {
+	registry := NewRegistry(100, 1000)
+	// Don't set a logger - logger is nil by default
+
+	// This should not panic
+	registry.logErrorf("test error message: %s", "value")
+}
+
+// TestRemediatorRegistry_LogWithLogger verifies log methods work with logger set.
+func TestRemediatorRegistry_LogWithLogger(t *testing.T) {
+	registry := NewRegistry(100, 1000)
+
+	logger := &mockLogger{}
+	registry.SetLogger(logger)
+
+	registry.logWarnf("test warn: %s", "value")
+	registry.logErrorf("test error: %s", "value")
+
+	if len(logger.warnMessages) != 1 {
+		t.Errorf("expected 1 warn message, got %d", len(logger.warnMessages))
+	}
+	if len(logger.errorMessages) != 1 {
+		t.Errorf("expected 1 error message, got %d", len(logger.errorMessages))
+	}
+}

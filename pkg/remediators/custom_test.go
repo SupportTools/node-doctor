@@ -685,3 +685,78 @@ func TestCustomRemediator_WorkingDirectory(t *testing.T) {
 		t.Errorf("Working directory = %s, want %s", m.executedWorkDir[0], config.WorkingDir)
 	}
 }
+
+// TestCustomRemediator_GetScriptPath tests the GetScriptPath method.
+func TestCustomRemediator_GetScriptPath(t *testing.T) {
+	expectedPath := "/usr/local/bin/test-script.sh"
+	config := CustomConfig{
+		ScriptPath: expectedPath,
+	}
+
+	r, err := NewCustomRemediator(config)
+	if err != nil {
+		t.Fatalf("NewCustomRemediator() error: %v", err)
+	}
+
+	actualPath := r.GetScriptPath()
+	if actualPath != expectedPath {
+		t.Errorf("GetScriptPath() = %s, want %s", actualPath, expectedPath)
+	}
+}
+
+// TestCustomRemediator_LogInfof_NilLogger verifies logInfof handles nil logger.
+func TestCustomRemediator_LogInfof_NilLogger(t *testing.T) {
+	config := CustomConfig{
+		ScriptPath: "/usr/local/bin/remediate.sh",
+	}
+
+	r, err := NewCustomRemediator(config)
+	if err != nil {
+		t.Fatalf("NewCustomRemediator() error: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	r.logInfof("test info message: %s", "value")
+}
+
+// TestCustomRemediator_LogWarnf_NilLogger verifies logWarnf handles nil logger.
+func TestCustomRemediator_LogWarnf_NilLogger(t *testing.T) {
+	config := CustomConfig{
+		ScriptPath: "/usr/local/bin/remediate.sh",
+	}
+
+	r, err := NewCustomRemediator(config)
+	if err != nil {
+		t.Fatalf("NewCustomRemediator() error: %v", err)
+	}
+	// Don't set a logger - logger is nil
+
+	// This should not panic
+	r.logWarnf("test warning message: %s", "value")
+}
+
+// TestCustomRemediator_LogWithLogger verifies log methods work with logger set.
+func TestCustomRemediator_LogWithLogger(t *testing.T) {
+	config := CustomConfig{
+		ScriptPath: "/usr/local/bin/remediate.sh",
+	}
+
+	r, err := NewCustomRemediator(config)
+	if err != nil {
+		t.Fatalf("NewCustomRemediator() error: %v", err)
+	}
+
+	logger := &mockLogger{}
+	r.SetLogger(logger)
+
+	r.logInfof("test info: %s", "value")
+	r.logWarnf("test warn: %s", "value")
+
+	if len(logger.infoMessages) != 1 {
+		t.Errorf("expected 1 info message, got %d", len(logger.infoMessages))
+	}
+	if len(logger.warnMessages) != 1 {
+		t.Errorf("expected 1 warn message, got %d", len(logger.warnMessages))
+	}
+}
