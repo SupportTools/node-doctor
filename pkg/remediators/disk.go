@@ -181,6 +181,11 @@ func validateDiskConfig(config *DiskConfig) error {
 		config.TmpFileAge = 7 // Default: 7 days
 	}
 
+	// Validate operation-specific parameters for security
+	if err := validateDiskOperation(string(config.Operation), config); err != nil {
+		return fmt.Errorf("operation validation failed: %w", err)
+	}
+
 	return nil
 }
 

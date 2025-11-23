@@ -166,6 +166,11 @@ func validateNetworkConfig(config NetworkConfig) error {
 		config.VerifyTimeout = 10 * time.Second
 	}
 
+	// Validate operation-specific parameters for security
+	if err := validateNetworkOperation(string(config.Operation), &config); err != nil {
+		return fmt.Errorf("operation validation failed: %w", err)
+	}
+
 	return nil
 }
 
