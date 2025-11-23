@@ -724,9 +724,9 @@ func TestNeedsMetricsRecreation(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		oldConfig  *types.PrometheusExporterConfig
-		newConfig  *types.PrometheusExporterConfig
+		name         string
+		oldConfig    *types.PrometheusExporterConfig
+		newConfig    *types.PrometheusExporterConfig
 		needRecreate bool
 	}{
 		{

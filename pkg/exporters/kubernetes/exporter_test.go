@@ -651,16 +651,16 @@ func TestReload(t *testing.T) {
 			name: "valid config without client recreation",
 			config: &types.KubernetesExporterConfig{
 				Enabled:           true,
-				UpdateInterval:    100 * time.Millisecond,  // Same as initial
-				ResyncInterval:    200 * time.Millisecond,  // Same as initial
-				HeartbeatInterval: 300 * time.Millisecond,  // Same as initial
-				Namespace:         "test-namespace",        // Same as initial - no client recreation
+				UpdateInterval:    100 * time.Millisecond, // Same as initial
+				ResyncInterval:    200 * time.Millisecond, // Same as initial
+				HeartbeatInterval: 300 * time.Millisecond, // Same as initial
+				Namespace:         "test-namespace",       // Same as initial - no client recreation
 				Conditions:        []types.ConditionConfig{},
 				Annotations: []types.AnnotationConfig{
 					{Key: "test-key", Value: "test-value"}, // Different annotations don't require client recreation
 				},
 				Events: types.EventConfig{
-					MaxEventsPerMinute:  10,    // Same as initial
+					MaxEventsPerMinute:  10,          // Same as initial
 					DeduplicationWindow: time.Minute, // Same as initial
 				},
 			},
@@ -903,9 +903,9 @@ func TestAnnotationsEqual(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "both nil",
-			old:  nil,
-			new:  nil,
+			name:     "both nil",
+			old:      nil,
+			new:      nil,
 			expected: true,
 		},
 		{

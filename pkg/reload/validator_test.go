@@ -1058,8 +1058,8 @@ func TestValidate_LogPatternMonitorConfig(t *testing.T) {
 			expectedMsg:   "",
 		},
 		{
-			name: "nil config",
-			config: nil,
+			name:          "nil config",
+			config:        nil,
 			expectedField: "monitors[0].config",
 			expectedMsg:   "log pattern monitor requires configuration",
 		},
@@ -1158,8 +1158,8 @@ func TestValidate_ScriptMonitorConfig(t *testing.T) {
 			expectedMsg:   "",
 		},
 		{
-			name: "nil config",
-			config: nil,
+			name:          "nil config",
+			config:        nil,
 			expectedField: "monitors[0].config",
 			expectedMsg:   "script monitor requires configuration",
 		},
@@ -1297,8 +1297,8 @@ func TestValidate_PrometheusMonitorConfig(t *testing.T) {
 			expectedMsg:   "",
 		},
 		{
-			name: "nil config",
-			config: nil,
+			name:          "nil config",
+			config:        nil,
 			expectedField: "monitors[0].config",
 			expectedMsg:   "prometheus monitor requires configuration",
 		},

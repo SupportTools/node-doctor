@@ -903,8 +903,8 @@ func TestHTTPExporter_Reload(t *testing.T) {
 			name: "valid config without worker pool recreation",
 			newConfig: &types.HTTPExporterConfig{
 				Enabled:   true,
-				Workers:   1,        // Same as initial
-				QueueSize: 5,        // Same as initial
+				Workers:   1,                // Same as initial
+				QueueSize: 5,                // Same as initial
 				Timeout:   30 * time.Second, // Same as initial
 				Retry: types.RetryConfig{
 					MaxAttempts: 2,
@@ -933,7 +933,7 @@ func TestHTTPExporter_Reload(t *testing.T) {
 			name: "valid config with worker count change",
 			newConfig: &types.HTTPExporterConfig{
 				Enabled:   true,
-				Workers:   2,        // Changed from 1 to 2
+				Workers:   2, // Changed from 1 to 2
 				QueueSize: 5,
 				Timeout:   30 * time.Second,
 				Retry: types.RetryConfig{
@@ -964,7 +964,7 @@ func TestHTTPExporter_Reload(t *testing.T) {
 			newConfig: &types.HTTPExporterConfig{
 				Enabled:   true,
 				Workers:   1,
-				QueueSize: 10,       // Changed from 5 to 10
+				QueueSize: 10, // Changed from 5 to 10
 				Timeout:   30 * time.Second,
 				Retry: types.RetryConfig{
 					MaxAttempts: 2,
