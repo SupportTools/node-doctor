@@ -27,20 +27,15 @@ type ReloadTestHelper struct {
 
 // NewReloadTestHelper creates a new test helper for reload integration tests
 func NewReloadTestHelper(t *testing.T) *ReloadTestHelper {
-	tempDir, err := os.MkdirTemp("", "reload-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tempDir := t.TempDir() // Automatic cleanup when test completes
 
 	configFile := filepath.Join(tempDir, "config.yaml")
 
 	return &ReloadTestHelper{
-		configFile: configFile,
-		tempDir:    tempDir,
-		cleanupFunc: func() {
-			os.RemoveAll(tempDir)
-		},
-		events: make([]types.Event, 0),
+		configFile:  configFile,
+		tempDir:     tempDir,
+		cleanupFunc: func() {}, // No-op, t.TempDir handles cleanup automatically
+		events:      make([]types.Event, 0),
 	}
 }
 
