@@ -133,6 +133,7 @@ jobs:
 
       - name: Upload gosec results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
+        continue-on-error: true  # gosec SARIF format may have compatibility issues
         with:
           sarif_file: gosec-results.sarif
 
