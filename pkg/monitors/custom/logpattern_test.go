@@ -1698,3 +1698,392 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 		})
 	}
 }
+
+// TestCompilationTimeout_ConfigValidation tests the ReDoS protection timeout configuration validation
+func TestCompilationTimeout_ConfigValidation(t *testing.T) {
+	tests := []struct {
+		name                 string
+		compilationTimeoutMs int
+		expectError          bool
+		errorMsg             string
+		expectedTimeout      int
+	}{
+		{
+			name:                 "default timeout when zero",
+			compilationTimeoutMs: 0,
+			expectError:          false,
+			expectedTimeout:      100, // defaultCompilationTimeoutMs
+		},
+		{
+			name:                 "valid timeout - minimum",
+			compilationTimeoutMs: 50,
+			expectError:          false,
+			expectedTimeout:      50,
+		},
+		{
+			name:                 "valid timeout - maximum",
+			compilationTimeoutMs: 1000,
+			expectError:          false,
+			expectedTimeout:      1000,
+		},
+		{
+			name:                 "valid timeout - typical value",
+			compilationTimeoutMs: 200,
+			expectError:          false,
+			expectedTimeout:      200,
+		},
+		{
+			name:                 "timeout too low",
+			compilationTimeoutMs: 49,
+			expectError:          true,
+			errorMsg:             "must be between 50 and 1000",
+		},
+		{
+			name:                 "timeout too high",
+			compilationTimeoutMs: 1001,
+			expectError:          true,
+			errorMsg:             "must be between 50 and 1000",
+		},
+		{
+			name:                 "timeout way too low",
+			compilationTimeoutMs: -1,
+			expectError:          true,
+			errorMsg:             "must be between 50 and 1000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{Name: "test", Regex: "test", Severity: "error", Source: "kmsg"},
+				},
+				CompilationTimeoutMs: tt.compilationTimeoutMs,
+			}
+
+			err := config.applyDefaults()
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if config.CompilationTimeoutMs != tt.expectedTimeout {
+					t.Errorf("expected timeout %d, got %d", tt.expectedTimeout, config.CompilationTimeoutMs)
+				}
+			}
+		})
+	}
+}
+
+// TestComplexityScoreMetrics tests that complexity scores are calculated and stored correctly
+func TestComplexityScoreMetrics(t *testing.T) {
+	tests := []struct {
+		name                  string
+		regex                 string
+		minExpectedComplexity int
+		maxExpectedComplexity int
+	}{
+		{
+			name:                  "simple pattern - low complexity",
+			regex:                 "ERROR",
+			minExpectedComplexity: 0,
+			maxExpectedComplexity: 5,
+		},
+		{
+			name:                  "alternation pattern - medium complexity",
+			regex:                 "ERROR|WARNING|CRITICAL",
+			minExpectedComplexity: 0,
+			maxExpectedComplexity: 10,
+		},
+		{
+			name:                  "simple wildcard - low complexity",
+			regex:                 "test.*error",
+			minExpectedComplexity: 0,
+			maxExpectedComplexity: 5,
+		},
+		{
+			name:                  "character class - low-medium complexity",
+			regex:                 "[a-zA-Z0-9_]+",
+			minExpectedComplexity: 0,
+			maxExpectedComplexity: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{Name: "test", Regex: tt.regex, Severity: "error", Source: "kmsg"},
+				},
+				CompilationTimeoutMs: 100,
+			}
+
+			err := config.applyDefaults()
+			if err != nil {
+				t.Fatalf("applyDefaults failed: %v", err)
+			}
+
+			// Check that complexity score was calculated and stored
+			pattern := config.Patterns[0]
+			complexity := pattern.ComplexityScore()
+
+			if complexity < tt.minExpectedComplexity || complexity > tt.maxExpectedComplexity {
+				t.Errorf("complexity score %d outside expected range [%d, %d]",
+					complexity, tt.minExpectedComplexity, tt.maxExpectedComplexity)
+			}
+		})
+	}
+}
+
+// TestCompilationTimeMetrics tests that compilation time is tracked correctly
+func TestCompilationTimeMetrics(t *testing.T) {
+	config := &LogPatternMonitorConfig{
+		Patterns: []LogPatternConfig{
+			{Name: "simple", Regex: "ERROR", Severity: "error", Source: "kmsg"},
+			{Name: "complex", Regex: "(ERROR|WARNING|CRITICAL|FATAL|PANIC)", Severity: "error", Source: "kmsg"},
+		},
+		CompilationTimeoutMs: 100,
+	}
+
+	err := config.applyDefaults()
+	if err != nil {
+		t.Fatalf("applyDefaults failed: %v", err)
+	}
+
+	// Check that compilation time was tracked for all patterns
+	for i, pattern := range config.Patterns {
+		compilationTime := pattern.CompilationTime()
+
+		if compilationTime == 0 {
+			t.Errorf("pattern %d (%s): compilation time not tracked (got 0)", i, pattern.Name)
+		}
+
+		// Should be well under timeout (100ms)
+		if compilationTime > 100*time.Millisecond {
+			t.Errorf("pattern %d (%s): compilation took too long: %v", i, pattern.Name, compilationTime)
+		}
+
+		// Should be reasonable (> 0, < a few milliseconds for simple patterns)
+		if compilationTime < 0 {
+			t.Errorf("pattern %d (%s): invalid compilation time: %v", i, pattern.Name, compilationTime)
+		}
+	}
+}
+
+// TestHighComplexityWarning tests that warnings are logged for high-complexity patterns
+func TestHighComplexityWarning(t *testing.T) {
+	// Note: This test verifies the logic but doesn't capture log output
+	// A high-complexity pattern should still compile successfully but trigger a warning
+
+	config := &LogPatternMonitorConfig{
+		Patterns: []LogPatternConfig{
+			// This pattern should have high complexity but still be valid
+			{
+				Name:     "high-complexity",
+				Regex:    "(ERROR|WARNING|CRITICAL|FATAL|PANIC|ALERT|EMERGENCY|DEBUG|INFO|TRACE|NOTICE|SEVERE)",
+				Severity: "error",
+				Source:   "kmsg",
+			},
+		},
+		CompilationTimeoutMs: 100,
+	}
+
+	err := config.applyDefaults()
+	if err != nil {
+		t.Fatalf("applyDefaults failed: %v", err)
+	}
+
+	// Pattern should compile successfully
+	pattern := config.Patterns[0]
+	if pattern.compiled == nil {
+		t.Error("high-complexity pattern failed to compile")
+	}
+
+	// Check complexity score
+	complexity := pattern.ComplexityScore()
+	t.Logf("Pattern complexity: %d (threshold: 60)", complexity)
+
+	// Verify compilation time was tracked
+	if pattern.CompilationTime() == 0 {
+		t.Error("compilation time not tracked")
+	}
+}
+
+// TestBackwardCompatibility_NoTimeoutConfig tests backward compatibility when CompilationTimeoutMs is not set
+func TestBackwardCompatibility_NoTimeoutConfig(t *testing.T) {
+	// Old configs without CompilationTimeoutMs field should work with defaults
+	config := &LogPatternMonitorConfig{
+		Patterns: []LogPatternConfig{
+			{Name: "test", Regex: "ERROR", Severity: "error", Source: "kmsg"},
+		},
+		// CompilationTimeoutMs NOT SET (simulating old config)
+	}
+
+	err := config.applyDefaults()
+	if err != nil {
+		t.Fatalf("backward compatibility broken: %v", err)
+	}
+
+	// Should default to 100ms
+	if config.CompilationTimeoutMs != 100 {
+		t.Errorf("expected default timeout 100ms, got %d", config.CompilationTimeoutMs)
+	}
+
+	// Pattern should compile successfully
+	if config.Patterns[0].compiled == nil {
+		t.Error("pattern failed to compile with default timeout")
+	}
+
+	// Metrics should be tracked even with default config
+	// Note: complexity score can be 0 for very simple patterns, so we just check it's >= 0
+	complexity := config.Patterns[0].ComplexityScore()
+	if complexity < 0 {
+		t.Errorf("invalid complexity score %d (must be >= 0)", complexity)
+	}
+
+	// Compilation time should be non-zero (pattern was actually compiled)
+	if config.Patterns[0].CompilationTime() == 0 {
+		t.Error("compilation time not tracked with default config")
+	}
+}
+
+// TestCompilationTimeout_ExtremelyComplexPattern tests timeout protection with very complex patterns
+func TestCompilationTimeout_ExtremelyComplexPattern(t *testing.T) {
+	// This test verifies that extremely complex patterns are caught by validation
+	// before they can cause timeout issues during compilation
+
+	tests := []struct {
+		name        string
+		regex       string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "nested quantifiers - should fail validation",
+			regex:       "(a+)+",
+			expectError: true,
+			errorMsg:    "nested plus quantifiers",
+		},
+		{
+			name:        "deeply nested groups with quantifiers",
+			regex:       "((((a+)+)+)+)+",
+			expectError: true,
+			errorMsg:    "nested plus quantifiers",
+		},
+		{
+			name:        "overlapping quantifiers",
+			regex:       ".*.*",
+			expectError: true,
+			errorMsg:    "quantified adjacencies",
+		},
+		{
+			name:        "complex but safe pattern",
+			regex:       "(ERROR|WARNING|CRITICAL)",
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{Name: "test", Regex: tt.regex, Severity: "error", Source: "kmsg"},
+				},
+				CompilationTimeoutMs: 50, // Short timeout
+			}
+
+			err := config.applyDefaults()
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				// Verify metrics were tracked (complexity can be 0 for simple patterns)
+				complexity := config.Patterns[0].ComplexityScore()
+				if complexity < 0 {
+					t.Errorf("invalid complexity score %d (must be >= 0)", complexity)
+				}
+				if config.Patterns[0].CompilationTime() == 0 {
+					t.Error("compilation time not tracked")
+				}
+			}
+		})
+	}
+}
+
+// TestConfigurableTimeout_ActualCompilation tests that the timeout is actually used during compilation
+func TestConfigurableTimeout_ActualCompilation(t *testing.T) {
+	// Test that different timeout values result in successful compilations
+	tests := []struct {
+		name        string
+		timeout     int
+		regex       string
+		expectError bool
+	}{
+		{
+			name:        "simple pattern with minimum timeout",
+			timeout:     50,
+			regex:       "ERROR",
+			expectError: false,
+		},
+		{
+			name:        "medium pattern with default timeout",
+			timeout:     100,
+			regex:       "(ERROR|WARNING|INFO)",
+			expectError: false,
+		},
+		{
+			name:        "complex pattern with extended timeout",
+			timeout:     500,
+			regex:       "(ERROR|WARNING|CRITICAL|FATAL|PANIC|ALERT|EMERGENCY)",
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &LogPatternMonitorConfig{
+				Patterns: []LogPatternConfig{
+					{Name: "test", Regex: tt.regex, Severity: "error", Source: "kmsg"},
+				},
+				CompilationTimeoutMs: tt.timeout,
+			}
+
+			err := config.applyDefaults()
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+
+				// Verify pattern compiled
+				if config.Patterns[0].compiled == nil {
+					t.Error("pattern not compiled")
+				}
+
+				// Verify compilation completed within reasonable time
+				compilationTime := config.Patterns[0].CompilationTime()
+				timeoutDuration := time.Duration(tt.timeout) * time.Millisecond
+				if compilationTime > timeoutDuration {
+					t.Errorf("compilation time %v exceeded timeout %v", compilationTime, timeoutDuration)
+				}
+
+				t.Logf("Pattern compiled in %v (timeout: %v, complexity: %d)",
+					compilationTime, timeoutDuration, config.Patterns[0].ComplexityScore())
+			}
+		})
+	}
+}

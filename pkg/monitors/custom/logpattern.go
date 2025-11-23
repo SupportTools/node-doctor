@@ -27,6 +27,14 @@ const (
 	// Regex safety limits to prevent ReDoS attacks
 	maxRegexLength = 1000 // Maximum allowed regex pattern length
 
+	// Compilation timeout limits (in milliseconds)
+	defaultCompilationTimeoutMs = 100  // Default: 100ms
+	minCompilationTimeoutMs     = 50   // Minimum: 50ms
+	maxCompilationTimeoutMs     = 1000 // Maximum: 1000ms (1 second)
+
+	// Complexity warning threshold
+	highComplexityThreshold = 60 // Warn if complexity score exceeds this value
+
 	// Resource limits to prevent unbounded memory usage and DoS attacks
 	maxConfiguredPatterns  = 60              // Maximum number of patterns (user + defaults)
 	maxJournalUnits        = 20              // Maximum number of journal units to monitor
@@ -136,6 +144,20 @@ type LogPatternConfig struct {
 	// IMPORTANT: If dynamic pattern reload is added in the future, this field
 	// must be protected with appropriate synchronization (e.g., sync.RWMutex)
 	compiled *regexp.Regexp
+
+	// Runtime metrics (set during compilation, read-only thereafter)
+	complexityScore int           // Pattern complexity score (0-100)
+	compilationTime time.Duration // Time taken to compile this pattern
+}
+
+// ComplexityScore returns the complexity score for this pattern (0-100)
+func (lpc *LogPatternConfig) ComplexityScore() int {
+	return lpc.complexityScore
+}
+
+// CompilationTime returns the time taken to compile this pattern
+func (lpc *LogPatternConfig) CompilationTime() time.Duration {
+	return lpc.compilationTime
 }
 
 // LogPatternMonitorConfig holds the configuration for the log pattern monitor
@@ -155,6 +177,9 @@ type LogPatternMonitorConfig struct {
 	// Rate limiting
 	MaxEventsPerPattern int           `json:"maxEventsPerPattern,omitempty"`
 	DedupWindow         time.Duration `json:"dedupWindow,omitempty"`
+
+	// ReDoS protection configuration
+	CompilationTimeoutMs int `json:"compilationTimeoutMs,omitempty"` // Regex compilation timeout (50-1000ms, default: 100ms)
 
 	// Initialization metrics (set during applyDefaults)
 	compilationTimeMs float64 // Total regex compilation time in milliseconds
@@ -1238,6 +1263,11 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 		c.DedupWindow = defaultDedupWindow
 	}
 
+	// Apply ReDoS protection defaults
+	if c.CompilationTimeoutMs == 0 {
+		c.CompilationTimeoutMs = defaultCompilationTimeoutMs
+	}
+
 	// Validate MaxEventsPerPattern bounds
 	if c.MaxEventsPerPattern < minMaxEventsPerPattern || c.MaxEventsPerPattern > maxMaxEventsPerPattern {
 		return fmt.Errorf("maxEventsPerPattern must be between %d and %d, got %d",
@@ -1248,6 +1278,12 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 	if c.DedupWindow < minDedupWindow || c.DedupWindow > maxDedupWindow {
 		return fmt.Errorf("dedupWindow must be between %v and %v, got %v",
 			minDedupWindow, maxDedupWindow, c.DedupWindow)
+	}
+
+	// Validate CompilationTimeoutMs bounds
+	if c.CompilationTimeoutMs < minCompilationTimeoutMs || c.CompilationTimeoutMs > maxCompilationTimeoutMs {
+		return fmt.Errorf("compilationTimeoutMs must be between %d and %d, got %d",
+			minCompilationTimeoutMs, maxCompilationTimeoutMs, c.CompilationTimeoutMs)
 	}
 
 	// Merge with default patterns if requested
@@ -1283,6 +1319,7 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 	compilationStart := time.Now()
 	compiledOK := 0
 	compiledFailed := 0
+	compilationTimeout := time.Duration(c.CompilationTimeoutMs) * time.Millisecond
 
 	for i := range c.Patterns {
 		// Validate regex safety to prevent ReDoS attacks
@@ -1290,8 +1327,22 @@ func (c *LogPatternMonitorConfig) applyDefaults() error {
 			return fmt.Errorf("regex safety validation failed for pattern %s: %w", c.Patterns[i].Name, err)
 		}
 
-		// Compile with timeout to prevent resource exhaustion during compilation
-		compiled, err := compileWithTimeout(c.Patterns[i].Regex, 100*time.Millisecond)
+		// Calculate complexity score before compilation
+		complexityScore := CalculateRegexComplexity(c.Patterns[i].Regex)
+		c.Patterns[i].complexityScore = complexityScore
+
+		// Warn if pattern has high complexity
+		if complexityScore > highComplexityThreshold {
+			log.Printf("WARNING: Pattern '%s' has high complexity score %d (threshold: %d) - may impact performance. Consider simplifying the regex pattern.",
+				c.Patterns[i].Name, complexityScore, highComplexityThreshold)
+		}
+
+		// Compile with configurable timeout to prevent resource exhaustion during compilation
+		patternCompilationStart := time.Now()
+		compiled, err := compileWithTimeout(c.Patterns[i].Regex, compilationTimeout)
+		compilationDuration := time.Since(patternCompilationStart)
+		c.Patterns[i].compilationTime = compilationDuration
+
 		if err != nil {
 			return fmt.Errorf("regex compilation failed for pattern %s: %w", c.Patterns[i].Name, err)
 		}

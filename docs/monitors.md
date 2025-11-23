@@ -1182,21 +1182,71 @@ monitors:
 - Network errors: `Link is Down|NIC Link is Down`
 
 **Resource Limits:**
-- Maximum 50 patterns
+- Maximum 60 patterns
 - Maximum 20 journal units
 - Pattern complexity scoring to prevent ReDoS
 - Deduplication window: 1 second to 1 hour
+- Memory estimation: 10MB safety limit
+- Compilation timeout: 50-1000ms (default: 100ms)
 
 **ReDoS Protection:**
 
-The monitor validates regex patterns for safety:
+The monitor implements comprehensive ReDoS (Regular Expression Denial of Service) protection with multiple defense layers:
 
-1. **Complexity Scoring**: Assigns penalty points for risky patterns
-   - Nested quantifiers: `(a+)+` (high risk)
-   - Overlapping alternations: `(a|ab)*` (moderate risk)
-   - Greedy quantifiers: `.*` (low risk)
-2. **Threshold Rejection**: Patterns exceeding complexity score rejected
-3. **Timeout Enforcement**: Context-based timeout for regex matching
+1. **Pre-Compilation Safety Validation**: Blocks dangerous patterns before compilation
+   - Nested quantifiers: `(a+)+`, `(.*)*`, `(\w+)+` (rejected)
+   - Quantified adjacencies: `.*.*`, `\d+\d+`, `\w+\w+` (rejected)
+   - Deep nesting: >3 levels of quantified groups (rejected)
+   - Exponential alternation: >5 branches under quantifiers (rejected)
+
+2. **Complexity Scoring (0-100 scale)**: Assigns weighted penalty points
+   - Nested quantifiers: 40 points
+   - Quantified adjacency: 30 points
+   - Deep nesting depth: 10 points per level
+   - Alternation branches: 2 points per branch
+   - Quantifier operators: 1 point each
+   - High complexity warning threshold: 60 points
+
+3. **Configurable Compilation Timeout**: Prevents runaway regex compilation
+   - Default: 100ms per pattern
+   - Range: 50-1000ms (configurable via `compilationTimeoutMs`)
+   - Goroutine-based timeout with automatic cleanup
+   - Clear error messages for timeout failures
+
+4. **Runtime Metrics Tracking**: Monitor pattern performance
+   - `ComplexityScore()`: Returns calculated complexity (0-100)
+   - `CompilationTime()`: Returns actual compilation duration
+   - High complexity warnings logged automatically
+
+**Configuration Example with ReDoS Protection:**
+
+```yaml
+monitors:
+  - name: log-pattern-health
+    type: custom-logpattern-check
+    interval: 30s
+    timeout: 10s
+    config:
+      compilationTimeoutMs: 100  # Optional: compilation timeout (50-1000ms)
+      useDefaults: true
+      patterns:
+        - pattern: 'kernel: Out of memory'
+          severity: error
+          reason: OOMDetected
+          message: "OOM detected"
+        # Safe pattern: low complexity
+        - pattern: 'ERROR|WARNING|CRITICAL'
+          severity: warning
+          reason: LogError
+          message: "Error in logs"
+        # Unsafe pattern: would be rejected
+        # - pattern: '(a+)+'  # Error: nested plus quantifiers detected
+```
+
+**Backward Compatibility:**
+- Existing configurations without `compilationTimeoutMs` automatically use 100ms default
+- All existing patterns continue to work unchanged
+- Metrics are always tracked, even for legacy configurations
 
 **Key Features:**
 - Kernel message monitoring (`/dev/kmsg`)
