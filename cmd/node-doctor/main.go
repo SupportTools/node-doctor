@@ -6,18 +6,19 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/supporttools/node-doctor/pkg/detector"
 	httpexporter "github.com/supporttools/node-doctor/pkg/exporters/http"
 	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
 	prometheusexporter "github.com/supporttools/node-doctor/pkg/exporters/prometheus"
 	"github.com/supporttools/node-doctor/pkg/health"
+	"github.com/supporttools/node-doctor/pkg/logger"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
 	"github.com/supporttools/node-doctor/pkg/util"
@@ -41,14 +42,22 @@ var (
 type noopExporter struct{}
 
 func (e *noopExporter) ExportStatus(ctx context.Context, status *types.Status) error {
-	log.Printf("[DEBUG] NoopExporter: Status from %s with %d events, %d conditions",
-		status.Source, len(status.Events), len(status.Conditions))
+	logger.WithFields(logrus.Fields{
+		"component":  "noopExporter",
+		"source":     status.Source,
+		"events":     len(status.Events),
+		"conditions": len(status.Conditions),
+	}).Debug("Status export (noop)")
 	return nil
 }
 
 func (e *noopExporter) ExportProblem(ctx context.Context, problem *types.Problem) error {
-	log.Printf("[DEBUG] NoopExporter: Problem %s on %s (severity: %s): %s",
-		problem.Type, problem.Resource, problem.Severity, problem.Message)
+	logger.WithFields(logrus.Fields{
+		"component": "noopExporter",
+		"type":      problem.Type,
+		"resource":  problem.Resource,
+		"severity":  problem.Severity,
+	}).Debugf("Problem export (noop): %s", problem.Message)
 	return nil
 }
 
@@ -106,25 +115,29 @@ func main() {
 			"./config.yml",
 		}
 
+		fmt.Println("Searching for configuration file in standard locations...")
 		for _, candidate := range candidates {
 			if _, err := os.Stat(candidate); err == nil {
 				*configFile = candidate
+				fmt.Printf("Found configuration file: %s\n", candidate)
 				break
 			}
 		}
 
 		if *configFile == "" {
-			log.Fatal("No configuration file found. Use -config flag or place config.yaml in current directory or /etc/node-doctor/")
+			fmt.Fprintf(os.Stderr, "No configuration file found. Use -config flag or place config.yaml in current directory or /etc/node-doctor/\n")
+			os.Exit(1)
 		}
 	}
 
-	log.Printf("[INFO] Starting Node Doctor %s (commit: %s, built: %s)", Version, GitCommit, BuildTime)
-	log.Printf("[INFO] Loading configuration from: %s", *configFile)
+	fmt.Printf("Starting Node Doctor %s (commit: %s, built: %s)\n", Version, GitCommit, BuildTime)
+	fmt.Printf("Loading configuration from: %s\n", *configFile)
 
 	// Load and validate configuration
 	config, err := util.LoadConfig(*configFile)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Apply command line overrides
@@ -148,15 +161,23 @@ func main() {
 
 	// Apply defaults and validate
 	if err := config.ApplyDefaults(); err != nil {
-		log.Fatalf("Failed to apply configuration defaults: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to apply configuration defaults: %v\n", err)
+		os.Exit(1)
 	}
 
 	if err := config.Validate(); err != nil {
-		log.Fatalf("Configuration validation failed: %v", err)
+		fmt.Fprintf(os.Stderr, "Configuration validation failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize structured logging
+	if err := logger.Initialize(config.Settings.LogLevel, config.Settings.LogFormat, config.Settings.LogOutput, config.Settings.LogFile); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
 
 	if *validateConfig {
-		log.Printf("[INFO] Configuration validation passed")
+		logger.Info("Configuration validation passed")
 		return
 	}
 
@@ -166,10 +187,14 @@ func main() {
 	}
 
 	// Setup basic logging (detailed logging setup would need more implementation)
-	log.Printf("[INFO] Node Doctor starting on node: %s", config.Settings.NodeName)
-	log.Printf("[INFO] Log level: %s, format: %s", config.Settings.LogLevel, config.Settings.LogFormat)
+	logger.WithFields(logrus.Fields{
+		"node": config.Settings.NodeName,
+		"log_level": config.Settings.LogLevel,
+		"log_format": config.Settings.LogFormat,
+	}).Info("Node Doctor starting")
+
 	if config.Settings.DryRunMode {
-		log.Printf("[WARN] Running in DRY-RUN mode - no actual remediation will be performed")
+		logger.Warn("Running in DRY-RUN mode - no actual remediation will be performed")
 	}
 
 	// Create context for graceful shutdown
@@ -181,73 +206,88 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Create and start monitors
-	log.Printf("[INFO] Creating monitors...")
+	logger.Info("Creating monitors...")
 	monitorInstances, err := createMonitors(ctx, config.Monitors)
 	if err != nil {
-		log.Fatalf("Failed to create monitors: %v", err)
+		logger.Fatal("Failed to create monitors: " + err.Error())
 	}
 
 	if len(monitorInstances) == 0 {
-		log.Fatalf("No valid monitors configured")
+		logger.Fatal("No valid monitors configured")
 	}
 
-	log.Printf("[INFO] Created %d monitors", len(monitorInstances))
+	logger.WithFields(logrus.Fields{
+		"count": len(monitorInstances),
+	}).Info("Created monitors")
 
 	// Create exporters
-	log.Printf("[INFO] Creating exporters...")
+	logger.Info("Creating exporters...")
 	exporters, exporterInterfaces, err := createExporters(ctx, config)
 	if err != nil {
-		log.Fatalf("Failed to create exporters: %v", err)
+		logger.Fatal("Failed to create exporters: " + err.Error())
 	}
 
-	log.Printf("[INFO] Created %d exporters", len(exporters))
+	logger.WithFields(logrus.Fields{
+		"count": len(exporters),
+	}).Info("Created exporters")
 
 	// Create monitor factory for hot reload
 	monitorFactory := &monitorFactoryAdapter{ctx: ctx}
 
 	// Create the detector with configured monitors and exporters
-	log.Printf("[INFO] Creating detector...")
+	logger.Info("Creating detector...")
 
 	det, err := detector.NewProblemDetector(config, monitorInstances, exporterInterfaces, *configFile, monitorFactory)
 	if err != nil {
-		log.Fatalf("Failed to create detector: %v", err)
+		logger.Fatal("Failed to create detector: " + err.Error())
 	}
 
 	// Start the detector
-	log.Printf("[INFO] Starting detector...")
+	logger.Info("Starting detector...")
 	if err := det.Start(); err != nil {
-		log.Fatalf("Failed to start detector: %v", err)
+		logger.Fatal("Failed to start detector: " + err.Error())
 	}
 
-	log.Printf("[INFO] Node Doctor started successfully")
+	logger.Info("Node Doctor started successfully")
 
 	// Wait for shutdown signal
 	<-sigCh
-	log.Printf("[INFO] Received shutdown signal, stopping...")
+	logger.Info("Received shutdown signal, stopping...")
+
+	// Ensure logs are flushed on exit
+	defer func() {
+		logger.Info("Flushing logs...")
+		if err := logger.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to flush logs: %v\n", err)
+		}
+		if err := logger.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to close logger: %v\n", err)
+		}
+	}()
 
 	// Create shutdown context with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
 	// Stop detector (the Run method handles its own cleanup)
-	log.Printf("[INFO] Stopping detector...")
+	logger.Info("Stopping detector...")
 	// Cancel the context to signal shutdown
 	cancel()
 
 	// Stop exporters
-	log.Printf("[INFO] Stopping exporters...")
+	logger.Info("Stopping exporters...")
 	for _, exporter := range exporters {
 		if err := exporter.Stop(); err != nil {
-			log.Printf("[WARN] Error stopping exporter: %v", err)
+			logger.WithError(err).Warn("Error stopping exporter")
 		}
 	}
 
 	// Wait for shutdown to complete or timeout
 	select {
 	case <-shutdownCtx.Done():
-		log.Printf("[WARN] Shutdown timeout exceeded")
+		logger.Warn("Shutdown timeout exceeded")
 	default:
-		log.Printf("[INFO] Node Doctor stopped successfully")
+		logger.Info("Node Doctor stopped successfully")
 	}
 }
 
@@ -257,20 +297,30 @@ func createMonitors(ctx context.Context, monitorConfigs []types.MonitorConfig) (
 
 	for _, config := range monitorConfigs {
 		if !config.Enabled {
-			log.Printf("[INFO] Monitor %s is disabled, skipping", config.Name)
+			logger.WithFields(logrus.Fields{
+				"monitor": config.Name,
+			}).Info("Monitor is disabled, skipping")
 			continue
 		}
 
-		log.Printf("[INFO] Creating monitor: %s (type: %s)", config.Name, config.Type)
+		logger.WithFields(logrus.Fields{
+			"monitor": config.Name,
+			"type": config.Type,
+		}).Info("Creating monitor")
 
 		monitor, err := monitors.CreateMonitor(ctx, config)
 		if err != nil {
-			log.Printf("[ERROR] Failed to create monitor %s: %v", config.Name, err)
+			logger.WithFields(logrus.Fields{
+				"monitor": config.Name,
+				"error": err,
+			}).Error("Failed to create monitor")
 			continue
 		}
 
 		monitorInstances = append(monitorInstances, monitor)
-		log.Printf("[INFO] Created monitor: %s", config.Name)
+		logger.WithFields(logrus.Fields{
+			"monitor": config.Name,
+		}).Info("Created monitor")
 	}
 
 	return monitorInstances, nil
@@ -283,46 +333,68 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]Exp
 
 	// Create Kubernetes exporter if enabled
 	if config.Exporters.Kubernetes != nil && config.Exporters.Kubernetes.Enabled {
-		log.Printf("[INFO] Creating Kubernetes exporter...")
+		logger.WithFields(logrus.Fields{
+			"exporter_type": "kubernetes",
+		}).Info("Creating Kubernetes exporter...")
 		k8sExporter, err := kubernetesexporter.NewKubernetesExporter(
 			config.Exporters.Kubernetes,
 			&config.Settings,
 		)
 		if err != nil {
-			log.Printf("[WARN] Failed to create Kubernetes exporter: %v", err)
+			logger.WithFields(logrus.Fields{
+				"exporter_type": "kubernetes",
+				"error": err,
+			}).Warn("Failed to create Kubernetes exporter")
 		} else {
 			if err := k8sExporter.Start(ctx); err != nil {
-				log.Printf("[WARN] Failed to start Kubernetes exporter: %v", err)
+				logger.WithFields(logrus.Fields{
+					"exporter_type": "kubernetes",
+					"error": err,
+				}).Warn("Failed to start Kubernetes exporter")
 			} else {
 				exporters = append(exporters, k8sExporter)
 				exporterInterfaces = append(exporterInterfaces, k8sExporter)
-				log.Printf("[INFO] Kubernetes exporter created and started")
+				logger.WithFields(logrus.Fields{
+					"exporter_type": "kubernetes",
+				}).Info("Kubernetes exporter created and started")
 			}
 		}
 	}
 
 	// Create HTTP exporter if enabled
 	if config.Exporters.HTTP != nil && config.Exporters.HTTP.Enabled {
-		log.Printf("[INFO] Creating HTTP exporter...")
+		logger.WithFields(logrus.Fields{
+			"exporter_type": "http",
+		}).Info("Creating HTTP exporter...")
 		httpExporter, err := httpexporter.NewHTTPExporter(
 			config.Exporters.HTTP,
 			&config.Settings,
 		)
 		if err != nil {
-			log.Printf("[WARN] Failed to create HTTP exporter: %v", err)
+			logger.WithFields(logrus.Fields{
+				"exporter_type": "http",
+				"error": err,
+			}).Warn("Failed to create HTTP exporter")
 		} else {
 			if err := httpExporter.Start(ctx); err != nil {
-				log.Printf("[WARN] Failed to start HTTP exporter: %v", err)
+				logger.WithFields(logrus.Fields{
+					"exporter_type": "http",
+					"error": err,
+				}).Warn("Failed to start HTTP exporter")
 			} else {
 				exporters = append(exporters, httpExporter)
 				exporterInterfaces = append(exporterInterfaces, httpExporter)
-				log.Printf("[INFO] HTTP exporter created and started")
+				logger.WithFields(logrus.Fields{
+					"exporter_type": "http",
+				}).Info("HTTP exporter created and started")
 			}
 		}
 	}
 
 	// Create Health Server (always enabled for Kubernetes probes)
-	log.Printf("[INFO] Creating health server...")
+	logger.WithFields(logrus.Fields{
+		"exporter_type": "health",
+	}).Info("Creating health server...")
 	healthServer, err := health.NewServer(&health.Config{
 		Enabled:      true,
 		BindAddress:  "0.0.0.0",
@@ -331,40 +403,60 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]Exp
 		WriteTimeout: 10 * time.Second,
 	})
 	if err != nil {
-		log.Printf("[WARN] Failed to create health server: %v", err)
+		logger.WithFields(logrus.Fields{
+			"exporter_type": "health",
+			"error": err,
+		}).Warn("Failed to create health server")
 	} else {
 		if err := healthServer.Start(ctx); err != nil {
-			log.Printf("[WARN] Failed to start health server: %v", err)
+			logger.WithFields(logrus.Fields{
+				"exporter_type": "health",
+				"error": err,
+			}).Warn("Failed to start health server")
 		} else {
 			exporters = append(exporters, healthServer)
 			exporterInterfaces = append(exporterInterfaces, healthServer)
-			log.Printf("[INFO] Health server created and started on port 8080")
+			logger.WithFields(logrus.Fields{
+				"exporter_type": "health",
+				"port": 8080,
+			}).Info("Health server created and started")
 		}
 	}
 
 	// Create Prometheus exporter if enabled
 	if config.Exporters.Prometheus != nil && config.Exporters.Prometheus.Enabled {
-		log.Printf("[INFO] Creating Prometheus exporter...")
+		logger.WithFields(logrus.Fields{
+			"exporter_type": "prometheus",
+		}).Info("Creating Prometheus exporter...")
 		promExporter, err := prometheusexporter.NewPrometheusExporter(
 			config.Exporters.Prometheus,
 			&config.Settings,
 		)
 		if err != nil {
-			log.Printf("[WARN] Failed to create Prometheus exporter: %v", err)
+			logger.WithFields(logrus.Fields{
+				"exporter_type": "prometheus",
+				"error": err,
+			}).Warn("Failed to create Prometheus exporter")
 		} else {
 			if err := promExporter.Start(ctx); err != nil {
-				log.Printf("[WARN] Failed to start Prometheus exporter: %v", err)
+				logger.WithFields(logrus.Fields{
+					"exporter_type": "prometheus",
+					"error": err,
+				}).Warn("Failed to start Prometheus exporter")
 			} else {
 				exporters = append(exporters, promExporter)
 				exporterInterfaces = append(exporterInterfaces, promExporter)
-				log.Printf("[INFO] Prometheus exporter created and started on port %d", config.Exporters.Prometheus.Port)
+				logger.WithFields(logrus.Fields{
+					"exporter_type": "prometheus",
+					"port": config.Exporters.Prometheus.Port,
+				}).Info("Prometheus exporter created and started")
 			}
 		}
 	}
 
 	// If no exporters were created, use a no-op exporter to satisfy the detector requirements
 	if len(exporterInterfaces) == 0 {
-		log.Printf("[INFO] No exporters enabled, using no-op exporter")
+		logger.Info("No exporters enabled, using no-op exporter")
 		noopExp := &noopExporter{}
 		exporters = append(exporters, noopExp)
 		exporterInterfaces = append(exporterInterfaces, noopExp)
@@ -377,7 +469,7 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]Exp
 func dumpConfiguration(config *types.NodeDoctorConfig) {
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		log.Fatalf("Failed to marshal configuration: %v", err)
+		logger.Fatal("Failed to marshal configuration: " + err.Error())
 	}
 	fmt.Println(string(data))
 }
