@@ -23,7 +23,8 @@
 	check-prerequisites check-docker check-kubectl \
 	build test test-integration test-e2e test-all \
 	lint fmt clean install-deps \
-	docker-build docker-push
+	docker-build docker-push \
+	coverage-check
 
 # ================================================================================================
 # Project Configuration
@@ -231,6 +232,20 @@ test-all:
 	@go tool cover -html=coverage/coverage.out -o coverage/coverage.html
 	@go tool cover -func=coverage/coverage.out | grep total | awk '{print "Total coverage: " $$3}'
 	@$(call print_success,"All tests passed - coverage report: coverage/coverage.html")
+
+# Check coverage meets minimum threshold (80%)
+COVERAGE_THRESHOLD := 80
+coverage-check:
+	@$(call print_status,"Checking coverage threshold (minimum $(COVERAGE_THRESHOLD)%)...")
+	@mkdir -p coverage
+	@go test ./... -covermode=atomic -coverprofile=coverage/coverage.out -short > /dev/null 2>&1
+	@COVERAGE=$$(go tool cover -func=coverage/coverage.out | grep total | awk '{print $$3}' | sed 's/%//'); \
+	echo "Current coverage: $${COVERAGE}%"; \
+	if [ $$(echo "$${COVERAGE} < $(COVERAGE_THRESHOLD)" | bc -l) -eq 1 ]; then \
+		$(call print_error,"Coverage $${COVERAGE}% is below minimum threshold of $(COVERAGE_THRESHOLD)%"); \
+		exit 1; \
+	fi
+	@$(call print_success,"Coverage check passed (>= $(COVERAGE_THRESHOLD)%)")
 
 # Lint code with golangci-lint
 lint:
@@ -546,6 +561,7 @@ help:
 	@echo "  make test-integration      Run integration tests"
 	@echo "  make test-e2e              Run end-to-end tests"
 	@echo "  make test-all              Run all tests with coverage report"
+	@echo "  make coverage-check        Verify coverage >= 80% threshold"
 	@echo "  make lint                  Run golangci-lint"
 	@echo "  make fmt                   Format code with gofmt and goimports"
 	@echo ""
