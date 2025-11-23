@@ -620,6 +620,11 @@ func TestCreateExporters_HTTPExporterWithValidConfig(t *testing.T) {
 						URL:           "http://localhost:9997/webhook",
 						TimeoutString: "10s",
 						Timeout:       10 * time.Second,
+						Auth: types.AuthConfig{
+							Type: "none",
+						},
+						SendStatus:   true,
+						SendProblems: true,
 					},
 				},
 			},
