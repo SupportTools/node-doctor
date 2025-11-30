@@ -172,7 +172,7 @@ func TestSecurity_ReDoS_CompilationTimeout(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -255,7 +255,7 @@ func TestSecurity_ReDoS_GoroutineCleanup(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	monitor, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	monitor, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 	if err != nil {
 		t.Fatalf("Failed to create monitor: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestSecurity_BinaryData_Handling(t *testing.T) {
 				Config: map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 			if err != nil {
 
@@ -474,7 +474,7 @@ func TestSecurity_MalformedUTF8_Patterns(t *testing.T) {
 				Config: map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 			if err != nil {
 
@@ -604,7 +604,7 @@ func TestSecurity_ExtremeLengths_LogLines(t *testing.T) {
 				Config: map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 			if err != nil {
 
@@ -687,7 +687,7 @@ func TestSecurity_ResourceExhaustion_MaxConfig(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -886,7 +886,7 @@ func TestSecurity_PermissionChanges_MidOperation(t *testing.T) {
 				Config: map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 			if err != nil {
 

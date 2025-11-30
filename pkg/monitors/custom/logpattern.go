@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/monitors"
@@ -94,6 +95,13 @@ type FileReader interface {
 	Open(path string) (*os.File, error)
 }
 
+// KmsgReader interface abstracts kernel message reading for testability
+// Production implementation uses non-blocking syscall operations
+// Test implementation can use mock data
+type KmsgReader interface {
+	ReadKmsg(ctx context.Context, path string) ([]byte, error)
+}
+
 // CommandExecutor interface abstracts command execution for testability
 type CommandExecutor interface {
 	ExecuteCommand(ctx context.Context, command string, args []string) ([]byte, error)
@@ -108,6 +116,63 @@ func (r *defaultFileReader) ReadFile(path string) ([]byte, error) {
 
 func (r *defaultFileReader) Open(path string) (*os.File, error) {
 	return os.Open(path)
+}
+
+// defaultKmsgReader implements KmsgReader using non-blocking syscall operations
+// This properly handles /dev/kmsg as a character device that never returns EOF
+type defaultKmsgReader struct{}
+
+func (r *defaultKmsgReader) ReadKmsg(ctx context.Context, path string) ([]byte, error) {
+	// Open with O_NONBLOCK to prevent blocking on the character device
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+
+	// Seek to end to only read new messages (skip existing ring buffer)
+	// This prevents reading stale messages on every check
+	_, _ = syscall.Seek(fd, 0, 2) // SEEK_END = 2, ignore error if unsupported
+
+	// Read messages with non-blocking I/O
+	var allData []byte
+	buf := make([]byte, 8192)
+	totalRead := 0
+
+	for {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return allData, ctx.Err()
+		default:
+		}
+
+		n, err := syscall.Read(fd, buf)
+		if err != nil {
+			// EAGAIN/EWOULDBLOCK means no more data available (expected with O_NONBLOCK)
+			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+				break
+			}
+			// EPIPE can occur if we've read past end of ring buffer
+			if err == syscall.EPIPE {
+				break
+			}
+			return allData, err
+		}
+
+		if n == 0 {
+			break
+		}
+
+		totalRead += n
+		if totalRead > maxKmsgBufferSize {
+			break
+		}
+
+		allData = append(allData, buf[:n]...)
+	}
+
+	return allData, nil
 }
 
 // defaultCommandExecutor implements CommandExecutor using os/exec
@@ -144,11 +209,16 @@ type LogPatternMonitorConfig struct {
 	Patterns    []LogPatternConfig `json:"patterns"`
 	UseDefaults bool               `json:"useDefaults"` // Merge with default patterns
 
-	// Kmsg configuration
+	// Kmsg configuration (fallback - uses non-blocking I/O)
 	KmsgPath  string `json:"kmsgPath,omitempty"`
 	CheckKmsg bool   `json:"checkKmsg"`
 
-	// Journal configuration
+	// Kernel journal configuration (PRIMARY method for kernel messages)
+	// Uses journalctl -k which filters by _TRANSPORT=kernel
+	// This is more reliable than reading /dev/kmsg directly
+	CheckKernelJournal bool `json:"checkKernelJournal"`
+
+	// Journal configuration (for systemd units like kubelet, containerd)
 	JournalUnits []string `json:"journalUnits,omitempty"`
 	CheckJournal bool     `json:"checkJournal"`
 
@@ -579,10 +649,11 @@ type LogPatternMetrics struct {
 	PatternsSuppressed   map[string]int `json:"patternsSuppressed"`   // Pattern name -> suppressed count (rate limited)
 
 	// Performance metrics
-	CheckDurationMs        float64            `json:"checkDurationMs"`        // Total check duration in milliseconds
-	KmsgCheckDurationMs    float64            `json:"kmsgCheckDurationMs"`    // Kmsg check duration
-	JournalCheckDurationMs map[string]float64 `json:"journalCheckDurationMs"` // Unit name -> check duration
-	RegexCompilationTimeMs float64            `json:"regexCompilationTimeMs"` // Total regex compilation time (initialization)
+	CheckDurationMs              float64            `json:"checkDurationMs"`              // Total check duration in milliseconds
+	KmsgCheckDurationMs          float64            `json:"kmsgCheckDurationMs"`          // Kmsg check duration
+	KernelJournalCheckDurationMs float64            `json:"kernelJournalCheckDurationMs"` // Kernel journal check duration
+	JournalCheckDurationMs       map[string]float64 `json:"journalCheckDurationMs"`       // Unit name -> check duration
+	RegexCompilationTimeMs       float64            `json:"regexCompilationTimeMs"`       // Total regex compilation time (initialization)
 
 	// Configuration metrics
 	TotalConfiguredPatterns int            `json:"totalConfiguredPatterns"`
@@ -592,10 +663,11 @@ type LogPatternMetrics struct {
 	DedupWindowSeconds      float64        `json:"dedupWindowSeconds"`
 
 	// Health metrics
-	KmsgAccessible         bool `json:"kmsgAccessible"`
-	JournalAccessible      bool `json:"journalAccessible"`
-	PatternsCompiledOK     int  `json:"patternsCompiledOK"`
-	PatternsCompiledFailed int  `json:"patternsCompiledFailed"`
+	KmsgAccessible          bool `json:"kmsgAccessible"`
+	KernelJournalAccessible bool `json:"kernelJournalAccessible"`
+	JournalAccessible       bool `json:"journalAccessible"`
+	PatternsCompiledOK      int  `json:"patternsCompiledOK"`
+	PatternsCompiledFailed  int  `json:"patternsCompiledFailed"`
 
 	// Resource metrics
 	LastCleanupTime      time.Time `json:"lastCleanupTime"`
@@ -609,15 +681,17 @@ type LogPatternMonitor struct {
 
 	// Interface abstractions for testability
 	fileReader      FileReader
+	kmsgReader      KmsgReader
 	commandExecutor CommandExecutor
 
 	// Thread-safe state tracking
-	mu                   sync.RWMutex
-	patternEventCount    map[string]int       // pattern name -> event count
-	patternLastEvent     map[string]time.Time // pattern name -> last event time
-	lastJournalCheck     map[string]time.Time // unit name -> last check time
-	kmsgPermissionWarned bool                 // Track if we've warned about kmsg permissions
-	lastCleanup          time.Time            // Last time map cleanup was performed
+	mu                     sync.RWMutex
+	patternEventCount      map[string]int       // pattern name -> event count
+	patternLastEvent       map[string]time.Time // pattern name -> last event time
+	lastJournalCheck       map[string]time.Time // unit name -> last check time
+	lastKernelJournalCheck time.Time            // last kernel journal check time
+	kmsgPermissionWarned   bool                 // Track if we've warned about kmsg permissions
+	lastCleanup            time.Time            // Last time map cleanup was performed
 
 	// Metrics tracking (thread-safe access via methods)
 	metrics                LogPatternMetrics
@@ -647,12 +721,13 @@ func NewLogPatternMonitor(ctx context.Context, config types.MonitorConfig) (type
 		return nil, fmt.Errorf("failed to apply defaults: %w", err)
 	}
 
-	// Create with real file reader and command executor
+	// Create with real file reader, kmsg reader, and command executor
 	return NewLogPatternMonitorWithDependencies(
 		ctx,
 		config,
 		logConfig,
 		&defaultFileReader{},
+		&defaultKmsgReader{},
 		&defaultCommandExecutor{},
 	)
 }
@@ -663,6 +738,7 @@ func NewLogPatternMonitorWithDependencies(
 	config types.MonitorConfig,
 	logConfig *LogPatternMonitorConfig,
 	fileReader FileReader,
+	kmsgReader KmsgReader,
 	commandExecutor CommandExecutor,
 ) (types.Monitor, error) {
 	// Create base monitor
@@ -682,6 +758,7 @@ func NewLogPatternMonitorWithDependencies(
 		name:                   config.Name,
 		config:                 logConfig,
 		fileReader:             fileReader,
+		kmsgReader:             kmsgReader,
 		commandExecutor:        commandExecutor,
 		patternEventCount:      make(map[string]int),
 		patternLastEvent:       make(map[string]time.Time),
@@ -738,7 +815,20 @@ func (m *LogPatternMonitor) checkLogPatterns(ctx context.Context) (*types.Status
 	// Perform periodic cleanup of expired entries to prevent unbounded map growth
 	m.cleanupExpiredEntries()
 
-	// Check kmsg if enabled
+	// Check kernel journal if enabled (PRIMARY method for kernel messages)
+	// This is preferred over checkKmsg because it uses journalctl -k which
+	// properly handles the kernel ring buffer without blocking
+	if m.config.CheckKernelJournal {
+		kernelJournalStart := time.Now()
+		m.checkKernelJournal(ctx, status)
+
+		m.mu.Lock()
+		m.metrics.KernelJournalCheckDurationMs = float64(time.Since(kernelJournalStart).Microseconds()) / 1000.0
+		m.mu.Unlock()
+	}
+
+	// Check kmsg if enabled (FALLBACK for systems without systemd journal)
+	// Uses non-blocking I/O to prevent hanging on /dev/kmsg
 	if m.config.CheckKmsg {
 		kmsgStart := time.Now()
 		m.checkKmsg(ctx, status)
@@ -796,16 +886,17 @@ func (m *LogPatternMonitor) checkLogPatterns(ctx context.Context) (*types.Status
 	return status, nil
 }
 
-// checkKmsg reads and checks kernel messages
+// checkKmsg reads and checks kernel messages using non-blocking I/O
+// This is the FALLBACK method for systems without systemd journal.
+// /dev/kmsg is a character device that never returns EOF, so we use
+// the KmsgReader interface which handles non-blocking I/O properly.
 func (m *LogPatternMonitor) checkKmsg(ctx context.Context, status *types.Status) {
-	data, err := m.fileReader.ReadFile(m.config.KmsgPath)
+	data, err := m.kmsgReader.ReadKmsg(ctx, m.config.KmsgPath)
 	if err != nil {
 		// Handle permission errors gracefully
-		if os.IsPermission(err) {
-			// Capture error message before acquiring lock
+		if os.IsPermission(err) || err == syscall.EACCES {
 			errMsg := fmt.Sprintf("Cannot access %s for kernel log monitoring: %v. Continuing without kmsg monitoring.", m.config.KmsgPath, err)
 
-			// Check and update warning flag inside lock
 			m.mu.Lock()
 			shouldWarn := !m.kmsgPermissionWarned
 			if shouldWarn {
@@ -813,7 +904,6 @@ func (m *LogPatternMonitor) checkKmsg(ctx context.Context, status *types.Status)
 			}
 			m.mu.Unlock()
 
-			// Create event outside lock to prevent blocking other goroutines
 			if shouldWarn {
 				m.logStructured("WARN", "kmsg", "permission_denied",
 					fmt.Sprintf("path=%s error=%v", m.config.KmsgPath, err))
@@ -826,7 +916,12 @@ func (m *LogPatternMonitor) checkKmsg(ctx context.Context, status *types.Status)
 			return
 		}
 
-		// Other errors
+		// Context cancellation
+		if err == context.Canceled || err == context.DeadlineExceeded {
+			m.logStructured("DEBUG", "kmsg", "context_cancelled", "aborting read")
+			return
+		}
+
 		m.logStructured("ERROR", "kmsg", "read_failed",
 			fmt.Sprintf("path=%s error=%v", m.config.KmsgPath, err))
 		status.AddEvent(types.NewEvent(
@@ -854,6 +949,72 @@ func (m *LogPatternMonitor) checkKmsg(ctx context.Context, status *types.Status)
 		if line == "" {
 			continue
 		}
+		// kmsg format: "priority,sequence,timestamp,flags;message"
+		// We only care about the message part after the semicolon
+		if idx := strings.Index(line, ";"); idx != -1 && idx < len(line)-1 {
+			line = line[idx+1:]
+		}
+		m.matchPatterns(line, "kmsg", status)
+	}
+}
+
+// checkKernelJournal reads kernel messages from systemd journal using journalctl -k
+// This is the PRIMARY method for kernel message monitoring because:
+// 1. It uses _TRANSPORT=kernel filter which properly captures kernel ring buffer
+// 2. journalctl handles the streaming/blocking nature of kernel messages
+// 3. It's more reliable than directly reading /dev/kmsg
+// Patterns with Source "kmsg" or "both" are matched against these messages
+func (m *LogPatternMonitor) checkKernelJournal(ctx context.Context, status *types.Status) {
+	m.mu.RLock()
+	lastCheck := m.lastKernelJournalCheck
+	m.mu.RUnlock()
+
+	// Build journalctl command with -k flag for kernel messages
+	args := []string{
+		"-k",          // Kernel messages only (_TRANSPORT=kernel)
+		"--no-pager",  // Don't use pager
+		"-o", "cat",   // Message only, no metadata
+	}
+
+	// Add since parameter if we have a last check time
+	if !lastCheck.IsZero() {
+		args = append(args, "--since", lastCheck.Format("2006-01-02 15:04:05"))
+	} else {
+		// First check: get last 100 kernel messages
+		args = append(args, "-n", "100")
+	}
+
+	// Execute journalctl
+	output, err := m.commandExecutor.ExecuteCommand(ctx, "journalctl", args)
+	if err != nil {
+		m.mu.Lock()
+		m.metrics.KernelJournalAccessible = false
+		m.mu.Unlock()
+
+		m.logStructured("WARN", "kernel-journal", "read_failed",
+			fmt.Sprintf("error=%v", err))
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"KernelJournalError",
+			fmt.Sprintf("Failed to read kernel journal: %v", err),
+		))
+		return
+	}
+
+	// Mark kernel journal as accessible
+	m.mu.Lock()
+	m.metrics.KernelJournalAccessible = true
+	m.lastKernelJournalCheck = time.Now()
+	m.mu.Unlock()
+
+	// Process each line - use "kmsg" source for pattern matching
+	// since kernel journal messages are equivalent to kmsg
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		// Use "kmsg" source so patterns with Source: "kmsg" or "both" will match
 		m.matchPatterns(line, "kmsg", status)
 	}
 }
@@ -1116,6 +1277,13 @@ func parseLogPatternConfig(configMap map[string]interface{}) (*LogPatternMonitor
 		}
 	}
 
+	// Parse kernel journal configuration (preferred method for kernel messages)
+	if val, exists := configMap["checkKernelJournal"]; exists {
+		if b, ok := val.(bool); ok {
+			config.CheckKernelJournal = b
+		}
+	}
+
 	// Parse journal configuration
 	if val, exists := configMap["journalUnits"]; exists {
 		unitsArray, ok := val.([]interface{})
@@ -1356,8 +1524,8 @@ func ValidateLogPatternConfig(config types.MonitorConfig) error {
 	}
 
 	// Validate that at least one source is enabled
-	if !logConfig.CheckKmsg && !logConfig.CheckJournal {
-		return fmt.Errorf("at least one log source must be enabled (checkKmsg or checkJournal)")
+	if !logConfig.CheckKmsg && !logConfig.CheckKernelJournal && !logConfig.CheckJournal {
+		return fmt.Errorf("at least one log source must be enabled (checkKernelJournal, checkKmsg, or checkJournal)")
 	}
 
 	// Validate journal units if journal checking is enabled

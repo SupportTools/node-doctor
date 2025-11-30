@@ -348,7 +348,7 @@ func BenchmarkConcurrent_100Checks(b *testing.B) {
 		Config:   map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, newMockKmsgReader(), mockExecutor)
 	if err != nil {
 		b.Fatalf("Failed to create monitor: %v", err)
 	}
@@ -405,7 +405,7 @@ func BenchmarkMemory_AllocationRate(b *testing.B) {
 		Config:   map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, newMockKmsgReader(), mockExecutor)
 	if err != nil {
 		b.Fatalf("Failed to create monitor: %v", err)
 	}
@@ -501,7 +501,7 @@ func BenchmarkPatternMatching_Performance(b *testing.B) {
 				Config:   map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, newMockKmsgReader(), mockExecutor)
 			if err != nil {
 				b.Fatalf("Failed to create monitor: %v", err)
 			}

@@ -416,10 +416,11 @@ func TestKmsgCheck(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup mocks
 			mockReader := newMockFileReader()
+			mockKmsg := newMockKmsgReader()
 			if tt.kmsgError != nil {
-				mockReader.setReadError("/dev/kmsg", tt.kmsgError)
+				mockKmsg.setReadError("/dev/kmsg", tt.kmsgError)
 			} else {
-				mockReader.setFile("/dev/kmsg", tt.kmsgContent)
+				mockKmsg.setContent("/dev/kmsg", tt.kmsgContent)
 			}
 
 			// Compile patterns
@@ -444,6 +445,7 @@ func TestKmsgCheck(t *testing.T) {
 				name:              "test-monitor",
 				config:            config,
 				fileReader:        mockReader,
+				kmsgReader:        mockKmsg,
 				patternEventCount: make(map[string]int),
 				patternLastEvent:  make(map[string]time.Time),
 				metrics: LogPatternMetrics{
@@ -582,7 +584,8 @@ func TestJournalCheck(t *testing.T) {
 func TestLogPatternMonitorIntegration(t *testing.T) {
 	// Setup mocks
 	mockReader := newMockFileReader()
-	mockReader.setFile("/dev/kmsg", createTestKmsgContent(testOOMKillLog, testDiskErrorLog))
+	mockKmsg := newMockKmsgReader()
+	mockKmsg.setContent("/dev/kmsg", createTestKmsgContent(testOOMKillLog, testDiskErrorLog))
 
 	mockExecutor := newMockCommandExecutor()
 	mockExecutor.setOutput("journalctl",
@@ -629,7 +632,7 @@ func TestLogPatternMonitorIntegration(t *testing.T) {
 		t.Fatalf("failed to apply defaults: %v", err)
 	}
 
-	monitor, err := NewLogPatternMonitorWithDependencies(ctx, config, logConfig, mockReader, mockExecutor)
+	monitor, err := NewLogPatternMonitorWithDependencies(ctx, config, logConfig, mockReader, mockKmsg, mockExecutor)
 	if err != nil {
 		t.Fatalf("failed to create monitor: %v", err)
 	}
@@ -817,7 +820,8 @@ func TestBufferSizeLimit(t *testing.T) {
 	largeContent := strings.Repeat("test log line\n", 100000) // ~1.5MB
 
 	mockReader := newMockFileReader()
-	mockReader.setFile("/dev/kmsg", largeContent)
+	mockKmsg := newMockKmsgReader()
+	mockKmsg.setContent("/dev/kmsg", largeContent)
 
 	config := &LogPatternMonitorConfig{
 		CheckKmsg:           true,
@@ -831,6 +835,7 @@ func TestBufferSizeLimit(t *testing.T) {
 		name:              "test-monitor",
 		config:            config,
 		fileReader:        mockReader,
+		kmsgReader:        mockKmsg,
 		patternEventCount: make(map[string]int),
 		patternLastEvent:  make(map[string]time.Time),
 	}
@@ -1315,7 +1320,7 @@ func TestNewLogPatternMonitor(t *testing.T) {
 				t.Fatalf("failed to apply defaults: %v", err)
 			}
 
-			monitor, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, tt.config, mockReader, mockExecutor)
+			monitor, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, tt.config, mockReader, newMockKmsgReader(), mockExecutor)
 
 			if tt.expectError {
 				if err == nil {
@@ -1461,7 +1466,7 @@ func TestShouldCheckPattern(t *testing.T) {
 				Config:   map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockReader, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockReader, newMockKmsgReader(), mockExecutor)
 			if err != nil {
 				t.Fatalf("failed to create monitor: %v", err)
 			}
@@ -1514,7 +1519,8 @@ func TestCleanupExpiredEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			mockFS := newMockFileReader()
-			mockFS.setFile("/dev/kmsg", "ERROR: test\n")
+			mockKmsg := newMockKmsgReader()
+			mockKmsg.setContent("/dev/kmsg", "ERROR: test\n")
 			mockExecutor := &mockCommandExecutor{}
 
 			logConfig := &LogPatternMonitorConfig{
@@ -1546,7 +1552,7 @@ func TestCleanupExpiredEntries(t *testing.T) {
 				Config:   map[string]interface{}{},
 			}
 
-			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, mockExecutor)
+			mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, logConfig, mockFS, mockKmsg, mockExecutor)
 			if err != nil {
 				t.Fatalf("failed to create monitor: %v", err)
 			}

@@ -77,7 +77,7 @@ func TestStress_Concurrent_100Goroutines(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -214,7 +214,7 @@ func TestStress_Concurrent_RateLimiting(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -320,7 +320,7 @@ func TestStress_Concurrent_MapCleanup(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -446,7 +446,7 @@ func TestStress_SustainedLoad_1000Checks(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -564,7 +564,7 @@ func TestStress_MapGrowth_10000Events(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -667,7 +667,7 @@ func TestStress_LockContention_Measurement(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 
@@ -773,7 +773,7 @@ func TestStress_ContextCancellation_DuringLoad(t *testing.T) {
 		Config: map[string]interface{}{},
 	}
 
-	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, mockExecutor)
+	mon, err := NewLogPatternMonitorWithDependencies(ctx, monitorConfig, config, mockFS, newMockKmsgReader(), mockExecutor)
 
 	if err != nil {
 

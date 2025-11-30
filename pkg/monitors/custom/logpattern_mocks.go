@@ -95,6 +95,52 @@ func (m *mockFileReader) Open(path string) (*os.File, error) {
 	return nil, nil
 }
 
+// mockKmsgReader implements KmsgReader for testing
+type mockKmsgReader struct {
+	mu         sync.RWMutex
+	content    map[string]string
+	readErrors map[string]error
+}
+
+// newMockKmsgReader creates a new mock kmsg reader
+func newMockKmsgReader() *mockKmsgReader {
+	return &mockKmsgReader{
+		content:    make(map[string]string),
+		readErrors: make(map[string]error),
+	}
+}
+
+// setContent sets the kmsg content for a path
+func (m *mockKmsgReader) setContent(path, content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.content[path] = content
+}
+
+// setReadError sets an error to return when reading from a path
+func (m *mockKmsgReader) setReadError(path string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.readErrors[path] = err
+}
+
+// ReadKmsg implements KmsgReader.ReadKmsg
+func (m *mockKmsgReader) ReadKmsg(ctx context.Context, path string) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if err, exists := m.readErrors[path]; exists {
+		return nil, err
+	}
+
+	content, exists := m.content[path]
+	if !exists {
+		return nil, os.ErrNotExist
+	}
+
+	return []byte(content), nil
+}
+
 // mockCommandExecutor implements CommandExecutor for testing
 type mockCommandExecutor struct {
 	outputs map[string]string // command key -> output
