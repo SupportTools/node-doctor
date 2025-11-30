@@ -29,7 +29,7 @@ const (
 	maxRegexLength = 1000 // Maximum allowed regex pattern length
 
 	// Resource limits to prevent unbounded memory usage and DoS attacks
-	maxConfiguredPatterns  = 60              // Maximum number of patterns (user + defaults)
+	maxConfiguredPatterns  = 120             // Maximum number of patterns (user + defaults)
 	maxJournalUnits        = 20              // Maximum number of journal units to monitor
 	minMaxEventsPerPattern = 1               // Minimum events per pattern per window
 	maxMaxEventsPerPattern = 1000            // Maximum events per pattern per window
@@ -978,7 +978,11 @@ func (m *LogPatternMonitor) checkKernelJournal(ctx context.Context, status *type
 
 	// Add since parameter if we have a last check time
 	if !lastCheck.IsZero() {
-		args = append(args, "--since", lastCheck.Format("2006-01-02 15:04:05"))
+		// Subtract 1 second to avoid missing messages at the exact boundary
+		// (journalctl --since uses inclusive start, but second precision can miss
+		// messages at the exact timestamp boundary)
+		sinceTime := lastCheck.Add(-time.Second)
+		args = append(args, "--since", sinceTime.Format("2006-01-02 15:04:05"))
 	} else {
 		// First check: get last 100 kernel messages
 		args = append(args, "-n", "100")
@@ -1034,7 +1038,9 @@ func (m *LogPatternMonitor) checkJournalUnit(ctx context.Context, unit string, s
 
 	// Add since parameter if we have a last check time
 	if !lastCheck.IsZero() {
-		args = append(args, "--since", lastCheck.Format("2006-01-02 15:04:05"))
+		// Subtract 1 second to avoid missing messages at the exact boundary
+		sinceTime := lastCheck.Add(-time.Second)
+		args = append(args, "--since", sinceTime.Format("2006-01-02 15:04:05"))
 	} else {
 		// First check: get last 100 lines
 		args = append(args, "-n", "100")

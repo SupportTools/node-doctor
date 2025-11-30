@@ -869,7 +869,7 @@ func TestApplyDefaults_ResourceLimits(t *testing.T) {
 			name: "too many patterns",
 			config: &LogPatternMonitorConfig{
 				Patterns: func() []LogPatternConfig {
-					patterns := make([]LogPatternConfig, 61)
+					patterns := make([]LogPatternConfig, 121)
 					for i := range patterns {
 						patterns[i] = LogPatternConfig{
 							Name:     "test",
@@ -884,7 +884,7 @@ func TestApplyDefaults_ResourceLimits(t *testing.T) {
 				DedupWindow:         5 * time.Minute,
 			},
 			expectError: true,
-			errorMsg:    "exceeds maximum limit of 60",
+			errorMsg:    "exceeds maximum limit of 120",
 		},
 		{
 			name: "too many journal units",
@@ -1118,16 +1118,16 @@ func TestResourceLimits_WithDefaults(t *testing.T) {
 	}{
 		{
 			name:         "user patterns + defaults within limit",
-			userPatterns: 29, // 29 user + 31 defaults = 60 (at limit)
+			userPatterns: 62, // 62 user + 58 defaults = 120 (at limit)
 			useDefaults:  true,
 			expectError:  false,
 		},
 		{
 			name:         "user patterns + defaults exceeds limit",
-			userPatterns: 45,
+			userPatterns: 65, // 65 user + 58 defaults = 123 > 120 (exceeds)
 			useDefaults:  true,
 			expectError:  true,
-			errorMsg:     "exceeds maximum limit of 60",
+			errorMsg:     "exceeds maximum limit of 120",
 		},
 		{
 			name:         "defaults only within limit",
@@ -1137,16 +1137,16 @@ func TestResourceLimits_WithDefaults(t *testing.T) {
 		},
 		{
 			name:         "user patterns only at limit",
-			userPatterns: 60,
+			userPatterns: 120,
 			useDefaults:  false,
 			expectError:  false,
 		},
 		{
 			name:         "user patterns only exceeds limit",
-			userPatterns: 61,
+			userPatterns: 121,
 			useDefaults:  false,
 			expectError:  true,
-			errorMsg:     "exceeds maximum limit of 60",
+			errorMsg:     "exceeds maximum limit of 120",
 		},
 	}
 
