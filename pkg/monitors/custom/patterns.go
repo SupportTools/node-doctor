@@ -222,6 +222,214 @@ var DefaultLogPatterns = []LogPatternConfig{
 		Description: "CPU soft lockup in storage subsystem - may indicate I/O stall from network/storage issues",
 		Source:      "both",
 	},
+	// ============================================
+	// NETWORKING PATTERNS
+	// ============================================
+
+	// Conntrack/Netfilter Issues
+	{
+		Name:        "conntrack-table-full",
+		Regex:       "nf_conntrack.*table full",
+		Severity:    "error",
+		Description: "Connection tracking table exhausted - packets being dropped",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "conntrack-dropping",
+		Regex:       "nf_conntrack.*dropping packet",
+		Severity:    "error",
+		Description: "Conntrack actively dropping packets due to resource exhaustion",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "netfilter-error",
+		Regex:       "(?:nf_tables|nftables|netfilter).*error",
+		Severity:    "error",
+		Description: "Netfilter subsystem error - firewall rules may be broken",
+		Source:      "kmsg",
+	},
+
+	// iptables Issues
+	{
+		Name:        "iptables-error",
+		Regex:       "iptables.*(?:error|failed|invalid argument)",
+		Severity:    "error",
+		Description: "iptables rule application failure",
+		Source:      "both",
+	},
+	{
+		Name:        "iptables-sync-failed",
+		Regex:       "(?:iptables|kube-proxy).*sync.*failed",
+		Severity:    "error",
+		Description: "kube-proxy iptables synchronization failure",
+		Source:      "journal",
+	},
+
+	// NIC/Driver Errors
+	{
+		Name:        "nic-link-down",
+		Regex:       "(?:e1000e|igb|ixgbe|mlx|bnxt|r8169).*Link is Down",
+		Severity:    "warning",
+		Description: "Physical NIC link down - check cable/switch",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "nic-driver-error",
+		Regex:       "(?:e1000|igb|ixgbe|mlx[45]|bnxt|i40e).*error",
+		Severity:    "error",
+		Description: "NIC driver error - possible hardware issue",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "nic-tx-timeout",
+		Regex:       "NETDEV WATCHDOG.*transmit.*timed out",
+		Severity:    "error",
+		Description: "NIC transmit queue timeout - driver/hardware issue",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "nic-firmware-error",
+		Regex:       "(?:firmware|nvram).*failed|Unable to load firmware",
+		Severity:    "error",
+		Description: "NIC firmware loading failure",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "carrier-lost",
+		Regex:       "carrier (?:lost|off)",
+		Severity:    "warning",
+		Description: "Network carrier signal lost",
+		Source:      "kmsg",
+	},
+
+	// Network Stack Issues
+	{
+		Name:        "socket-buffer-overrun",
+		Regex:       "(?:socket buffer.*overrun|packets.*pruned.*socket|RcvbufErrors)",
+		Severity:    "warning",
+		Description: "Socket receive buffer overflow - application not reading fast enough",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "tcp-retransmit-error",
+		Regex:       "TCP.*retransmit.*timeout|tcp_retries.*exceeded",
+		Severity:    "warning",
+		Description: "Excessive TCP retransmissions - network congestion or packet loss",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "arp-resolution-failed",
+		Regex:       "(?:ARP.*failed|no ARP.*reply|neighbor.*FAILED)",
+		Severity:    "warning",
+		Description: "ARP resolution failure - network segment issue",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "route-error",
+		Regex:       "(?:RTNETLINK.*error|route.*failed|no route to host)",
+		Severity:    "error",
+		Description: "Routing table error",
+		Source:      "kmsg",
+	},
+
+	// CNI Plugin Errors
+	{
+		Name:        "calico-error",
+		Regex:       "(?:calico|felix).*error",
+		Severity:    "error",
+		Description: "Calico CNI plugin error",
+		Source:      "journal",
+	},
+	{
+		Name:        "flannel-error",
+		Regex:       "flannel.*(?:error|panic|failed)",
+		Severity:    "error",
+		Description: "Flannel CNI plugin error",
+		Source:      "journal",
+	},
+	{
+		Name:        "cilium-error",
+		Regex:       "cilium-agent.*(?:error|panic)|BPF.*load.*failed",
+		Severity:    "error",
+		Description: "Cilium eBPF agent error",
+		Source:      "journal",
+	},
+	{
+		Name:        "cni-plugin-failed",
+		Regex:       "CNI plugin.*(?:error|failed|timeout)",
+		Severity:    "error",
+		Description: "Generic CNI plugin failure",
+		Source:      "journal",
+	},
+
+	// kube-proxy/IPVS Issues
+	{
+		Name:        "ipvs-sync-error",
+		Regex:       "ipvs.*(?:error|failed|sync failed)",
+		Severity:    "error",
+		Description: "IPVS load balancer synchronization failure",
+		Source:      "journal",
+	},
+	{
+		Name:        "kube-proxy-error",
+		Regex:       "kube-proxy.*(?:error|failed)",
+		Severity:    "error",
+		Description: "kube-proxy service routing error",
+		Source:      "journal",
+	},
+	{
+		Name:        "endpoint-sync-failed",
+		Regex:       "(?:endpoint.*syncing|UpdateEndpoints).*failed",
+		Severity:    "warning",
+		Description: "Service endpoint update failure",
+		Source:      "journal",
+	},
+
+	// Pod Networking Issues
+	{
+		Name:        "veth-error",
+		Regex:       "veth.*(?:error|failed|cannot create)",
+		Severity:    "error",
+		Description: "Virtual ethernet interface creation failure",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "network-namespace-error",
+		Regex:       "(?:netns|network namespace).*(?:error|failed)",
+		Severity:    "error",
+		Description: "Network namespace operation failure",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "pod-network-setup-failed",
+		Regex:       "failed to (?:set up|setup).*network",
+		Severity:    "error",
+		Description: "Pod network initialization failure",
+		Source:      "journal",
+	},
+
+	// Cloud Provider Issues
+	{
+		Name:        "aws-eni-error",
+		Regex:       "(?:eni|ENI|vpc-cni).*(?:error|failed)",
+		Severity:    "error",
+		Description: "AWS ENI or VPC CNI plugin error",
+		Source:      "journal",
+	},
+	{
+		Name:        "azure-network-error",
+		Regex:       "azure.*(?:cni|network).*(?:error|failed)",
+		Severity:    "error",
+		Description: "Azure networking error",
+		Source:      "journal",
+	},
+	{
+		Name:        "nsx-error",
+		Regex:       "nsx.*(?:error|failed|timeout)",
+		Severity:    "error",
+		Description: "VMware NSX network virtualization error",
+		Source:      "journal",
+	},
 }
 
 // GetDefaultPatterns returns a copy of the default patterns

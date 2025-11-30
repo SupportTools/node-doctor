@@ -19,7 +19,7 @@ func TestGetDefaultPatterns(t *testing.T) {
 		t.Error("GetDefaultPatterns() returned same slice, expected a copy")
 	}
 
-	// Verify all expected patterns are present (31 patterns total: 7 original + 12 kubelet + 9 others + 3 vmxnet3)
+	// Verify all expected patterns are present (58 patterns total: 7 original + 12 kubelet + 9 others + 3 vmxnet3 + 27 networking)
 	expectedPatterns := map[string]bool{
 		"oom-killer":          true,
 		"disk-io-error":       true,
@@ -52,9 +52,44 @@ func TestGetDefaultPatterns(t *testing.T) {
 		"edac-uncorrectable-error": true,
 		"edac-correctable-error":   true,
 		// VMware vmxnet3 patterns
-		"vmxnet3-tx-hang":      true,
-		"vmxnet3-nic-reset":    true,
-		"soft-lockup-storage":  true,
+		"vmxnet3-tx-hang":     true,
+		"vmxnet3-nic-reset":   true,
+		"soft-lockup-storage": true,
+		// Networking patterns - Conntrack/Netfilter
+		"conntrack-table-full": true,
+		"conntrack-dropping":   true,
+		"netfilter-error":      true,
+		// Networking patterns - iptables
+		"iptables-error":       true,
+		"iptables-sync-failed": true,
+		// Networking patterns - NIC/Driver
+		"nic-link-down":       true,
+		"nic-driver-error":    true,
+		"nic-tx-timeout":      true,
+		"nic-firmware-error":  true,
+		"carrier-lost":        true,
+		// Networking patterns - Network Stack
+		"socket-buffer-overrun":  true,
+		"tcp-retransmit-error":   true,
+		"arp-resolution-failed":  true,
+		"route-error":            true,
+		// Networking patterns - CNI
+		"calico-error":      true,
+		"flannel-error":     true,
+		"cilium-error":      true,
+		"cni-plugin-failed": true,
+		// Networking patterns - kube-proxy/IPVS
+		"ipvs-sync-error":      true,
+		"kube-proxy-error":     true,
+		"endpoint-sync-failed": true,
+		// Networking patterns - Pod Networking
+		"veth-error":               true,
+		"network-namespace-error":  true,
+		"pod-network-setup-failed": true,
+		// Networking patterns - Cloud Provider
+		"aws-eni-error":       true,
+		"azure-network-error": true,
+		"nsx-error":           true,
 	}
 
 	foundPatterns := make(map[string]bool)
@@ -92,7 +127,7 @@ func TestMergeWithDefaults(t *testing.T) {
 			name:         "no user patterns, with defaults",
 			userPatterns: []LogPatternConfig{},
 			useDefaults:  true,
-			expected:     31, // All default patterns (updated count)
+			expected:     58, // All default patterns (31 original + 27 networking)
 		},
 		{
 			name: "one user pattern, no defaults",
@@ -108,7 +143,7 @@ func TestMergeWithDefaults(t *testing.T) {
 				{Name: "custom-pattern", Regex: "test", Severity: "info"},
 			},
 			useDefaults: true,
-			expected:    32, // 1 user + 31 defaults
+			expected:    59, // 1 user + 58 defaults
 		},
 		{
 			name: "user pattern overrides default",
@@ -116,7 +151,7 @@ func TestMergeWithDefaults(t *testing.T) {
 				{Name: "oom-killer", Regex: "custom-oom", Severity: "info"}, // Override default
 			},
 			useDefaults: true,
-			expected:    31, // Still 31 total (user pattern replaces default)
+			expected:    58, // Still 58 total (user pattern replaces default)
 		},
 	}
 
@@ -277,6 +312,179 @@ func TestPatternAccuracy(t *testing.T) {
 				"soft lockup - CPU#2 stuck for 22s! [firefox:8888]",
 				"soft lockup - CPU#0 stuck for 20s! [python:7777]",
 				"watchdog: BUG: soft lockup - CPU#3 stuck for 24s! [java:6666]",
+			},
+		},
+		// Networking patterns - Conntrack
+		{
+			patternName: "conntrack-table-full",
+			shouldMatch: []string{
+				"nf_conntrack: table full, dropping packet",
+				"kernel: nf_conntrack: table full",
+			},
+			shouldNotMatch: []string{
+				"nf_conntrack: registered",
+				"conntrack module loaded",
+			},
+		},
+		{
+			patternName: "conntrack-dropping",
+			shouldMatch: []string{
+				"nf_conntrack: dropping packet",
+				"kernel: nf_conntrack: dropping packet due to timeout",
+			},
+			shouldNotMatch: []string{
+				"nf_conntrack initialized",
+				"conntrack entry created",
+			},
+		},
+		// Networking patterns - iptables
+		{
+			patternName: "iptables-error",
+			shouldMatch: []string{
+				"iptables: error loading target",
+				"iptables failed to apply rule",
+				"iptables: invalid argument",
+			},
+			shouldNotMatch: []string{
+				"iptables rule added successfully",
+				"iptables version 1.8.7",
+			},
+		},
+		// Networking patterns - NIC/Driver
+		{
+			patternName: "nic-link-down",
+			shouldMatch: []string{
+				"e1000e: eth0 NIC Link is Down",
+				"igb 0000:01:00.0: Link is Down",
+				"ixgbe 0000:03:00.0 eth1: NIC Link is Down",
+				"mlx5_core 0000:5e:00.0: Link is Down",
+				"bnxt_en: enp3s0f0 Link is Down",
+			},
+			shouldNotMatch: []string{
+				"e1000e: eth0 NIC Link is Up",
+				"igb: driver loaded successfully",
+			},
+		},
+		{
+			patternName: "nic-tx-timeout",
+			shouldMatch: []string{
+				"NETDEV WATCHDOG: eth0 (e1000e): transmit queue 0 timed out",
+				"NETDEV WATCHDOG: ens192 (vmxnet3): transmit queue 1 timed out",
+			},
+			shouldNotMatch: []string{
+				"transmit completed successfully",
+				"NETDEV initialized",
+			},
+		},
+		{
+			patternName: "carrier-lost",
+			shouldMatch: []string{
+				"eth0: carrier lost",
+				"bond0: carrier off",
+			},
+			shouldNotMatch: []string{
+				"carrier detected",
+				"carrier on",
+			},
+		},
+		// Networking patterns - Network Stack
+		{
+			patternName: "socket-buffer-overrun",
+			shouldMatch: []string{
+				"socket buffer overrun detected",
+				"1234 packets pruned from receive queue because of socket buffer",
+				"RcvbufErrors: 5000",
+			},
+			shouldNotMatch: []string{
+				"socket created successfully",
+				"buffer allocation complete",
+			},
+		},
+		{
+			patternName: "arp-resolution-failed",
+			shouldMatch: []string{
+				"ARP resolution failed for 10.0.0.1",
+				"no ARP reply received",
+				"neighbor 192.168.1.1 FAILED",
+			},
+			shouldNotMatch: []string{
+				"ARP reply received",
+				"neighbor resolved",
+			},
+		},
+		// Networking patterns - CNI
+		{
+			patternName: "calico-error",
+			shouldMatch: []string{
+				"calico-node: error connecting to datastore",
+				"felix: error applying policy",
+			},
+			shouldNotMatch: []string{
+				"calico-node: started successfully",
+				"felix: policy applied",
+			},
+		},
+		{
+			patternName: "cilium-error",
+			shouldMatch: []string{
+				"cilium-agent: error loading BPF program",
+				"cilium-agent: panic during initialization",
+				"BPF program load failed: permission denied",
+			},
+			shouldNotMatch: []string{
+				"cilium-agent: started successfully",
+				"BPF program loaded",
+			},
+		},
+		// Networking patterns - kube-proxy
+		{
+			patternName: "ipvs-sync-error",
+			shouldMatch: []string{
+				"ipvs: error adding service",
+				"ipvs sync failed: connection refused",
+				"kube-proxy: ipvs failed to update",
+			},
+			shouldNotMatch: []string{
+				"ipvs: service added",
+				"ipvs sync completed",
+			},
+		},
+		// Networking patterns - Pod Networking
+		{
+			patternName: "veth-error",
+			shouldMatch: []string{
+				"veth: error creating pair",
+				"veth: failed to set link up",
+				"veth: cannot create interface",
+			},
+			shouldNotMatch: []string{
+				"veth pair created",
+				"veth initialized",
+			},
+		},
+		// Networking patterns - Cloud Provider
+		{
+			patternName: "aws-eni-error",
+			shouldMatch: []string{
+				"ENI attachment failed",
+				"aws: eni error during attach",
+				"vpc-cni: error allocating IP",
+			},
+			shouldNotMatch: []string{
+				"ENI attached successfully",
+				"vpc-cni: IP allocated",
+			},
+		},
+		{
+			patternName: "nsx-error",
+			shouldMatch: []string{
+				"nsx-node-agent: error connecting to manager",
+				"nsx: failed to apply firewall rule",
+				"nsx-t: timeout waiting for response",
+			},
+			shouldNotMatch: []string{
+				"nsx-node-agent: connected",
+				"nsx: rule applied",
 			},
 		},
 	}

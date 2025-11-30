@@ -1188,17 +1188,61 @@ monitors:
 > **Note:** The container image includes the `journalctl` binary from the `systemd` package to support kernel journal monitoring. If both `checkKernelJournal` and `checkKmsg` are enabled, kernel journal takes precedence.
 
 **Default Patterns (when useDefaults=true):**
+
+*System & Hardware:*
 - OOM kills: `killed process|Out of memory|oom-kill`
 - Kernel panics: `Kernel panic|BUG: unable to handle`
 - Hardware errors: `Machine check events|Hardware Error`
 - Filesystem errors: `EXT4-fs error|XFS.*error|I/O error`
-- Network errors: `Link is Down|NIC Link is Down`
-- VMware vmxnet3 TX hang: `vmxnet3.*tx hang` (error)
-- VMware vmxnet3 NIC reset: `vmxnet3.*resetting` (warning)
 - Storage soft lockup: `soft lockup.*(?:longhorn|mpt|scsi|iscsi|nvme|nfs)` (error)
 
+*VMware:*
+- vmxnet3 TX hang: `vmxnet3.*tx hang` (error)
+- vmxnet3 NIC reset: `vmxnet3.*resetting` (warning)
+- NSX errors: `nsx.*(?:error|failed|timeout)` (error)
+
+*Networking - Conntrack/Netfilter:*
+- Conntrack table full: `nf_conntrack.*table full` (error)
+- Conntrack dropping: `nf_conntrack.*dropping packet` (error)
+- Netfilter error: `(?:nf_tables|nftables|netfilter).*error` (error)
+- iptables error: `iptables.*(?:error|failed|invalid argument)` (error)
+- iptables sync failed: `(?:iptables|kube-proxy).*sync.*failed` (error)
+
+*Networking - NIC/Driver:*
+- NIC link down: `(?:e1000e|igb|ixgbe|mlx|bnxt|r8169).*Link is Down` (warning)
+- NIC driver error: `(?:e1000|igb|ixgbe|mlx[45]|bnxt|i40e).*error` (error)
+- NIC TX timeout: `NETDEV WATCHDOG.*transmit.*timed out` (error)
+- NIC firmware error: `(?:firmware|nvram).*failed|Unable to load firmware` (error)
+- Carrier lost: `carrier (?:lost|off)` (warning)
+
+*Networking - Network Stack:*
+- Socket buffer overrun: `(?:socket buffer.*overrun|packets.*pruned.*socket|RcvbufErrors)` (warning)
+- TCP retransmit error: `TCP.*retransmit.*timeout|tcp_retries.*exceeded` (warning)
+- ARP resolution failed: `(?:ARP.*failed|no ARP.*reply|neighbor.*FAILED)` (warning)
+- Route error: `(?:RTNETLINK.*error|route.*failed|no route to host)` (error)
+
+*Networking - CNI:*
+- Calico error: `(?:calico|felix).*error` (error)
+- Flannel error: `flannel.*(?:error|panic|failed)` (error)
+- Cilium error: `cilium-agent.*(?:error|panic)|BPF.*load.*failed` (error)
+- CNI plugin failed: `CNI plugin.*(?:error|failed|timeout)` (error)
+
+*Networking - kube-proxy/IPVS:*
+- IPVS sync error: `ipvs.*(?:error|failed|sync failed)` (error)
+- kube-proxy error: `kube-proxy.*(?:error|failed)` (error)
+- Endpoint sync failed: `(?:endpoint.*syncing|UpdateEndpoints).*failed` (warning)
+
+*Networking - Pod Networking:*
+- veth error: `veth.*(?:error|failed|cannot create)` (error)
+- Network namespace error: `(?:netns|network namespace).*(?:error|failed)` (error)
+- Pod network setup failed: `failed to (?:set up|setup).*network` (error)
+
+*Cloud Provider:*
+- AWS ENI error: `(?:eni|ENI|vpc-cni).*(?:error|failed)` (error)
+- Azure network error: `azure.*(?:cni|network).*(?:error|failed)` (error)
+
 **Resource Limits:**
-- Maximum 50 patterns
+- Maximum 60 patterns
 - Maximum 20 journal units
 - Pattern complexity scoring to prevent ReDoS
 - Deduplication window: 1 second to 1 hour
