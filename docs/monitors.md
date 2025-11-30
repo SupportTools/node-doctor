@@ -1155,24 +1155,37 @@ monitors:
           severity: info
           reason: SELinuxDenial
           message: "SELinux denial detected"
-      kmsgPath: /dev/kmsg
-      checkKmsg: true
+      # Kernel log monitoring (choose one):
+      checkKernelJournal: true      # PRIMARY: Use journalctl -k (recommended)
+      checkKmsg: false              # FALLBACK: Direct /dev/kmsg access
+      kmsgPath: /dev/kmsg           # Path for checkKmsg fallback
+      # Service unit log monitoring:
+      checkJournal: true            # Enable systemd journal monitoring
       journalUnits:
         - kubelet
         - docker
         - containerd
-      checkJournal: true
       maxEventsPerPattern: 10       # Max events per pattern per check (1-1000)
       dedupWindow: 5m               # Deduplication window (1s-1h)
 ```
 
 **Default Values:**
 - `useDefaults`: true
+- `checkKernelJournal`: true (PRIMARY - uses `journalctl -k`)
+- `checkKmsg`: false (FALLBACK - direct `/dev/kmsg` access)
 - `kmsgPath`: /dev/kmsg
-- `checkKmsg`: true
-- `checkJournal`: true
+- `checkJournal`: true (service unit logs)
 - `maxEventsPerPattern`: 10 (range: 1-1000)
 - `dedupWindow`: 5 minutes (range: 1s-1h)
+
+**Kernel Log Monitoring Methods:**
+
+| Method | Config Option | Command | Use Case |
+|--------|---------------|---------|----------|
+| **Journal (Primary)** | `checkKernelJournal: true` | `journalctl -k --since` | Recommended - uses systemd journal, supports time-based filtering |
+| **Kmsg (Fallback)** | `checkKmsg: true` | Read `/dev/kmsg` | Non-systemd systems or when journalctl unavailable |
+
+> **Note:** The container image includes the `journalctl` binary from the `systemd` package to support kernel journal monitoring. If both `checkKernelJournal` and `checkKmsg` are enabled, kernel journal takes precedence.
 
 **Default Patterns (when useDefaults=true):**
 - OOM kills: `killed process|Out of memory|oom-kill`
@@ -1202,14 +1215,16 @@ The monitor validates regex patterns for safety:
 3. **Timeout Enforcement**: Context-based timeout for regex matching
 
 **Key Features:**
-- Kernel message monitoring (`/dev/kmsg`)
-- Systemd journal monitoring (multiple units)
+- Kernel journal monitoring via `journalctl -k` (primary, recommended)
+- Kernel message monitoring via `/dev/kmsg` (fallback)
+- Systemd service unit journal monitoring (kubelet, containerd, docker)
 - Regex pattern matching with safety validation
 - Deduplication to prevent event flooding
 - Custom pattern support
 - Default critical pattern library
 - Event rate limiting per pattern
-- ARM64 /dev/kmsg compatibility
+- Time-based filtering (only processes new logs since last check)
+- ARM64 compatibility
 
 **Events Generated:**
 - Pattern-defined events (custom severity/reason/message)
