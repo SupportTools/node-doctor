@@ -3,16 +3,17 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
+	"github.com/supporttools/node-doctor/pkg/util"
 )
 
 const (
@@ -138,30 +139,42 @@ func (c *defaultRuntimeClient) CheckSocketConnectivity(ctx context.Context) erro
 }
 
 // CheckSystemdStatus checks if the runtime systemd service is active.
+// If systemctl is not available (e.g., running in a container), it falls back
+// to process-based detection.
 func (c *defaultRuntimeClient) CheckSystemdStatus(ctx context.Context) (bool, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "is-active", c.serviceName)
-
-	output, err := cmd.CombinedOutput()
-	status := strings.TrimSpace(string(output))
-
-	// systemctl is-active returns:
-	// - "active" with exit code 0 if service is running
-	// - Other states (inactive, failed, etc.) with non-zero exit code
-	if err != nil {
-		// Check for known states
-		switch status {
-		case "inactive":
-			return false, nil // Service is stopped (not an error)
-		case "failed":
-			return false, nil // Service has failed (not an error in checking)
-		case "activating", "deactivating", "reloading":
-			return false, fmt.Errorf("service in transitional state: %s", status)
-		default:
-			return false, fmt.Errorf("systemctl check failed: %w (status: %s)", err, status)
-		}
+	// Define process names to look for based on runtime type
+	var processNames []string
+	switch c.runtime {
+	case runtimeTypeDocker:
+		processNames = []string{"dockerd", "docker", "cri-dockerd"}
+	case runtimeTypeContainerd:
+		processNames = []string{"containerd", "containerd-shim"}
+	case runtimeTypeCrio:
+		processNames = []string{"crio", "conmon"}
+	default:
+		processNames = []string{c.serviceName}
 	}
 
-	return status == "active", nil
+	// Use unified service status check which handles systemd and process fallback
+	active, method, err := util.GetServiceStatus(ctx, c.serviceName, processNames)
+	if err != nil {
+		// If systemctl is not available and process check also failed, report gracefully
+		if errors.Is(err, util.ErrSystemctlNotAvailable) {
+			// Try process-only detection
+			for _, proc := range processNames {
+				if running, _ := util.CheckProcessRunning(proc); running {
+					return true, nil
+				}
+			}
+			return false, fmt.Errorf("systemctl not available and no %s process found", c.runtime)
+		}
+		return false, err
+	}
+
+	// Log method used for debugging (could be helpful)
+	_ = method // Suppress unused variable warning; could log this in future
+
+	return active, nil
 }
 
 // GetRuntimeInfo retrieves basic runtime information.

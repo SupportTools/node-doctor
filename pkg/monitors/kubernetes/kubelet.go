@@ -6,13 +6,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
+	"github.com/supporttools/node-doctor/pkg/util"
 )
 
 const (
@@ -371,28 +372,42 @@ func (c *defaultKubeletClient) GetMetrics(ctx context.Context) (*KubeletMetrics,
 }
 
 // CheckSystemdStatus checks if the kubelet systemd service is active.
+// If systemctl is not available (e.g., running in a container), it falls back
+// to process-based detection. This is particularly important for RKE1 where
+// kubelet runs as a Docker container, not a systemd service.
 func (c *defaultKubeletClient) CheckSystemdStatus(ctx context.Context) (bool, error) {
-	// Use systemctl is-active for simple active/inactive check
-	cmd := exec.CommandContext(ctx, "systemctl", "is-active", "kubelet")
+	// Process names to look for kubelet
+	processNames := []string{"kubelet", "hyperkube"}
 
-	output, err := cmd.CombinedOutput()
+	// Use unified service status check which handles systemd and process fallback
+	active, method, err := util.GetServiceStatus(ctx, "kubelet", processNames)
 	if err != nil {
-		// systemctl is-active returns non-zero exit code if service is not active
-		// Check if it's just inactive vs an actual error
-		status := strings.TrimSpace(string(output))
-		if status == "inactive" || status == "failed" {
-			return false, nil
+		// If systemctl is not available, fall back to process detection
+		if errors.Is(err, util.ErrSystemctlNotAvailable) {
+			// Try process-only detection
+			for _, proc := range processNames {
+				if running, _ := util.CheckProcessRunning(proc); running {
+					return true, nil
+				}
+			}
+
+			// For RKE1, kubelet runs in a container. Check for the container.
+			// Look for kubelet process pattern in any container
+			if running, _ := util.CheckProcessRunningByPattern("kubelet"); running {
+				return true, nil
+			}
+
+			// Last resort: if healthz is working, kubelet is running somewhere
+			// The health check is done separately, so we just report not found via systemd
+			return false, fmt.Errorf("systemctl not available and no kubelet process found")
 		}
-		// Don't include full output to avoid information disclosure
-		// Only include the status if it's a recognized state
-		if status == "activating" || status == "deactivating" || status == "reloading" {
-			return false, fmt.Errorf("kubelet service in transitional state: %s", status)
-		}
-		return false, fmt.Errorf("failed to check systemd status: %w", err)
+		return false, err
 	}
 
-	status := strings.TrimSpace(string(output))
-	return status == "active", nil
+	// Log method used for debugging (could be helpful)
+	_ = method // Suppress unused variable warning; could log this in future
+
+	return active, nil
 }
 
 // parsePrometheusMetrics parses Prometheus metrics format to extract PLEG duration.
