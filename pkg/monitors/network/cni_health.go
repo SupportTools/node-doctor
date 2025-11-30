@@ -16,6 +16,10 @@ const (
 	// Default CNI configuration paths
 	defaultCNIConfigPath = "/etc/cni/net.d"
 
+	// Distribution-specific CNI configuration paths
+	rke2CNIConfigPath = "/var/lib/rancher/rke2/agent/etc/cni/net.d"
+	k3sCNIConfigPath  = "/var/lib/rancher/k3s/agent/etc/cni/net.d"
+
 	// Common CNI interface prefixes
 	calicoInterfacePrefix  = "cali"
 	flannelInterfacePrefix = "flannel"
@@ -84,11 +88,43 @@ type cniHealthChecker struct {
 	lastResult         *CNIHealthResult
 }
 
+// detectCNIConfigPath auto-detects the CNI configuration path based on the
+// Kubernetes distribution. It checks distribution-specific paths first (RKE2/K3s)
+// before falling back to the standard /etc/cni/net.d path.
+func detectCNIConfigPath() string {
+	// Check paths in order of specificity
+	// RKE2 and K3s use distribution-specific paths
+	pathsToCheck := []string{
+		rke2CNIConfigPath, // RKE2: /var/lib/rancher/rke2/agent/etc/cni/net.d
+		k3sCNIConfigPath,  // K3s: /var/lib/rancher/k3s/agent/etc/cni/net.d
+		defaultCNIConfigPath, // Standard: /etc/cni/net.d
+	}
+
+	for _, path := range pathsToCheck {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			// Check if directory has any CNI config files
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() && isCNIConfigFile(entry.Name()) {
+					return path
+				}
+			}
+		}
+	}
+
+	// Default fallback
+	return defaultCNIConfigPath
+}
+
 // NewCNIHealthChecker creates a new CNI health checker.
 func NewCNIHealthChecker(config CNIHealthConfig) CNIHealthChecker {
 	configPath := config.ConfigPath
 	if configPath == "" {
-		configPath = defaultCNIConfigPath
+		// Auto-detect CNI config path based on distribution
+		configPath = detectCNIConfigPath()
 	}
 
 	return &cniHealthChecker{

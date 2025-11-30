@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,7 @@ func (m *mockRuntimeClient) GetRuntimeInfo(ctx context.Context) (*RuntimeInfo, e
 }
 
 // createTestMonitor is a helper function to create a properly initialized RuntimeMonitor for testing.
+// This uses NewRuntimeMonitorForTesting to skip actual runtime detection on the filesystem.
 func createTestMonitor(t *testing.T, configMap map[string]interface{}, mockClient RuntimeClient) *RuntimeMonitor {
 	t.Helper()
 
@@ -64,84 +66,47 @@ func createTestMonitor(t *testing.T, configMap map[string]interface{}, mockClien
 		Config:   configMap,
 	}
 
-	ctx := context.Background()
-	monitorInterface, err := NewRuntimeMonitorWithClient(ctx, monitorConfig, mockClient)
-	if err != nil {
-		t.Fatalf("createTestMonitor() error: %v", err)
-	}
+	// Determine runtime type from config, default to docker for tests
+	runtimeType := runtimeTypeDocker
+	socket := "/var/run/docker.sock"
+	service := "docker"
 
-	monitor := monitorInterface.(*RuntimeMonitor)
-
-	// Override detection for testing (bypass filesystem checks)
-	// Tests should set specific runtime type in configMap
 	if rt, ok := configMap["runtimeType"].(string); ok && rt != "" && rt != "auto" {
 		switch rt {
 		case "docker":
-			monitor.config.detectedRuntime = runtimeTypeDocker
-			monitor.config.detectedSocket = "/var/run/docker.sock"
-			monitor.config.detectedService = "docker"
+			runtimeType = runtimeTypeDocker
+			socket = "/var/run/docker.sock"
+			service = "docker"
 		case "containerd":
-			monitor.config.detectedRuntime = runtimeTypeContainerd
-			monitor.config.detectedSocket = "/run/containerd/containerd.sock"
-			monitor.config.detectedService = "containerd"
+			runtimeType = runtimeTypeContainerd
+			socket = "/run/containerd/containerd.sock"
+			service = "containerd"
 		case "crio":
-			monitor.config.detectedRuntime = runtimeTypeCrio
-			monitor.config.detectedSocket = "/var/run/crio/crio.sock"
-			monitor.config.detectedService = "crio"
+			runtimeType = runtimeTypeCrio
+			socket = "/var/run/crio/crio.sock"
+			service = "crio"
 		}
+	}
+
+	monitor, err := NewRuntimeMonitorForTesting(monitorConfig, mockClient, runtimeType, socket, service)
+	if err != nil {
+		t.Fatalf("createTestMonitor() error: %v", err)
 	}
 
 	return monitor
 }
 
 // TestNewRuntimeMonitor tests monitor creation.
+// Note: Some tests are environment-dependent and will be skipped if the required
+// runtime is not available on the test machine.
 func TestNewRuntimeMonitor(t *testing.T) {
 	tests := []struct {
-		name    string
-		config  types.MonitorConfig
-		wantErr bool
+		name               string
+		config             types.MonitorConfig
+		wantErr            bool
+		environmentDepends bool // true if test depends on runtime availability
+		skipReason         string
 	}{
-		{
-			name: "valid config with auto detection",
-			config: types.MonitorConfig{
-				Name:     "runtime-test",
-				Type:     "kubernetes-runtime-check",
-				Interval: 30 * time.Second,
-				Timeout:  10 * time.Second,
-				Enabled:  true,
-				Config: map[string]interface{}{
-					"runtimeType": "docker",
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid config with explicit runtime",
-			config: types.MonitorConfig{
-				Name:     "runtime-test",
-				Type:     "kubernetes-runtime-check",
-				Interval: 30 * time.Second,
-				Timeout:  10 * time.Second,
-				Enabled:  true,
-				Config: map[string]interface{}{
-					"runtimeType":      "containerd",
-					"failureThreshold": 5,
-				},
-			},
-			wantErr: false, // May succeed if containerd socket exists (environment-dependent)
-		},
-		{
-			name: "nil config with defaults",
-			config: types.MonitorConfig{
-				Name:     "runtime-test",
-				Type:     "kubernetes-runtime-check",
-				Interval: 30 * time.Second,
-				Timeout:  10 * time.Second,
-				Enabled:  true,
-				Config:   nil,
-			},
-			wantErr: false, // May succeed with auto-detection if any runtime exists
-		},
 		{
 			name: "invalid monitor type",
 			config: types.MonitorConfig{
@@ -166,12 +131,70 @@ func TestNewRuntimeMonitor(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid config with docker runtime",
+			config: types.MonitorConfig{
+				Name:     "runtime-test",
+				Type:     "kubernetes-runtime-check",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Enabled:  true,
+				Config: map[string]interface{}{
+					"runtimeType": "docker",
+				},
+			},
+			wantErr:            false,
+			environmentDepends: true,
+			skipReason:         "docker socket not available",
+		},
+		{
+			name: "valid config with containerd runtime",
+			config: types.MonitorConfig{
+				Name:     "runtime-test",
+				Type:     "kubernetes-runtime-check",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Enabled:  true,
+				Config: map[string]interface{}{
+					"runtimeType":      "containerd",
+					"failureThreshold": 5,
+				},
+			},
+			wantErr:            false,
+			environmentDepends: true,
+			skipReason:         "containerd socket not available",
+		},
+		{
+			name: "nil config with auto detection",
+			config: types.MonitorConfig{
+				Name:     "runtime-test",
+				Type:     "kubernetes-runtime-check",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Enabled:  true,
+				Config:   nil,
+			},
+			wantErr:            false,
+			environmentDepends: true,
+			skipReason:         "no container runtime available",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			_, err := NewRuntimeMonitor(ctx, tt.config)
+
+			// For environment-dependent tests, skip if the expected error is due to runtime detection
+			if tt.environmentDepends && err != nil && !tt.wantErr {
+				// Check if the error is related to runtime detection (not a config error)
+				errStr := err.Error()
+				if strings.Contains(errStr, "no container runtime detected") ||
+					strings.Contains(errStr, "socket not found") {
+					t.Skipf("Skipping: %s", tt.skipReason)
+				}
+			}
+
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewRuntimeMonitor() error = %v, wantErr %v", err, tt.wantErr)
 			}

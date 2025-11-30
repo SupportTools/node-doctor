@@ -21,10 +21,25 @@ const (
 	defaultContainerdSocket = "/run/containerd/containerd.sock"
 	defaultCrioSocket       = "/var/run/crio/crio.sock"
 
+	// Alternative socket paths for different distributions
+	// CRI-Docker (RKE1 with Docker CRI adapter)
+	criDockerSocket    = "/var/run/cri-dockerd.sock"
+	criDockerSocketAlt = "/run/cri-dockerd.sock"
+	// K3s containerd
+	k3sContainerdSocket    = "/run/k3s/containerd/containerd.sock"
+	k3sContainerdSocketAlt = "/var/run/k3s/containerd/containerd.sock"
+	// RKE2 containerd
+	rke2ContainerdSocket = "/run/k3s/containerd/containerd.sock" // RKE2 uses same path as K3s
+	// Alternative containerd paths
+	containerdSocketAlt = "/var/run/containerd/containerd.sock"
+
 	// Default systemd service names
 	defaultDockerService     = "docker"
 	defaultContainerdService = "containerd"
 	defaultCrioService       = "crio"
+	// Distribution-specific service names
+	k3sService  = "k3s"
+	rke2Service = "rke2-agent"
 
 	// Default configuration values for runtime monitor
 	defaultRuntimeTimeout          = 5 * time.Second
@@ -239,6 +254,8 @@ func NewRuntimeMonitor(ctx context.Context, config types.MonitorConfig) (types.M
 
 // NewRuntimeMonitorWithClient creates a new container runtime monitor instance with a custom client.
 // This is primarily used for testing to allow dependency injection of mock clients.
+// Note: This still performs runtime detection. For tests that need to skip detection, use
+// NewRuntimeMonitorForTesting instead.
 func NewRuntimeMonitorWithClient(ctx context.Context, config types.MonitorConfig, client RuntimeClient) (types.Monitor, error) {
 	// Validate configuration
 	if err := ValidateRuntimeConfig(config); err != nil {
@@ -272,6 +289,52 @@ func NewRuntimeMonitorWithClient(ctx context.Context, config types.MonitorConfig
 		BaseMonitor: baseMonitor,
 		config:      runtimeConfig,
 		client:      client, // Use injected client instead of creating default
+	}
+
+	// Set check function
+	if err := baseMonitor.SetCheckFunc(monitor.checkRuntime); err != nil {
+		return nil, fmt.Errorf("failed to set check function: %w", err)
+	}
+
+	return monitor, nil
+}
+
+// NewRuntimeMonitorForTesting creates a RuntimeMonitor for testing with pre-configured
+// detection results. This skips real filesystem detection and allows tests to control
+// the exact configuration without needing actual runtime sockets.
+func NewRuntimeMonitorForTesting(config types.MonitorConfig, client RuntimeClient, runtimeType, socket, service string) (*RuntimeMonitor, error) {
+	// Validate configuration
+	if err := ValidateRuntimeConfig(config); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	// Parse runtime-specific configuration
+	runtimeConfig, err := parseRuntimeConfig(config.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse runtime config: %w", err)
+	}
+
+	// Apply defaults
+	if err := runtimeConfig.applyDefaults(); err != nil {
+		return nil, fmt.Errorf("failed to apply defaults: %w", err)
+	}
+
+	// Set pre-configured detection results (skip actual detection)
+	runtimeConfig.detectedRuntime = runtimeType
+	runtimeConfig.detectedSocket = socket
+	runtimeConfig.detectedService = service
+
+	// Create base monitor
+	baseMonitor, err := monitors.NewBaseMonitor(config.Name, config.Interval, config.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create base monitor: %w", err)
+	}
+
+	// Create runtime monitor with injected client
+	monitor := &RuntimeMonitor{
+		BaseMonitor: baseMonitor,
+		config:      runtimeConfig,
+		client:      client,
 	}
 
 	// Set check function
@@ -458,14 +521,25 @@ func (c *RuntimeMonitorConfig) detectRuntime() error {
 		return nil
 	}
 
-	// Auto-detect: try each runtime in order of popularity
+	// Auto-detect: try each runtime and multiple socket paths per runtime
+	// Order: K3s/RKE2 containerd first (most specific), then cri-dockerd, then standard paths
 	runtimes := []struct {
 		name    string
 		socket  string
 		service string
 	}{
-		{runtimeTypeDocker, c.DockerSocket, defaultDockerService},
+		// K3s/RKE2 containerd (check first as it's most specific)
+		{runtimeTypeContainerd, k3sContainerdSocket, k3sService},
+		{runtimeTypeContainerd, k3sContainerdSocketAlt, k3sService},
+		// CRI-Docker (RKE1 with Docker CRI adapter) - check before standard Docker
+		{runtimeTypeDocker, criDockerSocket, defaultDockerService},
+		{runtimeTypeDocker, criDockerSocketAlt, defaultDockerService},
+		// Standard containerd
 		{runtimeTypeContainerd, c.ContainerdSocket, defaultContainerdService},
+		{runtimeTypeContainerd, containerdSocketAlt, defaultContainerdService},
+		// Standard Docker
+		{runtimeTypeDocker, c.DockerSocket, defaultDockerService},
+		// CRI-O
 		{runtimeTypeCrio, c.CrioSocket, defaultCrioService},
 	}
 
@@ -479,7 +553,7 @@ func (c *RuntimeMonitorConfig) detectRuntime() error {
 		}
 	}
 
-	return fmt.Errorf("no container runtime detected (checked: docker, containerd, crio)")
+	return fmt.Errorf("no container runtime detected (checked: k3s/rke2 containerd, cri-dockerd, docker, containerd, crio)")
 }
 
 // checkRuntime performs the container runtime health check.
