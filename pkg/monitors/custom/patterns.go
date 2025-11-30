@@ -200,26 +200,27 @@ var DefaultLogPatterns = []LogPatternConfig{
 		Source:      "kmsg",
 	},
 	// VMware vmxnet3 patterns (Case 01607046 - TX hang cascade failures)
+	// Note: Using "both" source because kernel messages appear in both kmsg and journal
 	{
 		Name:        "vmxnet3-tx-hang",
 		Regex:       "vmxnet3.*tx hang",
 		Severity:    "error",
 		Description: "VMware vmxnet3 virtual NIC transmit hang - causes network disruption and can cascade to storage failures (Longhorn, iSCSI)",
-		Source:      "kmsg",
+		Source:      "both",
 	},
 	{
 		Name:        "vmxnet3-nic-reset",
 		Regex:       "vmxnet3.*resetting",
 		Severity:    "warning",
 		Description: "VMware vmxnet3 NIC reset in progress - brief network outage during recovery",
-		Source:      "kmsg",
+		Source:      "both",
 	},
 	{
 		Name:        "soft-lockup-storage",
 		Regex:       "soft lockup.*(?:longhorn|mpt|scsi|iscsi|nvme|nfs)",
 		Severity:    "error",
 		Description: "CPU soft lockup in storage subsystem - may indicate I/O stall from network/storage issues",
-		Source:      "kmsg",
+		Source:      "both",
 	},
 }
 
