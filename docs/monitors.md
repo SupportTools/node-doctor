@@ -1180,6 +1180,9 @@ monitors:
 - Hardware errors: `Machine check events|Hardware Error`
 - Filesystem errors: `EXT4-fs error|XFS.*error|I/O error`
 - Network errors: `Link is Down|NIC Link is Down`
+- VMware vmxnet3 TX hang: `vmxnet3.*tx hang` (error)
+- VMware vmxnet3 NIC reset: `vmxnet3.*resetting` (warning)
+- Storage soft lockup: `soft lockup.*(?:longhorn|mpt|scsi|iscsi|nvme|nfs)` (error)
 
 **Resource Limits:**
 - Maximum 50 patterns
@@ -1223,6 +1226,29 @@ events:
     reason: SegFault
     message: "Segmentation fault detected (2 occurrences in last 5m)"
 ```
+
+**VMware vmxnet3 TX Hang Detection:**
+
+The vmxnet3 patterns detect VMware virtual NIC transmit hangs that can cause cascade failures in storage systems, particularly in Longhorn environments. When a vmxnet3 TX hang occurs:
+
+1. **TX Hang** (`vmxnet3-tx-hang`): The virtual NIC's transmit queue stalls
+2. **NIC Reset** (`vmxnet3-nic-reset`): VMware attempts automatic recovery
+3. **Storage Impact**: iSCSI/Longhorn connections may timeout during the outage
+4. **Soft Lockup** (`soft-lockup-storage`): CPU may appear stuck in storage I/O
+
+**Cascade Timeline Example:**
+```
+02:02:36 vmxnet3 0000:03:00.0 ens160: tx hang           # TX hang starts
+02:02:36 vmxnet3 0000:03:00.0 ens160: resetting         # NIC reset begins
+02:02:39 vmxnet3 0000:03:00.0: intr vectors allocated   # Recovery complete
+02:07:03 soft lockup - CPU#2 stuck [longhorn-instan]    # Storage impact
+```
+
+**Recommended Response:**
+- Check ESXi host logs for underlying cause (vMotion, resource contention)
+- Review Longhorn/storage replica health
+- Consider increasing Longhorn timeouts in high-vmxnet3-hang environments
+- This is a VMware virtualization layer issue, not a guest OS or Kubernetes problem
 
 ---
 

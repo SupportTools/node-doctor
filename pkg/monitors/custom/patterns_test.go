@@ -19,7 +19,7 @@ func TestGetDefaultPatterns(t *testing.T) {
 		t.Error("GetDefaultPatterns() returned same slice, expected a copy")
 	}
 
-	// Verify all expected patterns are present (28 patterns total: 7 original + 12 kubelet + 9 others)
+	// Verify all expected patterns are present (31 patterns total: 7 original + 12 kubelet + 9 others + 3 vmxnet3)
 	expectedPatterns := map[string]bool{
 		"oom-killer":          true,
 		"disk-io-error":       true,
@@ -51,6 +51,10 @@ func TestGetDefaultPatterns(t *testing.T) {
 		"hardware-mce-error":       true,
 		"edac-uncorrectable-error": true,
 		"edac-correctable-error":   true,
+		// VMware vmxnet3 patterns
+		"vmxnet3-tx-hang":      true,
+		"vmxnet3-nic-reset":    true,
+		"soft-lockup-storage":  true,
 	}
 
 	foundPatterns := make(map[string]bool)
@@ -88,7 +92,7 @@ func TestMergeWithDefaults(t *testing.T) {
 			name:         "no user patterns, with defaults",
 			userPatterns: []LogPatternConfig{},
 			useDefaults:  true,
-			expected:     28, // All default patterns (updated count)
+			expected:     31, // All default patterns (updated count)
 		},
 		{
 			name: "one user pattern, no defaults",
@@ -104,7 +108,7 @@ func TestMergeWithDefaults(t *testing.T) {
 				{Name: "custom-pattern", Regex: "test", Severity: "info"},
 			},
 			useDefaults: true,
-			expected:    29, // 1 user + 28 defaults
+			expected:    32, // 1 user + 31 defaults
 		},
 		{
 			name: "user pattern overrides default",
@@ -112,7 +116,7 @@ func TestMergeWithDefaults(t *testing.T) {
 				{Name: "oom-killer", Regex: "custom-oom", Severity: "info"}, // Override default
 			},
 			useDefaults: true,
-			expected:    28, // Still 28 total (user pattern replaces default)
+			expected:    31, // Still 31 total (user pattern replaces default)
 		},
 	}
 
@@ -231,6 +235,48 @@ func TestPatternAccuracy(t *testing.T) {
 			shouldNotMatch: []string{
 				"PLEG operation completed successfully",
 				"relist completed in 100ms",
+			},
+		},
+		// VMware vmxnet3 patterns
+		{
+			patternName: "vmxnet3-tx-hang",
+			shouldMatch: []string{
+				"vmxnet3 0000:03:00.0 ens160: tx hang",
+				"vmxnet3 0000:0b:00.0 eth0: tx hang",
+				"kernel: vmxnet3 0000:13:00.0: tx hang on queue 0",
+			},
+			shouldNotMatch: []string{
+				"vmxnet3 driver loaded successfully",
+				"vmxnet3 0000:03:00.0: intr type 3, mode 0, 9 vectors allocated",
+				"NETDEV WATCHDOG: ens160 (vmxnet3): transmit queue 0 timed out", // Covered by network-timeout
+			},
+		},
+		{
+			patternName: "vmxnet3-nic-reset",
+			shouldMatch: []string{
+				"vmxnet3 0000:03:00.0 ens160: resetting",
+				"vmxnet3 0000:0b:00.0 eth0: resetting",
+			},
+			shouldNotMatch: []string{
+				"vmxnet3 reset complete",
+				"vmxnet3 driver initialized",
+			},
+		},
+		{
+			patternName: "soft-lockup-storage",
+			shouldMatch: []string{
+				"watchdog: BUG: soft lockup - CPU#2 stuck for 22s! [longhorn-instan:12345]",
+				"watchdog: BUG: soft lockup - CPU#0 stuck for 23s! [mpt_put_msg_fra:6789]",
+				"BUG: soft lockup - CPU#1 stuck for 21s! [scsi_eh_0:1234]",
+				"soft lockup - CPU#3 stuck for 25s! [iscsi_eh_0:5678]",
+				"soft lockup detected in nvme_poll",
+				"BUG: soft lockup - CPU#0 stuck for 22s! [nfs4_rpc_workqu:9012]",
+			},
+			shouldNotMatch: []string{
+				"soft lockup - CPU#1 stuck for 21s! [chrome:9999]",
+				"soft lockup - CPU#2 stuck for 22s! [firefox:8888]",
+				"soft lockup - CPU#0 stuck for 20s! [python:7777]",
+				"watchdog: BUG: soft lockup - CPU#3 stuck for 24s! [java:6666]",
 			},
 		},
 	}

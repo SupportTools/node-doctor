@@ -1113,7 +1113,7 @@ func TestResourceLimits_WithDefaults(t *testing.T) {
 	}{
 		{
 			name:         "user patterns + defaults within limit",
-			userPatterns: 30,
+			userPatterns: 29, // 29 user + 31 defaults = 60 (at limit)
 			useDefaults:  true,
 			expectError:  false,
 		},

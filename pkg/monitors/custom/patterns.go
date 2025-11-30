@@ -199,6 +199,28 @@ var DefaultLogPatterns = []LogPatternConfig{
 		Description: "EDAC correctable memory error - monitor for degradation",
 		Source:      "kmsg",
 	},
+	// VMware vmxnet3 patterns (Case 01607046 - TX hang cascade failures)
+	{
+		Name:        "vmxnet3-tx-hang",
+		Regex:       "vmxnet3.*tx hang",
+		Severity:    "error",
+		Description: "VMware vmxnet3 virtual NIC transmit hang - causes network disruption and can cascade to storage failures (Longhorn, iSCSI)",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "vmxnet3-nic-reset",
+		Regex:       "vmxnet3.*resetting",
+		Severity:    "warning",
+		Description: "VMware vmxnet3 NIC reset in progress - brief network outage during recovery",
+		Source:      "kmsg",
+	},
+	{
+		Name:        "soft-lockup-storage",
+		Regex:       "soft lockup.*(?:longhorn|mpt|scsi|iscsi|nvme|nfs)",
+		Severity:    "error",
+		Description: "CPU soft lockup in storage subsystem - may indicate I/O stall from network/storage issues",
+		Source:      "kmsg",
+	},
 }
 
 // GetDefaultPatterns returns a copy of the default patterns
