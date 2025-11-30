@@ -33,8 +33,19 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -o node-doctor \
     ./cmd/node-doctor
 
-# Runtime stage - use distroless for minimal size
-FROM gcr.io/distroless/static-debian12:nonroot
+# Runtime stage - use debian slim with systemd for journalctl access
+# Required for reading kernel journal logs via journalctl -k
+FROM debian:12-slim
+
+# Install minimal systemd for journalctl command
+# This adds ~15MB but is required for kernel journal log monitoring
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends systemd && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Create non-root user for running the application
+RUN groupadd -r node-doctor && useradd -r -g node-doctor node-doctor
 
 # Copy binary from builder
 COPY --from=builder /build/node-doctor /usr/local/bin/node-doctor
