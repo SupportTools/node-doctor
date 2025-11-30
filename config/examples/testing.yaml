@@ -1,0 +1,270 @@
+# Testing Node Doctor Configuration
+# This configuration is optimized for testing all monitors in a real cluster.
+# Features: fast intervals, all monitors enabled, all log patterns, debug logging
+#
+# To use this configuration:
+#   node-doctor --config=/path/to/testing.yaml
+#
+# Risk Levels:
+#   - SAFE tests: Can run with this config on any node
+#   - CAUTION tests: Use on non-production nodes
+#   - DESTRUCTIVE tests: Requires dedicated test node (cordon/drain first)
+
+apiVersion: node-doctor.io/v1alpha1
+kind: NodeDoctorConfig
+
+metadata:
+  name: node-doctor-testing
+  labels:
+    environment: testing
+    purpose: monitor-validation
+
+# Global settings - optimized for fast event detection during testing
+settings:
+  nodeName: "${NODE_NAME}"
+
+  # Debug logging for test verification
+  logLevel: debug       # Show all log messages for verification
+  logFormat: text       # Human-readable format for manual testing
+  logOutput: stdout
+
+  # Short intervals for faster feedback during testing
+  updateInterval: 5s    # Update every 5 seconds
+  resyncInterval: 20s   # Resync every 20 seconds
+  heartbeatInterval: 30s # Heartbeat every 30 seconds
+
+  # Remediation settings for testing
+  enableRemediation: false  # Disable remediation during testing
+  dryRunMode: true          # Extra safety: dry-run if accidentally enabled
+
+  # Kubernetes client configuration
+  qps: 20
+  burst: 40
+
+# Monitors - enable all with short intervals for testing
+monitors:
+  # ============================================
+  # SYSTEM MONITORS
+  # ============================================
+
+  # System CPU Monitor - SAFE to test
+  - name: cpu-health
+    type: system-cpu
+    enabled: true
+    interval: 10s       # Fast interval for testing
+    timeout: 5s
+    config:
+      loadAverageThresholds:
+        warning: 70      # Lower thresholds to trigger during stress tests
+        critical: 90
+      thermalThresholds:
+        warning: 80
+        critical: 95
+      cpuUsageThresholds:
+        warning: 70      # Lower for testing
+        critical: 90
+
+  # System Memory Monitor - CAUTION (OOM can be triggered)
+  - name: memory-health
+    type: system-memory
+    enabled: true
+    interval: 10s
+    timeout: 5s
+    config:
+      memoryThresholds:
+        warning: 70      # Lower for testing
+        critical: 90
+      swapThresholds:
+        warning: 30      # Lower for testing
+        critical: 60
+      oomDetection: true
+      kmsgPath: /dev/kmsg
+
+  # System Disk Monitor - SAFE to DESTRUCTIVE depending on test
+  - name: disk-health
+    type: system-disk
+    enabled: true
+    interval: 15s
+    timeout: 10s
+    config:
+      paths:
+        - path: "/"
+          warningThreshold: 75   # Lower for testing
+          criticalThreshold: 90
+        - path: "/var/lib/kubelet"
+          warningThreshold: 75
+          criticalThreshold: 90
+        - path: "/tmp"
+          warningThreshold: 70   # /tmp often used for test files
+          criticalThreshold: 85
+      inodeThresholds:
+        warning: 80
+        critical: 95
+      readOnlyDetection: true
+      ioHealthCheck: true
+      ioThreshold: 70           # Lower for testing
+
+  # ============================================
+  # KUBERNETES MONITORS
+  # ============================================
+
+  # Kubelet Health Monitor - SAFE to DESTRUCTIVE
+  - name: kubelet-health
+    type: kubernetes-kubelet-check
+    enabled: true
+    interval: 10s       # Fast detection
+    timeout: 5s
+    config:
+      healthzURL: http://127.0.0.1:10248/healthz
+      checkSystemdStatus: true
+      plegThreshold: 5s  # Lower threshold for faster detection
+
+  # API Server Monitor - SAFE to DESTRUCTIVE
+  - name: apiserver-health
+    type: kubernetes-apiserver-check
+    enabled: true
+    interval: 10s
+    timeout: 5s
+    config:
+      warningLatency: 200    # Lower for faster detection
+      criticalLatency: 1000
+
+  # Container Runtime Monitor - SAFE to DESTRUCTIVE
+  - name: runtime-health
+    type: kubernetes-runtime-check
+    enabled: true
+    interval: 15s
+    timeout: 10s
+    config:
+      checkPods: true
+
+  # Pod Capacity Monitor - SAFE
+  - name: capacity-health
+    type: kubernetes-capacity-check
+    enabled: true
+    interval: 15s
+    timeout: 5s
+    config:
+      warningThreshold: 70   # Lower for testing
+      criticalThreshold: 85
+      checkAllocatable: true
+
+  # ============================================
+  # NETWORK MONITORS
+  # ============================================
+
+  # DNS Check - SAFE to DESTRUCTIVE
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 15s
+    timeout: 5s
+    config:
+      domains:
+        - kubernetes.default.svc.cluster.local
+        - google.com
+        - cloudflare.com
+      timeout: 2s
+
+  # Gateway Check - SAFE
+  - name: gateway-health
+    type: network-gateway-check
+    enabled: true
+    interval: 15s
+    timeout: 5s
+    config:
+      count: 3
+      warningLatency: 30    # Lower for testing
+      criticalLatency: 75
+
+  # Connectivity Check - SAFE
+  - name: connectivity-health
+    type: network-connectivity-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      endpoints:
+        - url: https://kubernetes.default.svc.cluster.local
+          timeout: 5s
+        - url: https://www.google.com
+          timeout: 5s
+        - url: https://cloudflare.com
+          timeout: 5s
+      followRedirects: true
+
+  # CNI Health Check - CAUTION
+  - name: cni-health
+    type: network-cni-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      warningLatency: 20    # Lower for testing
+      criticalLatency: 50
+      minReachablePeers: 1
+
+  # ============================================
+  # CUSTOM MONITORS
+  # ============================================
+
+  # Log Pattern Monitor - SAFE (pattern injection)
+  - name: logpattern-health
+    type: custom-logpattern
+    enabled: true
+    interval: 5s         # Very fast for testing pattern detection
+    timeout: 5s
+    config:
+      useDefaultPatterns: true   # Enable all 58 default patterns
+      checkKmsg: true            # Read /dev/kmsg
+      checkKernelJournal: true   # Read journalctl -k
+      checkInterval: 5s          # Fast check interval
+      logBufferSize: 200         # Larger buffer for testing
+      maxMatchesPerPattern: 20   # More matches for testing
+
+# Exporters - enable all for test verification
+exporters:
+  # Kubernetes exporter
+  kubernetes:
+    enabled: true
+    updateInterval: 5s     # Fast updates for testing
+    resyncInterval: 20s
+    heartbeatInterval: 30s
+    namespace: node-doctor
+    conditions:
+      - type: NodeDoctorHealthy
+        defaultStatus: "True"
+        defaultReason: "NodeDoctorRunning"
+        defaultMessage: "Node Doctor is monitoring the node"
+    events:
+      maxEventsPerMinute: 60   # High rate for testing
+      eventTTL: 1h
+      deduplicationWindow: 1m  # Short window for testing
+
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    port: 9101
+    path: /metrics
+    namespace: node_doctor
+    subsystem: monitor
+    labels:
+      environment: testing
+      purpose: validation
+
+# Remediation - disabled for testing (we want to observe, not fix)
+remediation:
+  enabled: false
+  dryRun: true
+
+# Features - enable all for comprehensive testing
+features:
+  enableMetrics: true
+  enableProfiling: true
+  profilingPort: 6060
+  enableTracing: false
+
+# Hot reload configuration
+reload:
+  enabled: true
+  debounceInterval: 1s    # Fast reload for testing
