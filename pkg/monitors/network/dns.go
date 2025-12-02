@@ -19,8 +19,19 @@ import (
 
 // DNSQuery represents a custom DNS query configuration.
 type DNSQuery struct {
-	Domain     string
-	RecordType string // Currently only "A" is supported
+	Domain             string
+	RecordType         string // Currently only "A" is supported
+	TestEachNameserver bool   // Test this domain against each nameserver individually
+}
+
+// NameserverDomainStatus tracks the status of DNS resolution for a specific
+// nameserver and domain combination.
+type NameserverDomainStatus struct {
+	Nameserver   string
+	Domain       string
+	FailureCount int
+	LastSuccess  time.Time
+	LastLatency  time.Duration
 }
 
 // DNSMonitorConfig holds the configuration for the DNS monitor.
@@ -58,6 +69,9 @@ type DNSMonitor struct {
 	clusterFailureCount  int
 	externalFailureCount int
 
+	// Per-nameserver domain failure tracking (key: "nameserver:domain")
+	nameserverDomainStatus map[string]*NameserverDomainStatus
+
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
 }
@@ -93,10 +107,11 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 
 	// Create DNS monitor
 	monitor := &DNSMonitor{
-		name:        config.Name,
-		config:      dnsConfig,
-		resolver:    newDefaultResolver(),
-		BaseMonitor: baseMonitor,
+		name:                   config.Name,
+		config:                 dnsConfig,
+		resolver:               newDefaultResolver(),
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+		BaseMonitor:            baseMonitor,
 	}
 
 	// Set the check function
@@ -215,9 +230,15 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 				recordType = rt
 			}
 
+			testEachNameserver := false
+			if tns, ok := queryMap["testEachNameserver"].(bool); ok {
+				testEachNameserver = tns
+			}
+
 			config.CustomQueries[i] = DNSQuery{
-				Domain:     domain,
-				RecordType: recordType,
+				Domain:             domain,
+				RecordType:         recordType,
+				TestEachNameserver: testEachNameserver,
 			}
 		}
 	}
@@ -395,6 +416,13 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 			continue
 		}
 
+		// Use per-nameserver testing if enabled
+		if query.TestEachNameserver {
+			m.checkDomainAgainstNameservers(ctx, status, query.Domain)
+			continue
+		}
+
+		// Standard resolution using system resolver
 		start := time.Now()
 		addrs, err := m.resolver.LookupHost(ctx, query.Domain)
 		latency := time.Since(start)
@@ -428,6 +456,177 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 	}
 }
 
+// maxNameserverDomainEntries is the maximum number of entries in the nameserverDomainStatus map
+// to prevent unbounded memory growth.
+const maxNameserverDomainEntries = 1000
+
+// checkDomainAgainstNameservers tests a domain against each configured nameserver individually.
+// This enables detection of intermittent DNS failures caused by specific nameserver issues.
+func (m *DNSMonitor) checkDomainAgainstNameservers(ctx context.Context, status *types.Status, domain string) {
+	nameservers, err := m.parseResolverConfig()
+	if err != nil {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ResolverConfigParseError",
+			fmt.Sprintf("Failed to parse resolver config for per-nameserver testing: %v", err),
+		))
+		return
+	}
+
+	if len(nameservers) == 0 {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"NoNameserversConfigured",
+			fmt.Sprintf("No nameservers found for per-nameserver testing of %s", domain),
+		))
+		return
+	}
+
+	// Collect results from each nameserver (outside of lock to avoid holding mutex during I/O)
+	type nsResult struct {
+		nameserver string
+		err        error
+		latency    time.Duration
+	}
+	results := make([]nsResult, 0, len(nameservers))
+
+	for _, ns := range nameservers {
+		// Create a custom resolver for this specific nameserver
+		resolver := m.createNameserverResolver(ns)
+
+		// Perform the lookup with timeout (no lock held during network I/O)
+		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		start := time.Now()
+		_, lookupErr := resolver.LookupHost(queryCtx, domain)
+		latency := time.Since(start)
+		cancel()
+
+		results = append(results, nsResult{
+			nameserver: ns,
+			err:        lookupErr,
+			latency:    latency,
+		})
+	}
+
+	// Now process results with lock held (only for map access)
+	successCount := 0
+	failedServers := []string{}
+	totalServers := len(nameservers)
+
+	m.mu.Lock()
+	// Clean up old entries if map is at or above limit
+	if len(m.nameserverDomainStatus) >= maxNameserverDomainEntries {
+		m.cleanupOldNameserverStatus()
+	}
+
+	for _, result := range results {
+		key := fmt.Sprintf("%s:%s", result.nameserver, domain)
+		nsStatus := m.getOrCreateNameserverStatus(key, result.nameserver, domain)
+
+		if result.err != nil {
+			nsStatus.FailureCount++
+			failedServers = append(failedServers, result.nameserver)
+		} else {
+			successCount++
+			nsStatus.FailureCount = 0
+			nsStatus.LastSuccess = time.Now()
+			nsStatus.LastLatency = result.latency
+		}
+	}
+	m.mu.Unlock()
+
+	// Generate events outside of lock
+	for _, result := range results {
+		if result.err != nil {
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"NameserverDomainResolutionFailed",
+				fmt.Sprintf("Nameserver %s failed to resolve %s: %v", result.nameserver, domain, result.err),
+			))
+		} else if result.latency > m.config.LatencyThreshold {
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"NameserverDomainLatencyHigh",
+				fmt.Sprintf("Nameserver %s resolved %s in %v (threshold: %v)", result.nameserver, domain, result.latency, m.config.LatencyThreshold),
+			))
+		}
+	}
+
+	// Report aggregate condition based on results
+	if successCount == 0 && totalServers > 0 {
+		// All nameservers failed
+		status.AddCondition(types.NewCondition(
+			"CustomDNSDown",
+			types.ConditionTrue,
+			"AllNameserversFailed",
+			fmt.Sprintf("Domain %s: all %d nameservers failed to resolve", domain, totalServers),
+		))
+	} else if successCount > 0 && len(failedServers) > 0 {
+		// Partial failure - some nameservers working, some not
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionDegraded",
+			types.ConditionTrue,
+			"PartialNameserverFailure",
+			fmt.Sprintf("Domain %s: %d/%d nameservers responding (failed: %s)",
+				domain, successCount, totalServers, strings.Join(failedServers, ", ")),
+		))
+	} else if successCount == totalServers {
+		// All nameservers succeeded
+		status.AddCondition(types.NewCondition(
+			"CustomDNSHealthy",
+			types.ConditionTrue,
+			"AllNameserversHealthy",
+			fmt.Sprintf("Domain %s: all %d nameservers responding", domain, totalServers),
+		))
+	}
+}
+
+// cleanupOldNameserverStatus removes stale entries from the nameserverDomainStatus map.
+// Caller must hold m.mu lock.
+func (m *DNSMonitor) cleanupOldNameserverStatus() {
+	// Remove entries that:
+	// 1. Have NEVER succeeded (IsZero), OR
+	// 2. Haven't succeeded recently (before cutoff)
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for key, status := range m.nameserverDomainStatus {
+		if status.LastSuccess.IsZero() || status.LastSuccess.Before(cutoff) {
+			delete(m.nameserverDomainStatus, key)
+		}
+	}
+	// If still too large after cleanup, clear and rebuild
+	if len(m.nameserverDomainStatus) > maxNameserverDomainEntries/2 {
+		m.nameserverDomainStatus = make(map[string]*NameserverDomainStatus)
+	}
+}
+
+// createNameserverResolver creates a resolver that uses a specific nameserver.
+// Supports both IPv4 and IPv6 nameservers.
+func (m *DNSMonitor) createNameserverResolver(nameserver string) *net.Resolver {
+	// Use net.JoinHostPort to properly handle IPv6 addresses (e.g., [2001:4860:4860::8888]:53)
+	addr := net.JoinHostPort(nameserver, "53")
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, "udp", addr)
+		},
+	}
+}
+
+// getOrCreateNameserverStatus retrieves or creates a NameserverDomainStatus for tracking.
+// Caller must hold m.mu lock.
+func (m *DNSMonitor) getOrCreateNameserverStatus(key, nameserver, domain string) *NameserverDomainStatus {
+	if status, exists := m.nameserverDomainStatus[key]; exists {
+		return status
+	}
+	status := &NameserverDomainStatus{
+		Nameserver: nameserver,
+		Domain:     domain,
+	}
+	m.nameserverDomainStatus[key] = status
+	return status
+}
+
 // checkNameservers verifies nameserver reachability.
 func (m *DNSMonitor) checkNameservers(ctx context.Context, status *types.Status) {
 	nameservers, err := m.parseResolverConfig()
@@ -454,19 +653,12 @@ func (m *DNSMonitor) checkNameservers(ctx context.Context, status *types.Status)
 		// We'll use google.com as a test domain (widely available and reliable)
 		testDomain := "google.com"
 
-		// Create a custom resolver for this specific nameserver
-		// Note: This is simplified - in production you might want to use a more robust approach
-		resolver := &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 2 * time.Second}
-				return d.DialContext(ctx, "udp", ns+":53")
-			},
-		}
+		// Reuse createNameserverResolver for proper IPv4/IPv6 handling
+		resolver := m.createNameserverResolver(ns)
 
 		// Try to resolve using this nameserver
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := resolver.LookupHost(ctx, testDomain)
+		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := resolver.LookupHost(queryCtx, testDomain)
 		cancel()
 
 		if err != nil {

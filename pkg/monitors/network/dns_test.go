@@ -1128,3 +1128,375 @@ func TestCheckCustomQueries(t *testing.T) {
 		})
 	}
 }
+
+// TestParseDNSConfigTestEachNameserver tests parsing of testEachNameserver field.
+func TestParseDNSConfigTestEachNameserver(t *testing.T) {
+	tests := []struct {
+		name                   string
+		config                 map[string]interface{}
+		wantTestEachNameserver bool
+	}{
+		{
+			name: "testEachNameserver enabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":             "example.com",
+						"recordType":         "A",
+						"testEachNameserver": true,
+					},
+				},
+			},
+			wantTestEachNameserver: true,
+		},
+		{
+			name: "testEachNameserver disabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":             "example.com",
+						"recordType":         "A",
+						"testEachNameserver": false,
+					},
+				},
+			},
+			wantTestEachNameserver: false,
+		},
+		{
+			name: "testEachNameserver not specified (defaults to false)",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":     "example.com",
+						"recordType": "A",
+					},
+				},
+			},
+			wantTestEachNameserver: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseDNSConfig(tt.config)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(result.CustomQueries) == 0 {
+				t.Fatal("expected at least one custom query")
+			}
+
+			if result.CustomQueries[0].TestEachNameserver != tt.wantTestEachNameserver {
+				t.Errorf("TestEachNameserver = %v, want %v",
+					result.CustomQueries[0].TestEachNameserver, tt.wantTestEachNameserver)
+			}
+		})
+	}
+}
+
+// TestCheckDomainAgainstNameservers tests per-nameserver domain resolution.
+func TestCheckDomainAgainstNameservers(t *testing.T) {
+	tests := []struct {
+		name              string
+		resolverContent   string
+		wantConditionType string
+		wantConditionTrue bool
+		wantEvents        int
+	}{
+		{
+			name: "missing resolver file",
+			// No file content, use non-existent path
+			resolverContent:   "",
+			wantConditionType: "",
+			wantEvents:        1, // ResolverConfigParseError
+		},
+		{
+			name:              "empty resolver file - no nameservers",
+			resolverContent:   "# No nameservers configured\n",
+			wantConditionType: "",
+			wantEvents:        1, // NoNameserversConfigured
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resolverPath string
+
+			if tt.name == "missing resolver file" {
+				resolverPath = "/nonexistent/resolv.conf"
+			} else {
+				// Create temp file with resolver content
+				tmpFile, err := os.CreateTemp("", "resolv.conf")
+				if err != nil {
+					t.Fatalf("failed to create temp file: %v", err)
+				}
+				defer os.Remove(tmpFile.Name())
+
+				if _, err := tmpFile.WriteString(tt.resolverContent); err != nil {
+					t.Fatalf("failed to write temp file: %v", err)
+				}
+				tmpFile.Close()
+				resolverPath = tmpFile.Name()
+			}
+
+			monitor := &DNSMonitor{
+				name: "test-dns",
+				config: &DNSMonitorConfig{
+					ResolverPath:     resolverPath,
+					LatencyThreshold: 1 * time.Second,
+				},
+				nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+			}
+
+			ctx := context.Background()
+			status := types.NewStatus("test-dns")
+			monitor.checkDomainAgainstNameservers(ctx, status, "test.example.com")
+
+			// Check event count
+			if tt.wantEvents >= 0 && len(status.Events) != tt.wantEvents {
+				t.Errorf("got %d events, want %d", len(status.Events), tt.wantEvents)
+			}
+
+			// Check condition
+			if tt.wantConditionType != "" {
+				found := false
+				for _, cond := range status.Conditions {
+					if cond.Type == tt.wantConditionType {
+						found = true
+						if tt.wantConditionTrue && cond.Status != types.ConditionTrue {
+							t.Errorf("expected condition %s to be True", tt.wantConditionType)
+						}
+						break
+					}
+				}
+				if !found && tt.wantConditionTrue {
+					t.Errorf("expected condition %s not found", tt.wantConditionType)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckCustomQueriesWithTestEachNameserver tests custom queries with per-nameserver testing.
+func TestCheckCustomQueriesWithTestEachNameserver(t *testing.T) {
+	// Create a temp resolver file
+	tmpFile, err := os.CreateTemp("", "resolv.conf")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	// Empty file to test the NoNameserversConfigured path
+	if _, err := tmpFile.WriteString("# Empty\n"); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	mock := newMockResolver()
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			ClusterDomains:  []string{},
+			ExternalDomains: []string{},
+			CustomQueries: []DNSQuery{
+				{
+					Domain:             "test.example.com",
+					RecordType:         "A",
+					TestEachNameserver: true, // Enable per-nameserver testing
+				},
+			},
+			ResolverPath:     tmpFile.Name(),
+			LatencyThreshold: 1 * time.Second,
+		},
+		resolver:               mock,
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkCustomQueries(ctx, status)
+
+	// Should generate NoNameserversConfigured event
+	if len(status.Events) == 0 {
+		t.Error("expected at least one event for no nameservers configured")
+	}
+
+	foundNoNameservers := false
+	for _, event := range status.Events {
+		if event.Reason == "NoNameserversConfigured" {
+			foundNoNameservers = true
+			break
+		}
+	}
+	if !foundNoNameservers {
+		t.Error("expected NoNameserversConfigured event")
+	}
+}
+
+// TestGetOrCreateNameserverStatus tests the nameserver status tracking.
+func TestGetOrCreateNameserverStatus(t *testing.T) {
+	monitor := &DNSMonitor{
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	// First call should create a new status
+	key1 := "8.8.8.8:example.com"
+	status1 := monitor.getOrCreateNameserverStatus(key1, "8.8.8.8", "example.com")
+	if status1 == nil {
+		t.Fatal("expected non-nil status")
+	}
+	if status1.Nameserver != "8.8.8.8" {
+		t.Errorf("Nameserver = %s, want 8.8.8.8", status1.Nameserver)
+	}
+	if status1.Domain != "example.com" {
+		t.Errorf("Domain = %s, want example.com", status1.Domain)
+	}
+	if status1.FailureCount != 0 {
+		t.Errorf("FailureCount = %d, want 0", status1.FailureCount)
+	}
+
+	// Modify the status
+	status1.FailureCount = 5
+
+	// Second call with same key should return the same status
+	status2 := monitor.getOrCreateNameserverStatus(key1, "8.8.8.8", "example.com")
+	if status2.FailureCount != 5 {
+		t.Errorf("FailureCount = %d, want 5 (should be same instance)", status2.FailureCount)
+	}
+
+	// Different key should create a new status
+	key2 := "8.8.4.4:example.com"
+	status3 := monitor.getOrCreateNameserverStatus(key2, "8.8.4.4", "example.com")
+	if status3.FailureCount != 0 {
+		t.Errorf("FailureCount = %d, want 0 (should be new instance)", status3.FailureCount)
+	}
+}
+
+// TestCreateNameserverResolver tests the nameserver resolver creation.
+func TestCreateNameserverResolver(t *testing.T) {
+	monitor := &DNSMonitor{}
+
+	resolver := monitor.createNameserverResolver("8.8.8.8")
+	if resolver == nil {
+		t.Fatal("expected non-nil resolver")
+	}
+
+	// Verify the resolver has PreferGo set
+	if !resolver.PreferGo {
+		t.Error("expected PreferGo to be true")
+	}
+
+	// Note: We can't easily test the Dial function without actual network calls,
+	// but we can verify the resolver was created with the right settings
+}
+
+// TestNameserverDomainStatusTracking tests that failure counts are tracked correctly.
+func TestNameserverDomainStatusTracking(t *testing.T) {
+	monitor := &DNSMonitor{
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	key := "10.0.0.1:critical.example.com"
+
+	// Simulate multiple failures
+	for i := 0; i < 3; i++ {
+		status := monitor.getOrCreateNameserverStatus(key, "10.0.0.1", "critical.example.com")
+		status.FailureCount++
+	}
+
+	// Verify failure count
+	status := monitor.nameserverDomainStatus[key]
+	if status.FailureCount != 3 {
+		t.Errorf("FailureCount = %d, want 3", status.FailureCount)
+	}
+
+	// Simulate recovery
+	status.FailureCount = 0
+	status.LastSuccess = time.Now()
+
+	if status.FailureCount != 0 {
+		t.Errorf("FailureCount = %d after recovery, want 0", status.FailureCount)
+	}
+}
+
+// TestCleanupOldNameserverStatus tests the cleanup of old status entries.
+func TestCleanupOldNameserverStatus(t *testing.T) {
+	monitor := &DNSMonitor{
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	// Add some entries with old LastSuccess times
+	oldTime := time.Now().Add(-2 * time.Hour)
+	recentTime := time.Now().Add(-30 * time.Minute)
+
+	monitor.nameserverDomainStatus["old:domain1"] = &NameserverDomainStatus{
+		Nameserver:  "8.8.8.8",
+		Domain:      "domain1",
+		LastSuccess: oldTime,
+	}
+	monitor.nameserverDomainStatus["recent:domain2"] = &NameserverDomainStatus{
+		Nameserver:  "8.8.4.4",
+		Domain:      "domain2",
+		LastSuccess: recentTime,
+	}
+	monitor.nameserverDomainStatus["zero:domain3"] = &NameserverDomainStatus{
+		Nameserver: "1.1.1.1",
+		Domain:     "domain3",
+		// LastSuccess is zero
+	}
+
+	// Run cleanup
+	monitor.cleanupOldNameserverStatus()
+
+	// Old entry should be removed (> 1 hour old)
+	if _, exists := monitor.nameserverDomainStatus["old:domain1"]; exists {
+		t.Error("expected old entry to be removed")
+	}
+	// Recent entry should remain (< 1 hour old)
+	if _, exists := monitor.nameserverDomainStatus["recent:domain2"]; !exists {
+		t.Error("expected recent entry to remain")
+	}
+	// Zero-time entry (never succeeded) should be removed to prevent memory leak
+	if _, exists := monitor.nameserverDomainStatus["zero:domain3"]; exists {
+		t.Error("expected zero-time entry (never succeeded) to be removed")
+	}
+}
+
+// TestCreateNameserverResolverIPv6 tests that IPv6 nameservers are properly formatted.
+func TestCreateNameserverResolverIPv6(t *testing.T) {
+	monitor := &DNSMonitor{}
+
+	tests := []struct {
+		name       string
+		nameserver string
+	}{
+		{"IPv4", "8.8.8.8"},
+		{"IPv6", "2001:4860:4860::8888"},
+		{"IPv6 full", "2001:4860:4860:0000:0000:0000:0000:8888"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := monitor.createNameserverResolver(tt.nameserver)
+			if resolver == nil {
+				t.Fatal("expected non-nil resolver")
+			}
+			// Verify PreferGo is set
+			if !resolver.PreferGo {
+				t.Error("expected PreferGo to be true")
+			}
+		})
+	}
+}
+
+// TestMaxNameserverDomainEntries tests the constant is defined.
+func TestMaxNameserverDomainEntries(t *testing.T) {
+	if maxNameserverDomainEntries <= 0 {
+		t.Errorf("maxNameserverDomainEntries should be positive, got %d", maxNameserverDomainEntries)
+	}
+	if maxNameserverDomainEntries > 10000 {
+		t.Errorf("maxNameserverDomainEntries seems too large: %d", maxNameserverDomainEntries)
+	}
+}
