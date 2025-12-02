@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -2046,4 +2047,99 @@ func TestSuccessRateValidation(t *testing.T) {
 			t.Errorf("unexpected error for valid config: %v", err)
 		}
 	})
+}
+
+// TestClassifyDNSError tests DNS error type classification.
+func TestClassifyDNSError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected DNSErrorType
+	}{
+		{
+			name:     "nil error returns Unknown",
+			err:      nil,
+			expected: DNSErrorUnknown,
+		},
+		{
+			name:     "i/o timeout",
+			err:      fmt.Errorf("dial tcp 8.8.8.8:53: i/o timeout"),
+			expected: DNSErrorTimeout,
+		},
+		{
+			name:     "context deadline exceeded",
+			err:      fmt.Errorf("lookup example.com: context deadline exceeded"),
+			expected: DNSErrorTimeout,
+		},
+		{
+			name:     "no such host (NXDOMAIN)",
+			err:      fmt.Errorf("lookup nonexistent.example.com: no such host"),
+			expected: DNSErrorNXDOMAIN,
+		},
+		{
+			name:     "server misbehaving (SERVFAIL)",
+			err:      fmt.Errorf("lookup example.com: server misbehaving"),
+			expected: DNSErrorSERVFAIL,
+		},
+		{
+			name:     "connection refused",
+			err:      fmt.Errorf("dial tcp 10.0.0.1:53: connection refused"),
+			expected: DNSErrorRefused,
+		},
+		{
+			name:     "unknown error",
+			err:      fmt.Errorf("some random DNS error"),
+			expected: DNSErrorUnknown,
+		},
+		{
+			name: "net.DNSError with IsNotFound",
+			err: &net.DNSError{
+				Err:        "no such host",
+				Name:       "nonexistent.example.com",
+				IsNotFound: true,
+			},
+			expected: DNSErrorNXDOMAIN,
+		},
+		{
+			name: "net.DNSError with IsTemporary",
+			err: &net.DNSError{
+				Err:         "temporary failure",
+				Name:        "example.com",
+				IsTemporary: true,
+			},
+			expected: DNSErrorTemporary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyDNSError(tt.err)
+			if result != tt.expected {
+				t.Errorf("classifyDNSError(%v) = %s, want %s", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDNSErrorTypeString verifies DNSErrorType string values.
+func TestDNSErrorTypeString(t *testing.T) {
+	tests := []struct {
+		errType  DNSErrorType
+		expected string
+	}{
+		{DNSErrorTimeout, "Timeout"},
+		{DNSErrorNXDOMAIN, "NXDOMAIN"},
+		{DNSErrorSERVFAIL, "SERVFAIL"},
+		{DNSErrorRefused, "Refused"},
+		{DNSErrorTemporary, "Temporary"},
+		{DNSErrorUnknown, "Unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			if string(tt.errType) != tt.expected {
+				t.Errorf("DNSErrorType string = %s, want %s", string(tt.errType), tt.expected)
+			}
+		})
+	}
 }

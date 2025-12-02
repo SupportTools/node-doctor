@@ -6,6 +6,7 @@ package network
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -108,6 +109,70 @@ type SuccessRateConfig struct {
 	WindowSize           int     `json:"windowSize"`           // Number of checks to track (default: 10)
 	FailureRateThreshold float64 `json:"failureRateThreshold"` // Alert if failure rate exceeds this (default: 0.3 = 30%)
 	MinSamplesRequired   int     `json:"minSamplesRequired"`   // Minimum samples before alerting (default: 5)
+}
+
+// DNSErrorType represents the classification of DNS errors for better diagnostics.
+type DNSErrorType string
+
+const (
+	// DNSErrorTimeout indicates the DNS query timed out.
+	// Suggests: Network issues, server overload, or firewall blocking.
+	DNSErrorTimeout DNSErrorType = "Timeout"
+
+	// DNSErrorNXDOMAIN indicates the domain does not exist.
+	// Suggests: Typo in domain, missing DNS record, or DNS zone not configured.
+	DNSErrorNXDOMAIN DNSErrorType = "NXDOMAIN"
+
+	// DNSErrorSERVFAIL indicates the server failed to complete the query.
+	// Suggests: Upstream DNS server error or DNSSEC validation failure.
+	DNSErrorSERVFAIL DNSErrorType = "SERVFAIL"
+
+	// DNSErrorRefused indicates the connection to the DNS server was refused.
+	// Suggests: DNS server down, wrong port, or firewall blocking.
+	DNSErrorRefused DNSErrorType = "Refused"
+
+	// DNSErrorTemporary indicates a temporary/transient DNS failure.
+	// Suggests: Retry may succeed.
+	DNSErrorTemporary DNSErrorType = "Temporary"
+
+	// DNSErrorUnknown indicates an unclassified DNS error.
+	DNSErrorUnknown DNSErrorType = "Unknown"
+)
+
+// classifyDNSError analyzes a DNS error and returns its classification.
+// This helps identify root causes: NXDOMAIN suggests misconfiguration,
+// while Timeout suggests infrastructure issues.
+func classifyDNSError(err error) DNSErrorType {
+	if err == nil {
+		return DNSErrorUnknown
+	}
+
+	// Check for net.DNSError type first (most specific information)
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsNotFound {
+			return DNSErrorNXDOMAIN
+		}
+		if dnsErr.IsTemporary {
+			return DNSErrorTemporary
+		}
+	}
+
+	// Fall back to string matching for error messages
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "i/o timeout"),
+		strings.Contains(errStr, "context deadline exceeded"):
+		return DNSErrorTimeout
+	case strings.Contains(errStr, "no such host"):
+		return DNSErrorNXDOMAIN
+	case strings.Contains(errStr, "server misbehaving"):
+		return DNSErrorSERVFAIL
+	case strings.Contains(errStr, "connection refused"):
+		return DNSErrorRefused
+	default:
+		return DNSErrorUnknown
+	}
 }
 
 // DNSMonitorConfig holds the configuration for the DNS monitor.
@@ -564,10 +629,11 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 
 		if err != nil {
 			allSuccess = false
+			errType := classifyDNSError(err)
 			status.AddEvent(types.NewEvent(
 				types.EventError,
 				domainType+"DNSResolutionFailed",
-				fmt.Sprintf("Failed to resolve %s domain %s: %v", strings.ToLower(domainType), domain, err),
+				fmt.Sprintf("[%s] Failed to resolve %s domain %s: %v", errType, strings.ToLower(domainType), domain, err),
 			))
 			continue
 		}
@@ -620,10 +686,11 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 		latency := time.Since(start)
 
 		if err != nil {
+			errType := classifyDNSError(err)
 			status.AddEvent(types.NewEvent(
 				types.EventError,
 				"CustomDNSQueryFailed",
-				fmt.Sprintf("Failed to resolve custom domain %s: %v", query.Domain, err),
+				fmt.Sprintf("[%s] Failed to resolve custom domain %s: %v", errType, query.Domain, err),
 			))
 			continue
 		}
@@ -730,10 +797,11 @@ func (m *DNSMonitor) checkDomainAgainstNameservers(ctx context.Context, status *
 	// Generate events outside of lock
 	for _, result := range results {
 		if result.err != nil {
+			errType := classifyDNSError(result.err)
 			status.AddEvent(types.NewEvent(
 				types.EventWarning,
 				"NameserverDomainResolutionFailed",
-				fmt.Sprintf("Nameserver %s failed to resolve %s: %v", result.nameserver, domain, result.err),
+				fmt.Sprintf("[%s] Nameserver %s failed to resolve %s: %v", errType, result.nameserver, domain, result.err),
 			))
 		} else if result.latency > m.config.LatencyThreshold {
 			status.AddEvent(types.NewEvent(
