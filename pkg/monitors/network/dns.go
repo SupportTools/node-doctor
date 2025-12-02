@@ -34,6 +34,82 @@ type NameserverDomainStatus struct {
 	LastLatency  time.Duration
 }
 
+// CheckResult represents a single DNS check outcome for success rate tracking.
+type CheckResult struct {
+	Timestamp time.Time
+	Success   bool
+	Latency   time.Duration
+}
+
+// RingBuffer implements a fixed-size circular buffer for tracking check results.
+// It provides O(1) insertions and O(n) success rate calculation.
+type RingBuffer struct {
+	buffer     []*CheckResult
+	size       int
+	writeIndex int
+	count      int // Number of valid entries (up to size)
+}
+
+// NewRingBuffer creates a new ring buffer with specified capacity.
+func NewRingBuffer(size int) *RingBuffer {
+	if size <= 0 {
+		size = 10 // Default minimum size
+	}
+	return &RingBuffer{
+		buffer: make([]*CheckResult, size),
+		size:   size,
+	}
+}
+
+// Add appends a result to the buffer, overwriting the oldest entry if full.
+func (rb *RingBuffer) Add(result *CheckResult) {
+	rb.buffer[rb.writeIndex] = result
+	rb.writeIndex = (rb.writeIndex + 1) % rb.size
+	if rb.count < rb.size {
+		rb.count++
+	}
+}
+
+// GetSuccessRate calculates the success percentage in the buffer.
+// Returns 0.0 if no entries exist.
+func (rb *RingBuffer) GetSuccessRate() float64 {
+	if rb.count == 0 {
+		return 0.0
+	}
+
+	successCount := 0
+	for i := 0; i < rb.count; i++ {
+		if rb.buffer[i] != nil && rb.buffer[i].Success {
+			successCount++
+		}
+	}
+
+	return float64(successCount) / float64(rb.count)
+}
+
+// GetFailureRate calculates the failure percentage in the buffer.
+func (rb *RingBuffer) GetFailureRate() float64 {
+	return 1.0 - rb.GetSuccessRate()
+}
+
+// Count returns the number of valid entries in the buffer.
+func (rb *RingBuffer) Count() int {
+	return rb.count
+}
+
+// Size returns the capacity of the buffer.
+func (rb *RingBuffer) Size() int {
+	return rb.size
+}
+
+// SuccessRateConfig holds configuration for success rate tracking.
+type SuccessRateConfig struct {
+	Enabled              bool    `json:"enabled"`
+	WindowSize           int     `json:"windowSize"`           // Number of checks to track (default: 10)
+	FailureRateThreshold float64 `json:"failureRateThreshold"` // Alert if failure rate exceeds this (default: 0.3 = 30%)
+	MinSamplesRequired   int     `json:"minSamplesRequired"`   // Minimum samples before alerting (default: 5)
+}
+
 // DNSMonitorConfig holds the configuration for the DNS monitor.
 type DNSMonitorConfig struct {
 	// ClusterDomains are Kubernetes cluster internal domains to test
@@ -56,6 +132,9 @@ type DNSMonitorConfig struct {
 
 	// FailureCountThreshold is the number of consecutive failures before reporting NetworkUnreachable
 	FailureCountThreshold int `json:"failureCountThreshold"`
+
+	// SuccessRateTracking configures sliding window success rate tracking
+	SuccessRateTracking *SuccessRateConfig `json:"successRateTracking"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -71,6 +150,10 @@ type DNSMonitor struct {
 
 	// Per-nameserver domain failure tracking (key: "nameserver:domain")
 	nameserverDomainStatus map[string]*NameserverDomainStatus
+
+	// Success rate tracking with sliding window
+	clusterSuccessTracker  *RingBuffer
+	externalSuccessTracker *RingBuffer
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
@@ -111,6 +194,8 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 		config:                 dnsConfig,
 		resolver:               newDefaultResolver(),
 		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+		clusterSuccessTracker:  NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
+		externalSuccessTracker: NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
 		BaseMonitor:            baseMonitor,
 	}
 
@@ -151,6 +236,27 @@ func ValidateDNSConfig(config types.MonitorConfig) error {
 	// Validate failure count threshold
 	if dnsConfig.FailureCountThreshold < 1 {
 		return fmt.Errorf("failureCountThreshold must be at least 1, got %d", dnsConfig.FailureCountThreshold)
+	}
+
+	// Validate success rate tracking config if enabled
+	if dnsConfig.SuccessRateTracking != nil && dnsConfig.SuccessRateTracking.Enabled {
+		srt := dnsConfig.SuccessRateTracking
+
+		if srt.WindowSize <= 0 || srt.WindowSize > 10000 {
+			return fmt.Errorf("successRateTracking.windowSize must be between 1 and 10000, got %d", srt.WindowSize)
+		}
+
+		if srt.MinSamplesRequired <= 0 {
+			return fmt.Errorf("successRateTracking.minSamplesRequired must be at least 1, got %d", srt.MinSamplesRequired)
+		}
+
+		if srt.MinSamplesRequired > srt.WindowSize {
+			return fmt.Errorf("successRateTracking.minSamplesRequired (%d) cannot exceed windowSize (%d)", srt.MinSamplesRequired, srt.WindowSize)
+		}
+
+		if srt.FailureRateThreshold <= 0 || srt.FailureRateThreshold > 1.0 {
+			return fmt.Errorf("successRateTracking.failureRateThreshold must be between 0 and 1.0, got %.2f", srt.FailureRateThreshold)
+		}
 	}
 
 	// Validate that at least one type of DNS check is configured
@@ -293,6 +399,71 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		}
 	}
 
+	// Parse SuccessRateTracking
+	if val, ok := configMap["successRateTracking"]; ok {
+		srtMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("successRateTracking must be an object")
+		}
+
+		srt := &SuccessRateConfig{}
+
+		// Parse enabled
+		if enabled, ok := srtMap["enabled"].(bool); ok {
+			srt.Enabled = enabled
+		}
+
+		// Parse windowSize
+		if ws, ok := srtMap["windowSize"]; ok {
+			switch v := ws.(type) {
+			case float64:
+				srt.WindowSize = int(v)
+			case int:
+				srt.WindowSize = v
+			default:
+				return nil, fmt.Errorf("successRateTracking.windowSize must be an integer")
+			}
+		}
+
+		// Parse failureRateThreshold (accepts percentage 0-100 or decimal 0.0-1.0)
+		if frt, ok := srtMap["failureRateThreshold"]; ok {
+			switch v := frt.(type) {
+			case float64:
+				// If value > 1, treat as percentage and convert to decimal
+				if v > 1.0 {
+					srt.FailureRateThreshold = v / 100.0
+				} else {
+					srt.FailureRateThreshold = v
+				}
+				if srt.FailureRateThreshold < 0 || srt.FailureRateThreshold > 1.0 {
+					return nil, fmt.Errorf("successRateTracking.failureRateThreshold must be between 0 and 100 (or 0.0 and 1.0)")
+				}
+			case int:
+				// Treat as percentage
+				if v < 0 || v > 100 {
+					return nil, fmt.Errorf("successRateTracking.failureRateThreshold must be between 0 and 100 (percentage), got %d", v)
+				}
+				srt.FailureRateThreshold = float64(v) / 100.0
+			default:
+				return nil, fmt.Errorf("successRateTracking.failureRateThreshold must be a number")
+			}
+		}
+
+		// Parse minSamplesRequired
+		if msr, ok := srtMap["minSamplesRequired"]; ok {
+			switch v := msr.(type) {
+			case float64:
+				srt.MinSamplesRequired = int(v)
+			case int:
+				srt.MinSamplesRequired = v
+			default:
+				return nil, fmt.Errorf("successRateTracking.minSamplesRequired must be an integer")
+			}
+		}
+
+		config.SuccessRateTracking = srt
+	}
+
 	return config, nil
 }
 
@@ -321,6 +492,27 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 	// Default failure count threshold
 	if c.FailureCountThreshold == 0 {
 		c.FailureCountThreshold = 3
+	}
+
+	// Default success rate tracking config
+	if c.SuccessRateTracking == nil {
+		c.SuccessRateTracking = &SuccessRateConfig{
+			Enabled:              false, // Disabled by default for backward compatibility
+			WindowSize:           10,
+			FailureRateThreshold: 0.3, // 30% failure rate threshold
+			MinSamplesRequired:   5,
+		}
+	} else {
+		// Apply defaults for fields not explicitly set
+		if c.SuccessRateTracking.WindowSize <= 0 {
+			c.SuccessRateTracking.WindowSize = 10
+		}
+		if c.SuccessRateTracking.FailureRateThreshold <= 0 {
+			c.SuccessRateTracking.FailureRateThreshold = 0.3
+		}
+		if c.SuccessRateTracking.MinSamplesRequired <= 0 {
+			c.SuccessRateTracking.MinSamplesRequired = 5
+		}
 	}
 
 	return nil
@@ -725,6 +917,16 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 		m.externalFailureCount = 0
 	}
 
+	// Track success rate in sliding window
+	m.clusterSuccessTracker.Add(&CheckResult{
+		Timestamp: time.Now(),
+		Success:   clusterOK,
+	})
+	m.externalSuccessTracker.Add(&CheckResult{
+		Timestamp: time.Now(),
+		Success:   externalOK,
+	})
+
 	// Report ClusterDNSDown condition if cluster DNS failures exceed threshold
 	if m.clusterFailureCount >= m.config.FailureCountThreshold {
 		status.AddCondition(types.NewCondition(
@@ -761,5 +963,64 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 			"ExternalDNSResolved",
 			"External DNS resolution is healthy",
 		))
+	}
+
+	// Check success rate thresholds if enabled
+	if m.config.SuccessRateTracking.Enabled {
+		m.checkSuccessRateConditions(status)
+	}
+}
+
+// checkSuccessRateConditions evaluates success rates and adds conditions when thresholds are exceeded.
+// Caller must hold m.mu lock.
+func (m *DNSMonitor) checkSuccessRateConditions(status *types.Status) {
+	srtConfig := m.config.SuccessRateTracking
+
+	// Check cluster DNS success rate
+	if m.clusterSuccessTracker.Count() >= srtConfig.MinSamplesRequired {
+		clusterFailureRate := m.clusterSuccessTracker.GetFailureRate()
+
+		if clusterFailureRate >= srtConfig.FailureRateThreshold {
+			status.AddCondition(types.NewCondition(
+				"ClusterDNSDegraded",
+				types.ConditionTrue,
+				"HighClusterDNSFailureRate",
+				fmt.Sprintf("Cluster DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
+					clusterFailureRate*100, srtConfig.FailureRateThreshold*100, m.clusterSuccessTracker.Count()),
+			))
+		} else if clusterFailureRate > 0 {
+			// Some failures but below threshold - intermittent
+			status.AddCondition(types.NewCondition(
+				"ClusterDNSIntermittent",
+				types.ConditionTrue,
+				"IntermittentClusterDNSFailures",
+				fmt.Sprintf("Cluster DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
+					clusterFailureRate*100, srtConfig.FailureRateThreshold*100),
+			))
+		}
+	}
+
+	// Check external DNS success rate
+	if m.externalSuccessTracker.Count() >= srtConfig.MinSamplesRequired {
+		externalFailureRate := m.externalSuccessTracker.GetFailureRate()
+
+		if externalFailureRate >= srtConfig.FailureRateThreshold {
+			status.AddCondition(types.NewCondition(
+				"ExternalDNSDegraded",
+				types.ConditionTrue,
+				"HighExternalDNSFailureRate",
+				fmt.Sprintf("External DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
+					externalFailureRate*100, srtConfig.FailureRateThreshold*100, m.externalSuccessTracker.Count()),
+			))
+		} else if externalFailureRate > 0 {
+			// Some failures but below threshold - intermittent
+			status.AddCondition(types.NewCondition(
+				"ExternalDNSIntermittent",
+				types.ConditionTrue,
+				"IntermittentExternalDNSFailures",
+				fmt.Sprintf("External DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
+					externalFailureRate*100, srtConfig.FailureRateThreshold*100),
+			))
+		}
 	}
 }
