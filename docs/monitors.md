@@ -615,6 +615,243 @@ conditions:
     message: "Domain ldap.corp.internal: 8/10 queries succeeded (80.0% success rate)"
 ```
 
+#### Best Practices for DNS Monitoring
+
+##### Identifying Critical DNS Dependencies
+
+Before configuring DNS monitoring, identify domains critical to your infrastructure:
+
+| Dependency Type | Examples | Risk Level |
+|-----------------|----------|------------|
+| **Authentication** | LDAP/AD servers, OAuth providers | Critical - auth failures block users |
+| **Databases** | PostgreSQL, MySQL, MongoDB hostnames | Critical - app failures |
+| **Service Mesh** | Consul, Istio service discovery | High - service routing failures |
+| **External APIs** | Payment gateways, third-party services | High - feature degradation |
+| **Container Registries** | gcr.io, docker.io, custom registries | Medium - deployment failures |
+| **Cluster Services** | kubernetes.default.svc.cluster.local | Critical - pod communication |
+
+##### Common DNS Issues in Kubernetes Clusters
+
+| Issue | Symptoms | Detection Method |
+|-------|----------|------------------|
+| **Upstream DNS overload** | Intermittent timeouts in large clusters (100+ nodes) | Success rate tracking, consistency checking |
+| **Custom TLD misconfiguration** | NXDOMAIN for .local, .internal, .test domains | Error type classification shows NXDOMAIN |
+| **Split-horizon DNS** | Different results from different nameservers | Per-nameserver testing |
+| **CoreDNS pod failures** | Cluster DNS fails, external works | Compare clusterDomains vs externalDomains results |
+| **DNS cache TTL issues** | Stale IPs after service migration | Consistency checking shows IP variation |
+| **Network policy blocking** | Timeout to specific nameservers | Per-nameserver testing with error classification |
+
+##### Configuration Examples by Use Case
+
+**1. Basic External Connectivity Check:**
+```yaml
+monitors:
+  - name: external-dns
+    type: network-dns-check
+    interval: 60s
+    config:
+      clusterDomains: []                    # Skip cluster DNS
+      externalDomains:
+        - google.com
+        - cloudflare.com
+      latencyThreshold: 2s
+      failureCountThreshold: 3
+```
+
+**2. Custom TLD Monitoring (.internal, .local):**
+```yaml
+monitors:
+  - name: internal-dns
+    type: network-dns-check
+    interval: 30s
+    config:
+      clusterDomains: []
+      externalDomains: []
+      customQueries:
+        - domain: "app.internal.corp"
+          recordType: "A"
+          testEachNameserver: true          # Find which DNS server fails
+        - domain: "db.internal.corp"
+          recordType: "A"
+          testEachNameserver: true
+      nameserverCheckEnabled: true
+      failureCountThreshold: 2
+```
+
+**3. High-Availability DNS Validation:**
+```yaml
+monitors:
+  - name: ha-dns-check
+    type: network-dns-check
+    interval: 15s                           # More frequent checks
+    config:
+      customQueries:
+        - domain: "api-gateway.prod.svc.cluster.local"
+          consistencyCheck: true            # Detect intermittent failures
+          testEachNameserver: true          # Check all DNS servers
+      successRateTracking:
+        enabled: true
+        windowSize: 20
+        failureRateThreshold: 5             # 5% threshold for critical services
+        minSamplesRequired: 10
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 10
+        intervalBetweenQueries: 50ms        # Aggressive testing
+```
+
+**4. Database Hostname Monitoring:**
+```yaml
+monitors:
+  - name: database-dns
+    type: network-dns-check
+    interval: 30s
+    config:
+      customQueries:
+        - domain: "postgres-primary.db.svc.cluster.local"
+          recordType: "A"
+          consistencyCheck: true
+        - domain: "postgres-replica.db.svc.cluster.local"
+          recordType: "A"
+          consistencyCheck: true
+        - domain: "redis-master.cache.svc.cluster.local"
+          recordType: "A"
+      latencyThreshold: 100ms               # Low latency for DB connections
+      failureCountThreshold: 1              # Alert immediately
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 5
+```
+
+##### Remediation Guidance
+
+When DNS issues are detected, consider these remediation steps:
+
+| Condition | Cause | Remediation |
+|-----------|-------|-------------|
+| `ClusterDNSDown` | CoreDNS pods unhealthy | Check `kubectl -n kube-system get pods -l k8s-app=kube-dns` |
+| `DNSResolutionDegraded` (partial nameserver failure) | One upstream DNS server failing | Update `/etc/resolv.conf` or CoreDNS upstream servers |
+| `DNSResolutionIntermittent` | Overloaded DNS servers | Increase CoreDNS replicas, enable DNS caching |
+| NXDOMAIN errors | Missing DNS record or zone | Add record to DNS zone, check CoreDNS stub domains |
+| High latency | Network congestion, distant DNS | Use local caching DNS, reduce TTL for faster updates |
+| `DNSResolutionInconsistent` (varying IPs) | DNS load balancing, stale cache | Verify expected behavior, check TTL settings |
+
+**CoreDNS Stub Domain Configuration:**
+
+If custom TLDs (.internal, .corp) are failing, configure CoreDNS stub domains:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+    corp.internal:53 {
+        errors
+        cache 30
+        forward . 10.0.0.53 10.0.0.54  # Internal DNS servers
+    }
+```
+
+**Temporary `/etc/hosts` Workaround:**
+
+For immediate mitigation while DNS is fixed:
+
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  hostAliases:
+    - ip: "10.0.1.100"
+      hostnames:
+        - "ldap.corp.internal"
+    - ip: "10.0.1.101"
+      hostnames:
+        - "auth.corp.internal"
+```
+
+##### Integration with Kubernetes Events
+
+DNS conditions appear as node conditions viewable via `kubectl`:
+
+```bash
+# View DNS-related node conditions
+kubectl describe node <node-name> | grep -A5 "DNS"
+
+# Example output:
+#   DNSResolutionDegraded   True    PartialNameserverFailure
+#   Message: Domain ldap.corp.internal: 2/3 nameservers responding
+```
+
+**Alerting with Prometheus:**
+
+Node Doctor exports DNS metrics that can be used for alerting:
+
+```yaml
+# Example Prometheus alert rules (using kube-state-metrics node conditions)
+groups:
+  - name: dns-alerts
+    rules:
+      - alert: DNSResolutionIntermittent
+        expr: |
+          kube_node_status_condition{condition="DNSResolutionIntermittent", status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Intermittent DNS resolution on {{ $labels.node }}"
+          description: "DNS resolution is intermittent, indicating upstream DNS issues"
+
+      - alert: DNSResolutionDegraded
+        expr: |
+          kube_node_status_condition{condition="DNSResolutionDegraded", status="true"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Degraded DNS resolution on {{ $labels.node }}"
+          description: "One or more DNS servers are failing for critical domains"
+
+      - alert: ClusterDNSDown
+        expr: |
+          kube_node_status_condition{condition="ClusterDNSDown", status="true"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cluster DNS is down on {{ $labels.node }}"
+          description: "Cluster DNS resolution has repeatedly failed"
+```
+
+**SLO/SLA Tracking:**
+
+Use success rate tracking for DNS SLOs:
+
+```yaml
+# Configuration for 99.9% DNS availability SLO
+successRateTracking:
+  enabled: true
+  windowSize: 100                # Track 100 checks
+  failureRateThreshold: 0.1      # 0.1% = 99.9% availability
+  minSamplesRequired: 50         # Need 50 samples before alerting
+```
+
 ---
 
 ### Gateway Monitor
