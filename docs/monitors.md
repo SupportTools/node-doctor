@@ -299,13 +299,13 @@ events:
 
 ### DNS Monitor
 
-Monitors DNS resolution for cluster-internal and external domains.
+Comprehensive DNS resolution monitoring for cluster-internal, external, and custom domains with advanced intermittent failure detection capabilities.
 
 **Monitor Type:** `network-dns-check`
 
-**Source File:** `pkg/monitors/network/dns.go:300`
+**Source File:** `pkg/monitors/network/dns.go`
 
-**Configuration:**
+#### Basic Configuration
 
 ```yaml
 monitors:
@@ -323,42 +323,296 @@ monitors:
       customQueries:
         - domain: api.example.com
           recordType: A
-          expectedAnswers: ["192.168.1.100"]
+        - domain: ldap.internal.corp
+          recordType: A
+          testEachNameserver: true    # Test against each DNS server
+        - domain: critical-service.internal
+          recordType: A
+          consistencyCheck: true      # Enable rapid consistency checks
       latencyThreshold: 1s
+      nameserverCheckEnabled: true
       failureCountThreshold: 3
+      resolverPath: /etc/resolv.conf
 ```
 
 **Default Values:**
 - `clusterDomains`: ["kubernetes.default.svc.cluster.local"]
 - `externalDomains`: ["google.com", "cloudflare.com"]
 - `latencyThreshold`: 1 second
+- `nameserverCheckEnabled`: false
 - `failureCountThreshold`: 3
+- `resolverPath`: /etc/resolv.conf
 
-**Key Features:**
-- Cluster and external DNS resolution testing
-- Custom DNS query support with expected answer validation
-- Latency measurement and threshold alerting
-- Nameserver detection from `/etc/resolv.conf`
-- Failure threshold to prevent transient alert spam
+#### Enhanced Features
 
-**Events Generated:**
-- `DNSResolutionFailed` (Error): DNS query failed
-- `DNSHighLatency` (Warning): DNS query exceeded latency threshold
-- `DNSRecovered` (Info): DNS resolution recovered
+##### 1. Per-Nameserver Domain Testing
 
-**Conditions:**
-- `DNSUnhealthy`: True when failure threshold exceeded
+Test a specific domain against each configured nameserver individually to identify which DNS server is causing issues.
 
-**Example Status:**
+```yaml
+config:
+  customQueries:
+    - domain: "critical-service.internal.corp"
+      recordType: "A"
+      testEachNameserver: true  # Test against each nameserver in /etc/resolv.conf
+```
 
+**Use Cases:**
+- Identify which upstream DNS server is failing
+- Detect intermittent issues caused by DNS server round-robin
+- Troubleshoot split-horizon DNS problems
+
+**Generated Conditions:**
+- `CustomDNSDown`: All nameservers failed to resolve the domain
+- `DNSResolutionDegraded`: Some nameservers working, others failing
+- `CustomDNSHealthy`: All nameservers responding successfully
+
+##### 2. Success Rate Tracking (Sliding Window)
+
+Track DNS resolution success rate over a sliding window to detect intermittent failures that consecutive-failure tracking misses.
+
+```yaml
+config:
+  successRateTracking:
+    enabled: true
+    windowSize: 10              # Track last 10 checks
+    failureRateThreshold: 30    # Alert if >30% failures (accepts 0-100 or 0.0-1.0)
+    minSamplesRequired: 5       # Need at least 5 samples before alerting
+```
+
+**Default Values:**
+- `enabled`: false (disabled by default)
+- `windowSize`: 10
+- `failureRateThreshold`: 0.3 (30%)
+- `minSamplesRequired`: 5
+
+**Problem Solved:**
+
+Traditional consecutive failure tracking misses intermittent issues:
+```
+Check 1: SUCCESS
+Check 2: FAIL
+Check 3: SUCCESS
+Check 4: FAIL
+Check 5: FAIL
+Check 6: SUCCESS
+Check 7: FAIL
+```
+With `failureCountThreshold: 3`, no alert fires because consecutive failures never reach 3. But 57% of checks are failing!
+
+**Generated Conditions:**
+- `ClusterDNSDegraded`: Cluster DNS failure rate exceeds threshold
+- `ClusterDNSIntermittent`: Some cluster DNS failures (below threshold)
+- `ExternalDNSDegraded`: External DNS failure rate exceeds threshold
+- `ExternalDNSIntermittent`: Some external DNS failures (below threshold)
+
+##### 3. DNS Error Type Classification
+
+Automatically classifies DNS errors to help identify root causes faster.
+
+**Error Types:**
+| Type | Indicates | Go Error Patterns |
+|------|-----------|-------------------|
+| `Timeout` | Network issues, server overload, firewall | `i/o timeout`, `context deadline exceeded` |
+| `NXDOMAIN` | Domain doesn't exist, typo, missing record | `no such host`, `DNSError.IsNotFound` |
+| `SERVFAIL` | Upstream DNS error, DNSSEC validation failure | `server misbehaving` |
+| `Refused` | DNS server down, wrong port, firewall | `connection refused` |
+| `Temporary` | Transient failure, retry may succeed | `DNSError.IsTemporary` |
+| `Unknown` | Unclassified error | Other errors |
+
+**Example Event:**
 ```yaml
 events:
   - severity: Error
-    reason: DNSResolutionFailed
-    message: "Failed to resolve kubernetes.default.svc.cluster.local: no such host"
+    reason: CustomDNSQueryFailed
+    message: "[NXDOMAIN] Failed to resolve custom domain ldap.corp.internal: no such host"
+```
+
+##### 4. Consistency Checking (Rapid Multi-Query)
+
+Perform multiple rapid DNS queries to detect intermittent DNS issues that single queries miss.
+
+```yaml
+config:
+  consistencyChecking:
+    enabled: true
+    queriesPerCheck: 5            # Make 5 rapid queries (range: 2-20)
+    intervalBetweenQueries: 200ms # Delay between queries (range: 10ms-5s)
+  customQueries:
+    - domain: "critical-service.internal.corp"
+      consistencyCheck: true      # Enable for this specific query
+```
+
+**Default Values:**
+- `enabled`: false (disabled by default)
+- `queriesPerCheck`: 5
+- `intervalBetweenQueries`: 200ms
+
+**Detection Capabilities:**
+- **All queries succeed with same IPs** → `DNSResolutionConsistent`
+- **All queries fail** → `DNSResolutionDown`
+- **Some succeed, some fail** → `DNSResolutionIntermittent`
+- **All succeed but different IPs** → `DNSResolutionInconsistent`
+
+**Example Status:**
+```yaml
+events:
   - severity: Warning
-    reason: DNSHighLatency
-    message: "DNS query for google.com took 1.5s, exceeds 1s threshold"
+    reason: ConsistencyCheckIntermittent
+    message: "[Timeout] Intermittent DNS resolution for critical-service.internal.corp: 3/5 queries succeeded (avg latency: 150ms)"
+conditions:
+  - type: DNSResolutionIntermittent
+    status: "True"
+    reason: IntermittentConsistencyFailures
+    message: "Domain critical-service.internal.corp: 3/5 queries succeeded (60.0% success rate)"
+```
+
+#### Complete Configuration Reference
+
+```yaml
+monitors:
+  - name: dns-health
+    type: network-dns-check
+    interval: 30s
+    timeout: 10s
+    config:
+      # Basic domain testing
+      clusterDomains:
+        - kubernetes.default.svc.cluster.local
+      externalDomains:
+        - google.com
+        - cloudflare.com
+
+      # Custom domain queries with per-query options
+      customQueries:
+        - domain: "api.example.com"
+          recordType: "A"                  # Currently only "A" supported
+        - domain: "ldap.internal.corp"
+          recordType: "A"
+          testEachNameserver: true         # Test each nameserver individually
+        - domain: "critical-service.internal"
+          recordType: "A"
+          consistencyCheck: true           # Enable consistency checking
+
+      # Thresholds
+      latencyThreshold: 1s                 # Max acceptable query latency
+      failureCountThreshold: 3             # Consecutive failures before alert
+
+      # Nameserver configuration
+      nameserverCheckEnabled: true         # Check nameserver reachability
+      resolverPath: /etc/resolv.conf       # Path to resolver config
+
+      # Success rate tracking (sliding window)
+      successRateTracking:
+        enabled: true
+        windowSize: 10
+        failureRateThreshold: 30           # 30% (accepts 0-100 or 0.0-1.0)
+        minSamplesRequired: 5
+
+      # Consistency checking (rapid multi-query)
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 5                 # 2-20 queries per check
+        intervalBetweenQueries: 200ms      # 10ms-5s between queries
+```
+
+#### Events Generated
+
+| Event | Severity | Description |
+|-------|----------|-------------|
+| `ClusterDNSResolutionFailed` | Error | Cluster DNS query failed |
+| `ExternalDNSResolutionFailed` | Error | External DNS query failed |
+| `CustomDNSQueryFailed` | Error | Custom domain query failed |
+| `ClusterDNSNoRecords` | Warning | No A records for cluster domain |
+| `ExternalDNSNoRecords` | Warning | No A records for external domain |
+| `CustomDNSNoRecords` | Warning | No A records for custom domain |
+| `HighClusterDNSLatency` | Warning | Cluster DNS latency exceeds threshold |
+| `HighExternalDNSLatency` | Warning | External DNS latency exceeds threshold |
+| `HighCustomDNSLatency` | Warning | Custom DNS latency exceeds threshold |
+| `NameserverUnreachable` | Warning | Nameserver failed to respond |
+| `NameserverDomainResolutionFailed` | Warning | Specific nameserver failed for domain |
+| `NameserverDomainLatencyHigh` | Warning | Nameserver latency exceeds threshold |
+| `ConsistencyCheckIntermittent` | Warning | Some consistency check queries failed |
+| `ConsistencyCheckAllFailed` | Error | All consistency check queries failed |
+| `ConsistencyCheckIPVariation` | Warning | Varying IPs across queries |
+| `ConsistencyCheckHighLatency` | Warning | Average latency exceeds threshold |
+| `ConsistencyCheckCancelled` | Warning | Check cancelled (context timeout) |
+| `UnsupportedQueryType` | Warning | Record type other than A requested |
+| `ResolverConfigParseError` | Warning | Failed to parse /etc/resolv.conf |
+| `NoNameserversConfigured` | Warning | No nameservers found in config |
+
+#### Conditions
+
+| Condition | Description |
+|-----------|-------------|
+| `ClusterDNSDown` | Cluster DNS failed repeatedly |
+| `ClusterDNSHealthy` | Cluster DNS resolution is healthy |
+| `NetworkUnreachable` | External DNS failed repeatedly |
+| `NetworkReachable` | External DNS resolution is healthy |
+| `ClusterDNSDegraded` | Cluster DNS failure rate exceeds threshold |
+| `ClusterDNSIntermittent` | Cluster DNS has intermittent failures |
+| `ExternalDNSDegraded` | External DNS failure rate exceeds threshold |
+| `ExternalDNSIntermittent` | External DNS has intermittent failures |
+| `CustomDNSDown` | All nameservers failed for custom domain |
+| `CustomDNSHealthy` | All nameservers healthy for custom domain |
+| `DNSResolutionDegraded` | Partial nameserver failure for domain |
+| `DNSResolutionConsistent` | Consistency check: all queries consistent |
+| `DNSResolutionIntermittent` | Consistency check: some queries failed |
+| `DNSResolutionInconsistent` | Consistency check: varying IP addresses |
+| `DNSResolutionDown` | Consistency check: all queries failed |
+
+#### Example: Enterprise LDAP DNS Monitoring
+
+```yaml
+monitors:
+  - name: ldap-dns-critical
+    type: network-dns-check
+    interval: 30s
+    timeout: 10s
+    config:
+      clusterDomains: []              # Disable cluster DNS checks
+      externalDomains: []             # Disable external DNS checks
+      customQueries:
+        - domain: "ldap.corp.internal"
+          recordType: "A"
+          testEachNameserver: true    # Identify failing DNS servers
+          consistencyCheck: true      # Detect intermittent failures
+        - domain: "auth.corp.internal"
+          recordType: "A"
+          testEachNameserver: true
+      latencyThreshold: 500ms         # Stricter latency for auth services
+      nameserverCheckEnabled: true
+      failureCountThreshold: 2        # Alert faster for critical domains
+      successRateTracking:
+        enabled: true
+        windowSize: 20                # Track more samples
+        failureRateThreshold: 10      # 10% failure rate threshold
+        minSamplesRequired: 5
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 10           # More queries for higher confidence
+        intervalBetweenQueries: 100ms # Faster queries
+```
+
+#### Example Status Output
+
+```yaml
+events:
+  - severity: Warning
+    reason: NameserverDomainResolutionFailed
+    message: "[Timeout] Nameserver 10.154.57.53 failed to resolve ldap.corp.internal: i/o timeout"
+  - severity: Warning
+    reason: ConsistencyCheckIntermittent
+    message: "[Timeout] Intermittent DNS resolution for ldap.corp.internal: 8/10 queries succeeded (avg latency: 120ms)"
+conditions:
+  - type: DNSResolutionDegraded
+    status: "True"
+    reason: PartialNameserverFailure
+    message: "Domain ldap.corp.internal: 2/3 nameservers responding (failed: 10.154.57.53)"
+  - type: DNSResolutionIntermittent
+    status: "True"
+    reason: IntermittentConsistencyFailures
+    message: "Domain ldap.corp.internal: 8/10 queries succeeded (80.0% success rate)"
 ```
 
 ---
