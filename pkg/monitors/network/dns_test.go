@@ -2143,3 +2143,599 @@ func TestDNSErrorTypeString(t *testing.T) {
 		})
 	}
 }
+
+// TestConsistencyCheckConfigParsing tests parsing of consistencyChecking config.
+func TestConsistencyCheckConfigParsing(t *testing.T) {
+	tests := []struct {
+		name        string
+		configMap   map[string]interface{}
+		expectError bool
+		validate    func(*DNSMonitorConfig) error
+	}{
+		{
+			name:      "no consistencyChecking config",
+			configMap: map[string]interface{}{},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.ConsistencyChecking == nil {
+					return fmt.Errorf("expected ConsistencyChecking to be non-nil after defaults")
+				}
+				return nil
+			},
+		},
+		{
+			name: "consistencyChecking enabled with all fields",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"queriesPerCheck":        float64(10),
+					"intervalBetweenQueries": "100ms",
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				cc := c.ConsistencyChecking
+				if cc == nil {
+					return fmt.Errorf("expected ConsistencyChecking to be non-nil")
+				}
+				if !cc.Enabled {
+					return fmt.Errorf("expected Enabled to be true")
+				}
+				if cc.QueriesPerCheck != 10 {
+					return fmt.Errorf("expected QueriesPerCheck 10, got %d", cc.QueriesPerCheck)
+				}
+				if cc.IntervalBetweenQueries != 100*time.Millisecond {
+					return fmt.Errorf("expected IntervalBetweenQueries 100ms, got %v", cc.IntervalBetweenQueries)
+				}
+				return nil
+			},
+		},
+		{
+			name: "intervalBetweenQueries as int (milliseconds)",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"intervalBetweenQueries": 500,
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.ConsistencyChecking.IntervalBetweenQueries != 500*time.Millisecond {
+					return fmt.Errorf("expected IntervalBetweenQueries 500ms, got %v", c.ConsistencyChecking.IntervalBetweenQueries)
+				}
+				return nil
+			},
+		},
+		{
+			name: "intervalBetweenQueries as float (milliseconds)",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"intervalBetweenQueries": float64(250),
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.ConsistencyChecking.IntervalBetweenQueries != 250*time.Millisecond {
+					return fmt.Errorf("expected IntervalBetweenQueries 250ms, got %v", c.ConsistencyChecking.IntervalBetweenQueries)
+				}
+				return nil
+			},
+		},
+		{
+			name: "invalid consistencyChecking type",
+			configMap: map[string]interface{}{
+				"consistencyChecking": "invalid",
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid intervalBetweenQueries duration",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"intervalBetweenQueries": "invalid",
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := parseDNSConfig(tt.configMap)
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error but got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Apply defaults
+			if err := config.applyDefaults(); err != nil {
+				t.Fatalf("applyDefaults failed: %v", err)
+			}
+
+			if tt.validate != nil {
+				if err := tt.validate(config); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+}
+
+// TestConsistencyCheckConfigDefaults tests default values for consistency checking.
+func TestConsistencyCheckConfigDefaults(t *testing.T) {
+	config := &DNSMonitorConfig{}
+	if err := config.applyDefaults(); err != nil {
+		t.Fatalf("applyDefaults failed: %v", err)
+	}
+
+	if config.ConsistencyChecking == nil {
+		t.Fatal("expected ConsistencyChecking to be non-nil")
+	}
+
+	cc := config.ConsistencyChecking
+	if cc.Enabled {
+		t.Error("expected Enabled to be false by default")
+	}
+	if cc.QueriesPerCheck != 5 {
+		t.Errorf("expected QueriesPerCheck 5, got %d", cc.QueriesPerCheck)
+	}
+	if cc.IntervalBetweenQueries != 200*time.Millisecond {
+		t.Errorf("expected IntervalBetweenQueries 200ms, got %v", cc.IntervalBetweenQueries)
+	}
+}
+
+// TestConsistencyCheckValidation tests validation of consistency checking config.
+func TestConsistencyCheckValidation(t *testing.T) {
+	baseConfig := func() types.MonitorConfig {
+		return types.MonitorConfig{
+			Name: "test-dns",
+			Type: "network-dns-check",
+			Config: map[string]interface{}{
+				"clusterDomains":  []interface{}{"kubernetes.default.svc.cluster.local"},
+				"externalDomains": []interface{}{"google.com"},
+			},
+		}
+	}
+
+	t.Run("queriesPerCheck too small", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":         true,
+			"queriesPerCheck": 1, // minimum is 2
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for queriesPerCheck < 2")
+		}
+	})
+
+	t.Run("queriesPerCheck too large", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":         true,
+			"queriesPerCheck": 25, // maximum is 20
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for queriesPerCheck > 20")
+		}
+	})
+
+	t.Run("intervalBetweenQueries too small", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":                true,
+			"intervalBetweenQueries": "5ms", // minimum is 10ms
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for intervalBetweenQueries < 10ms")
+		}
+	})
+
+	t.Run("intervalBetweenQueries too large", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":                true,
+			"intervalBetweenQueries": "10s", // maximum is 5s
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for intervalBetweenQueries > 5s")
+		}
+	})
+
+	t.Run("valid config passes validation", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":                true,
+			"queriesPerCheck":        5,
+			"intervalBetweenQueries": "200ms",
+		}
+		err := ValidateDNSConfig(config)
+		if err != nil {
+			t.Errorf("unexpected error for valid config: %v", err)
+		}
+	})
+}
+
+// TestCheckDomainConsistency tests the consistency check functionality.
+func TestCheckDomainConsistency(t *testing.T) {
+	t.Run("all queries succeed with consistent IPs", func(t *testing.T) {
+		mock := newMockResolver()
+		mock.setResponse("example.com", []string{"1.2.3.4", "5.6.7.8"})
+
+		monitor := &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				LatencyThreshold: 1 * time.Second,
+				ConsistencyChecking: &ConsistencyCheckConfig{
+					Enabled:                true,
+					QueriesPerCheck:        3,
+					IntervalBetweenQueries: 10 * time.Millisecond,
+				},
+			},
+			resolver: mock,
+		}
+
+		ctx := context.Background()
+		status := types.NewStatus("test-dns")
+		monitor.checkDomainConsistency(ctx, status, "example.com")
+
+		// Should have DNSResolutionConsistent condition
+		found := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "DNSResolutionConsistent" && cond.Status == types.ConditionTrue {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected DNSResolutionConsistent condition")
+		}
+	})
+
+	t.Run("all queries fail", func(t *testing.T) {
+		mock := newMockResolver()
+		mock.setError("failing.example.com", fmt.Errorf("no such host"))
+
+		monitor := &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				LatencyThreshold: 1 * time.Second,
+				ConsistencyChecking: &ConsistencyCheckConfig{
+					Enabled:                true,
+					QueriesPerCheck:        3,
+					IntervalBetweenQueries: 10 * time.Millisecond,
+				},
+			},
+			resolver: mock,
+		}
+
+		ctx := context.Background()
+		status := types.NewStatus("test-dns")
+		monitor.checkDomainConsistency(ctx, status, "failing.example.com")
+
+		// Should have DNSResolutionDown condition
+		foundCondition := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "DNSResolutionDown" && cond.Status == types.ConditionTrue {
+				foundCondition = true
+				break
+			}
+		}
+		if !foundCondition {
+			t.Error("expected DNSResolutionDown condition")
+		}
+
+		// Should have ConsistencyCheckAllFailed event
+		foundEvent := false
+		for _, event := range status.Events {
+			if event.Reason == "ConsistencyCheckAllFailed" {
+				foundEvent = true
+				break
+			}
+		}
+		if !foundEvent {
+			t.Error("expected ConsistencyCheckAllFailed event")
+		}
+	})
+
+	t.Run("high average latency triggers warning", func(t *testing.T) {
+		mock := newMockResolver()
+		mock.setResponse("slow.example.com", []string{"1.2.3.4"})
+		mock.setLatency("slow.example.com", 500*time.Millisecond)
+
+		monitor := &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				LatencyThreshold: 200 * time.Millisecond, // Lower than the mock latency
+				ConsistencyChecking: &ConsistencyCheckConfig{
+					Enabled:                true,
+					QueriesPerCheck:        2,
+					IntervalBetweenQueries: 10 * time.Millisecond,
+				},
+			},
+			resolver: mock,
+		}
+
+		ctx := context.Background()
+		status := types.NewStatus("test-dns")
+		monitor.checkDomainConsistency(ctx, status, "slow.example.com")
+
+		// Should have ConsistencyCheckHighLatency event
+		found := false
+		for _, event := range status.Events {
+			if event.Reason == "ConsistencyCheckHighLatency" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected ConsistencyCheckHighLatency event")
+		}
+	})
+}
+
+// intermittentMockResolver alternates between success and failure.
+type intermittentMockResolver struct {
+	domain     string
+	successIPs []string
+	errorMsg   string
+	callCount  int
+	pattern    []bool // true = success, false = failure
+}
+
+func (m *intermittentMockResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if host == m.domain && len(m.pattern) > 0 {
+		idx := m.callCount % len(m.pattern)
+		m.callCount++
+		if m.pattern[idx] {
+			return m.successIPs, nil
+		}
+		return nil, fmt.Errorf("%s", m.errorMsg)
+	}
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+func (m *intermittentMockResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// TestCheckDomainConsistencyIntermittent tests intermittent failure detection.
+func TestCheckDomainConsistencyIntermittent(t *testing.T) {
+	mock := &intermittentMockResolver{
+		domain:     "flaky.example.com",
+		successIPs: []string{"1.2.3.4"},
+		errorMsg:   "temporary DNS failure",
+		pattern:    []bool{true, false, true, false, true}, // 3 successes, 2 failures
+	}
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        5,
+				IntervalBetweenQueries: 10 * time.Millisecond,
+			},
+		},
+		resolver: mock,
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkDomainConsistency(ctx, status, "flaky.example.com")
+
+	// Should have DNSResolutionIntermittent condition
+	foundCondition := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "DNSResolutionIntermittent" && cond.Status == types.ConditionTrue {
+			foundCondition = true
+			break
+		}
+	}
+	if !foundCondition {
+		t.Error("expected DNSResolutionIntermittent condition")
+	}
+
+	// Should have ConsistencyCheckIntermittent event
+	foundEvent := false
+	for _, event := range status.Events {
+		if event.Reason == "ConsistencyCheckIntermittent" {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Error("expected ConsistencyCheckIntermittent event")
+	}
+}
+
+// varyingIPMockResolver returns different IPs on each call.
+type varyingIPMockResolver struct {
+	domain  string
+	ipSets  [][]string
+	callIdx int
+}
+
+func (m *varyingIPMockResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if host == m.domain && len(m.ipSets) > 0 {
+		idx := m.callIdx % len(m.ipSets)
+		m.callIdx++
+		return m.ipSets[idx], nil
+	}
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+func (m *varyingIPMockResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// TestCheckDomainConsistencyInconsistentIPs tests detection of varying IP addresses.
+func TestCheckDomainConsistencyInconsistentIPs(t *testing.T) {
+	mock := &varyingIPMockResolver{
+		domain: "roundrobin.example.com",
+		ipSets: [][]string{
+			{"1.1.1.1", "2.2.2.2"},
+			{"3.3.3.3", "4.4.4.4"}, // Different IPs
+			{"1.1.1.1", "2.2.2.2"},
+		},
+	}
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        3,
+				IntervalBetweenQueries: 10 * time.Millisecond,
+			},
+		},
+		resolver: mock,
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkDomainConsistency(ctx, status, "roundrobin.example.com")
+
+	// Should have DNSResolutionInconsistent condition
+	foundCondition := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "DNSResolutionInconsistent" && cond.Status == types.ConditionTrue {
+			foundCondition = true
+			break
+		}
+	}
+	if !foundCondition {
+		t.Error("expected DNSResolutionInconsistent condition")
+	}
+
+	// Should have ConsistencyCheckIPVariation event
+	foundEvent := false
+	for _, event := range status.Events {
+		if event.Reason == "ConsistencyCheckIPVariation" {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Error("expected ConsistencyCheckIPVariation event")
+	}
+}
+
+// TestParseDNSConfigConsistencyCheck tests parsing of consistencyCheck field in customQueries.
+func TestParseDNSConfigConsistencyCheck(t *testing.T) {
+	tests := []struct {
+		name                 string
+		config               map[string]interface{}
+		wantConsistencyCheck bool
+	}{
+		{
+			name: "consistencyCheck enabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":           "example.com",
+						"recordType":       "A",
+						"consistencyCheck": true,
+					},
+				},
+			},
+			wantConsistencyCheck: true,
+		},
+		{
+			name: "consistencyCheck disabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":           "example.com",
+						"recordType":       "A",
+						"consistencyCheck": false,
+					},
+				},
+			},
+			wantConsistencyCheck: false,
+		},
+		{
+			name: "consistencyCheck not specified (defaults to false)",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":     "example.com",
+						"recordType": "A",
+					},
+				},
+			},
+			wantConsistencyCheck: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseDNSConfig(tt.config)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(result.CustomQueries) == 0 {
+				t.Fatal("expected at least one custom query")
+			}
+
+			if result.CustomQueries[0].ConsistencyCheck != tt.wantConsistencyCheck {
+				t.Errorf("ConsistencyCheck = %v, want %v",
+					result.CustomQueries[0].ConsistencyCheck, tt.wantConsistencyCheck)
+			}
+		})
+	}
+}
+
+// TestCheckCustomQueriesWithConsistencyCheck tests custom queries with consistency checking.
+func TestCheckCustomQueriesWithConsistencyCheck(t *testing.T) {
+	mock := newMockResolver()
+	mock.setResponse("test.example.com", []string{"1.2.3.4"})
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			ClusterDomains:  []string{},
+			ExternalDomains: []string{},
+			CustomQueries: []DNSQuery{
+				{
+					Domain:           "test.example.com",
+					RecordType:       "A",
+					ConsistencyCheck: true, // Enable consistency checking
+				},
+			},
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        3,
+				IntervalBetweenQueries: 10 * time.Millisecond,
+			},
+		},
+		resolver:               mock,
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkCustomQueries(ctx, status)
+
+	// Should have DNSResolutionConsistent condition (all queries succeed with same IP)
+	found := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "DNSResolutionConsistent" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected DNSResolutionConsistent condition when consistency check enabled")
+	}
+}

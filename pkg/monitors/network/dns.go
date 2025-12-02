@@ -23,6 +23,7 @@ type DNSQuery struct {
 	Domain             string
 	RecordType         string // Currently only "A" is supported
 	TestEachNameserver bool   // Test this domain against each nameserver individually
+	ConsistencyCheck   bool   // Enable consistency checking with multiple rapid queries
 }
 
 // NameserverDomainStatus tracks the status of DNS resolution for a specific
@@ -109,6 +110,14 @@ type SuccessRateConfig struct {
 	WindowSize           int     `json:"windowSize"`           // Number of checks to track (default: 10)
 	FailureRateThreshold float64 `json:"failureRateThreshold"` // Alert if failure rate exceeds this (default: 0.3 = 30%)
 	MinSamplesRequired   int     `json:"minSamplesRequired"`   // Minimum samples before alerting (default: 5)
+}
+
+// ConsistencyCheckConfig holds configuration for DNS consistency checking.
+// Consistency checking performs multiple rapid queries to detect intermittent DNS issues.
+type ConsistencyCheckConfig struct {
+	Enabled                bool          `json:"enabled"`
+	QueriesPerCheck        int           `json:"queriesPerCheck"`        // Number of rapid queries (default: 5)
+	IntervalBetweenQueries time.Duration `json:"intervalBetweenQueries"` // Delay between queries (default: 200ms)
 }
 
 // DNSErrorType represents the classification of DNS errors for better diagnostics.
@@ -200,6 +209,9 @@ type DNSMonitorConfig struct {
 
 	// SuccessRateTracking configures sliding window success rate tracking
 	SuccessRateTracking *SuccessRateConfig `json:"successRateTracking"`
+
+	// ConsistencyChecking configures DNS consistency verification via multiple rapid queries
+	ConsistencyChecking *ConsistencyCheckConfig `json:"consistencyChecking"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -324,6 +336,19 @@ func ValidateDNSConfig(config types.MonitorConfig) error {
 		}
 	}
 
+	// Validate consistency checking config if enabled
+	if dnsConfig.ConsistencyChecking != nil && dnsConfig.ConsistencyChecking.Enabled {
+		cc := dnsConfig.ConsistencyChecking
+
+		if cc.QueriesPerCheck < 2 || cc.QueriesPerCheck > 20 {
+			return fmt.Errorf("consistencyChecking.queriesPerCheck must be between 2 and 20, got %d", cc.QueriesPerCheck)
+		}
+
+		if cc.IntervalBetweenQueries < 10*time.Millisecond || cc.IntervalBetweenQueries > 5*time.Second {
+			return fmt.Errorf("consistencyChecking.intervalBetweenQueries must be between 10ms and 5s, got %v", cc.IntervalBetweenQueries)
+		}
+	}
+
 	// Validate that at least one type of DNS check is configured
 	if len(dnsConfig.ClusterDomains) == 0 && len(dnsConfig.ExternalDomains) == 0 && len(dnsConfig.CustomQueries) == 0 {
 		return fmt.Errorf("at least one of clusterDomains, externalDomains, or customQueries must be configured")
@@ -406,10 +431,16 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 				testEachNameserver = tns
 			}
 
+			consistencyCheck := false
+			if cc, ok := queryMap["consistencyCheck"].(bool); ok {
+				consistencyCheck = cc
+			}
+
 			config.CustomQueries[i] = DNSQuery{
 				Domain:             domain,
 				RecordType:         recordType,
 				TestEachNameserver: testEachNameserver,
+				ConsistencyCheck:   consistencyCheck,
 			}
 		}
 	}
@@ -529,6 +560,55 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		config.SuccessRateTracking = srt
 	}
 
+	// Parse ConsistencyChecking
+	if val, ok := configMap["consistencyChecking"]; ok {
+		ccMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("consistencyChecking must be an object")
+		}
+
+		cc := &ConsistencyCheckConfig{}
+
+		// Parse enabled
+		if enabled, ok := ccMap["enabled"].(bool); ok {
+			cc.Enabled = enabled
+		}
+
+		// Parse queriesPerCheck
+		if qpc, ok := ccMap["queriesPerCheck"]; ok {
+			switch v := qpc.(type) {
+			case float64:
+				cc.QueriesPerCheck = int(v)
+			case int:
+				cc.QueriesPerCheck = v
+			default:
+				return nil, fmt.Errorf("consistencyChecking.queriesPerCheck must be an integer")
+			}
+		}
+
+		// Parse intervalBetweenQueries
+		if ibq, ok := ccMap["intervalBetweenQueries"]; ok {
+			switch v := ibq.(type) {
+			case string:
+				duration, err := time.ParseDuration(v)
+				if err != nil {
+					return nil, fmt.Errorf("invalid consistencyChecking.intervalBetweenQueries duration: %w", err)
+				}
+				cc.IntervalBetweenQueries = duration
+			case float64:
+				// Treat as milliseconds
+				cc.IntervalBetweenQueries = time.Duration(v) * time.Millisecond
+			case int:
+				// Treat as milliseconds
+				cc.IntervalBetweenQueries = time.Duration(v) * time.Millisecond
+			default:
+				return nil, fmt.Errorf("consistencyChecking.intervalBetweenQueries must be a duration string or number")
+			}
+		}
+
+		config.ConsistencyChecking = cc
+	}
+
 	return config, nil
 }
 
@@ -577,6 +657,23 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		}
 		if c.SuccessRateTracking.MinSamplesRequired <= 0 {
 			c.SuccessRateTracking.MinSamplesRequired = 5
+		}
+	}
+
+	// Default consistency checking config
+	if c.ConsistencyChecking == nil {
+		c.ConsistencyChecking = &ConsistencyCheckConfig{
+			Enabled:                false, // Disabled by default for backward compatibility
+			QueriesPerCheck:        5,
+			IntervalBetweenQueries: 200 * time.Millisecond,
+		}
+	} else {
+		// Apply defaults for fields not explicitly set
+		if c.ConsistencyChecking.QueriesPerCheck <= 0 {
+			c.ConsistencyChecking.QueriesPerCheck = 5
+		}
+		if c.ConsistencyChecking.IntervalBetweenQueries <= 0 {
+			c.ConsistencyChecking.IntervalBetweenQueries = 200 * time.Millisecond
 		}
 	}
 
@@ -680,6 +777,12 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 			continue
 		}
 
+		// Use consistency checking if enabled (both per-query and global)
+		if query.ConsistencyCheck && m.config.ConsistencyChecking != nil && m.config.ConsistencyChecking.Enabled {
+			m.checkDomainConsistency(ctx, status, query.Domain)
+			continue
+		}
+
 		// Standard resolution using system resolver
 		start := time.Now()
 		addrs, err := m.resolver.LookupHost(ctx, query.Domain)
@@ -712,6 +815,191 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 				fmt.Sprintf("Custom DNS resolution for %s took %v (threshold: %v)", query.Domain, latency, m.config.LatencyThreshold),
 			))
 		}
+	}
+}
+
+// checkDomainConsistency performs multiple rapid DNS queries to detect intermittent failures.
+// It reports DNSResolutionIntermittent if some queries fail or return different results,
+// and DNSResolutionConsistent if all queries succeed with consistent results.
+func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.Status, domain string) {
+	cc := m.config.ConsistencyChecking
+	queriesCount := cc.QueriesPerCheck
+	interval := cc.IntervalBetweenQueries
+
+	// Track results
+	type queryResult struct {
+		success bool
+		addrs   []string
+		err     error
+		latency time.Duration
+	}
+	results := make([]queryResult, queriesCount)
+
+	// Perform rapid queries with configured interval
+	for i := 0; i < queriesCount; i++ {
+		if i > 0 {
+			// Wait between queries (not before first query)
+			select {
+			case <-ctx.Done():
+				status.AddEvent(types.NewEvent(
+					types.EventWarning,
+					"ConsistencyCheckCancelled",
+					fmt.Sprintf("Consistency check for %s cancelled after %d/%d queries: %v", domain, i, queriesCount, ctx.Err()),
+				))
+				return
+			case <-time.After(interval):
+			}
+		}
+
+		start := time.Now()
+		addrs, err := m.resolver.LookupHost(ctx, domain)
+		results[i] = queryResult{
+			success: err == nil && len(addrs) > 0,
+			addrs:   addrs,
+			err:     err,
+			latency: time.Since(start),
+		}
+	}
+
+	// Analyze results
+	successCount := 0
+	failureCount := 0
+	var totalLatency time.Duration
+	allAddrs := make(map[string]int) // Track which IPs were returned and how often
+	var firstError error
+
+	for _, r := range results {
+		totalLatency += r.latency
+		if r.success {
+			successCount++
+			for _, addr := range r.addrs {
+				allAddrs[addr]++
+			}
+		} else {
+			failureCount++
+			if firstError == nil {
+				firstError = r.err
+			}
+		}
+	}
+
+	// Calculate average latency (guard against division by zero)
+	var avgLatency time.Duration
+	if queriesCount > 0 {
+		avgLatency = totalLatency / time.Duration(queriesCount)
+	}
+
+	// Determine consistency of IP addresses
+	// IP results are consistent if every successful query returned exactly the same set of IPs
+	ipConsistent := true
+	if successCount > 1 {
+		// Build the first successful query's IP set as reference
+		var referenceSet map[string]bool
+		for _, r := range results {
+			if r.success {
+				referenceSet = make(map[string]bool, len(r.addrs))
+				for _, addr := range r.addrs {
+					referenceSet[addr] = true
+				}
+				break
+			}
+		}
+
+		// Compare all other successful queries against the reference set
+		for _, r := range results {
+			if !r.success {
+				continue
+			}
+			// Check if this result has the same IPs as reference
+			if len(r.addrs) != len(referenceSet) {
+				ipConsistent = false
+				break
+			}
+			for _, addr := range r.addrs {
+				if !referenceSet[addr] {
+					ipConsistent = false
+					break
+				}
+			}
+			if !ipConsistent {
+				break
+			}
+		}
+	}
+
+	// Generate events and conditions based on results
+	if failureCount == queriesCount {
+		// All queries failed
+		errType := DNSErrorUnknown
+		if firstError != nil {
+			errType = classifyDNSError(firstError)
+		}
+		status.AddEvent(types.NewEvent(
+			types.EventError,
+			"ConsistencyCheckAllFailed",
+			fmt.Sprintf("[%s] All %d consistency check queries failed for %s: %v", errType, queriesCount, domain, firstError),
+		))
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionDown",
+			types.ConditionTrue,
+			"AllConsistencyQueriesFailed",
+			fmt.Sprintf("Domain %s: all %d rapid queries failed", domain, queriesCount),
+		))
+	} else if failureCount > 0 {
+		// Some queries failed - intermittent issue detected
+		errType := DNSErrorUnknown
+		if firstError != nil {
+			errType = classifyDNSError(firstError)
+		}
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ConsistencyCheckIntermittent",
+			fmt.Sprintf("[%s] Intermittent DNS resolution for %s: %d/%d queries succeeded (avg latency: %v)", errType, domain, successCount, queriesCount, avgLatency),
+		))
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionIntermittent",
+			types.ConditionTrue,
+			"IntermittentConsistencyFailures",
+			fmt.Sprintf("Domain %s: %d/%d queries succeeded (%.1f%% success rate)", domain, successCount, queriesCount, float64(successCount)/float64(queriesCount)*100),
+		))
+	} else if !ipConsistent {
+		// All queries succeeded but returned different IPs
+		ipList := make([]string, 0, len(allAddrs))
+		for ip := range allAddrs {
+			ipList = append(ipList, ip)
+		}
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ConsistencyCheckIPVariation",
+			fmt.Sprintf("DNS resolution for %s returned varying IPs across %d queries: %s (avg latency: %v)", domain, queriesCount, strings.Join(ipList, ", "), avgLatency),
+		))
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionInconsistent",
+			types.ConditionTrue,
+			"InconsistentIPAddresses",
+			fmt.Sprintf("Domain %s: %d unique IPs returned across %d queries", domain, len(allAddrs), queriesCount),
+		))
+	} else {
+		// All queries succeeded with consistent results
+		ipList := make([]string, 0, len(allAddrs))
+		for ip := range allAddrs {
+			ipList = append(ipList, ip)
+		}
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionConsistent",
+			types.ConditionTrue,
+			"ConsistentResolution",
+			fmt.Sprintf("Domain %s: all %d queries succeeded with consistent IPs %s (avg latency: %v)", domain, queriesCount, strings.Join(ipList, ", "), avgLatency),
+		))
+	}
+
+	// Check average latency
+	if avgLatency > m.config.LatencyThreshold {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ConsistencyCheckHighLatency",
+			fmt.Sprintf("Average DNS latency for %s across %d queries: %v (threshold: %v)", domain, queriesCount, avgLatency, m.config.LatencyThreshold),
+		))
 	}
 }
 
