@@ -26,11 +26,9 @@ const (
 	// CRI-Docker (RKE1 with Docker CRI adapter)
 	criDockerSocket    = "/var/run/cri-dockerd.sock"
 	criDockerSocketAlt = "/run/cri-dockerd.sock"
-	// K3s containerd
+	// K3s/RKE2 containerd (both use same paths)
 	k3sContainerdSocket    = "/run/k3s/containerd/containerd.sock"
 	k3sContainerdSocketAlt = "/var/run/k3s/containerd/containerd.sock"
-	// RKE2 containerd
-	rke2ContainerdSocket = "/run/k3s/containerd/containerd.sock" // RKE2 uses same path as K3s
 	// Alternative containerd paths
 	containerdSocketAlt = "/var/run/containerd/containerd.sock"
 

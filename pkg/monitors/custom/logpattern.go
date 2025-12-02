@@ -971,9 +971,9 @@ func (m *LogPatternMonitor) checkKernelJournal(ctx context.Context, status *type
 
 	// Build journalctl command with -k flag for kernel messages
 	args := []string{
-		"-k",          // Kernel messages only (_TRANSPORT=kernel)
-		"--no-pager",  // Don't use pager
-		"-o", "cat",   // Message only, no metadata
+		"-k",         // Kernel messages only (_TRANSPORT=kernel)
+		"--no-pager", // Don't use pager
+		"-o", "cat",  // Message only, no metadata
 	}
 
 	// Add since parameter if we have a last check time

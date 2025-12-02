@@ -95,8 +95,8 @@ func detectCNIConfigPath() string {
 	// Check paths in order of specificity
 	// RKE2 and K3s use distribution-specific paths
 	pathsToCheck := []string{
-		rke2CNIConfigPath, // RKE2: /var/lib/rancher/rke2/agent/etc/cni/net.d
-		k3sCNIConfigPath,  // K3s: /var/lib/rancher/k3s/agent/etc/cni/net.d
+		rke2CNIConfigPath,    // RKE2: /var/lib/rancher/rke2/agent/etc/cni/net.d
+		k3sCNIConfigPath,     // K3s: /var/lib/rancher/k3s/agent/etc/cni/net.d
 		defaultCNIConfigPath, // Standard: /etc/cni/net.d
 	}
 
