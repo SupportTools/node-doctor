@@ -1,0 +1,114 @@
+{{- if .Values.overlayTest.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "node-doctor.fullname" . }}-overlay-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-doctor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: overlay-test
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.overlayTest.updateStrategy.maxUnavailable | default "25%" }}
+
+  selector:
+    matchLabels:
+      app: {{ include "node-doctor.name" . }}-overlay-test
+      app.kubernetes.io/name: {{ include "node-doctor.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+
+  template:
+    metadata:
+      labels:
+        app: {{ include "node-doctor.name" . }}-overlay-test
+        app.kubernetes.io/name: {{ include "node-doctor.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: overlay-test
+      annotations:
+        description: "Node Doctor overlay network test pod - used for CNI connectivity testing"
+    spec:
+      # NO hostNetwork - this pod uses the overlay network
+      hostNetwork: false
+
+      # Use cluster DNS (default)
+      dnsPolicy: ClusterFirst
+
+      # Low priority - these are test pods
+      priorityClassName: {{ .Values.overlayTest.priorityClassName | default "" | quote }}
+
+      serviceAccountName: {{ include "node-doctor.serviceAccountName" . }}
+
+      # Tolerate all taints to run on every node
+      tolerations:
+        - operator: Exists
+
+      nodeSelector:
+        kubernetes.io/os: linux
+
+      terminationGracePeriodSeconds: 5
+
+      containers:
+      - name: overlay-test
+        image: "{{ .Values.overlayTest.image.repository }}:{{ .Values.overlayTest.image.tag }}"
+        imagePullPolicy: {{ .Values.overlayTest.image.pullPolicy }}
+
+        # Just sleep forever - we only need the pod to exist and be pingable
+        command: ["/bin/sh"]
+        args: ["-c", "echo 'Overlay test pod ready'; while true; do sleep 3600; done"]
+
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+
+        # Minimal security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+
+        # Minimal resources
+        resources:
+          requests:
+            cpu: {{ .Values.overlayTest.resources.requests.cpu | default "1m" }}
+            memory: {{ .Values.overlayTest.resources.requests.memory | default "4Mi" }}
+          limits:
+            cpu: {{ .Values.overlayTest.resources.limits.cpu | default "10m" }}
+            memory: {{ .Values.overlayTest.resources.limits.memory | default "16Mi" }}
+
+        # Simple liveness check
+        livenessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - "true"
+          initialDelaySeconds: 5
+          periodSeconds: 60
+          timeoutSeconds: 1
+          failureThreshold: 3
+
+        # Readiness - always ready once running
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - "true"
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 1
+{{- end }}

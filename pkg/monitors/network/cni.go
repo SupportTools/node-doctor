@@ -13,15 +13,17 @@ import (
 
 const (
 	// Default configuration values for CNI monitor
-	defaultCNIPingCount         = 3
-	defaultCNIPingTimeout       = 5 * time.Second
-	defaultCNIWarningLatency    = 50 * time.Millisecond
-	defaultCNICriticalLatency   = 200 * time.Millisecond
-	defaultCNIFailureThreshold  = 3
-	defaultCNIMinReachablePeers = 80 // percentage
-	defaultCNIRefreshInterval   = 5 * time.Minute
-	defaultCNINamespace         = "node-doctor"
-	defaultCNILabelSelector     = "app=node-doctor"
+	defaultCNIPingCount             = 3
+	defaultCNIPingTimeout           = 5 * time.Second
+	defaultCNIWarningLatency        = 50 * time.Millisecond
+	defaultCNICriticalLatency       = 200 * time.Millisecond
+	defaultCNIFailureThreshold      = 3
+	defaultCNIMinReachablePeers     = 80 // percentage
+	defaultCNIRefreshInterval       = 5 * time.Minute
+	defaultCNINamespace             = "node-doctor"
+	defaultCNILabelSelector         = "app=node-doctor"
+	defaultOverlayTestLabelSelector = "app=node-doctor-overlay-test"
+	defaultOverlayTestEnabled       = true
 )
 
 // CNIMonitorConfig holds the configuration for the CNI connectivity monitor.
@@ -48,6 +50,12 @@ type DiscoveryConfig struct {
 	RefreshInterval time.Duration
 	// StaticPeers is a list of static peer IPs (for static method).
 	StaticPeers []string
+	// OverlayTestEnabled enables overlay network testing mode.
+	// When enabled, discovers overlay-test pods and pings their overlay IPs
+	// instead of node IPs. This provides accurate CNI/overlay network testing.
+	OverlayTestEnabled bool
+	// OverlayTestLabelSelector is the label selector for overlay test pods.
+	OverlayTestLabelSelector string
 }
 
 // ConnectivityConfig holds connectivity check configuration.
@@ -132,9 +140,15 @@ func NewCNIMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 	var peerDiscovery PeerDiscovery
 	switch cniConfig.Discovery.Method {
 	case "kubernetes", "":
+		// Determine which label selector to use
+		labelSelector := cniConfig.Discovery.LabelSelector
+		if cniConfig.Discovery.OverlayTestEnabled {
+			// Use overlay test pods for accurate CNI/overlay testing
+			labelSelector = cniConfig.Discovery.OverlayTestLabelSelector
+		}
 		pdConfig := &PeerDiscoveryConfig{
 			Namespace:       cniConfig.Discovery.Namespace,
-			LabelSelector:   cniConfig.Discovery.LabelSelector,
+			LabelSelector:   labelSelector,
 			RefreshInterval: cniConfig.Discovery.RefreshInterval,
 		}
 		peerDiscovery, err = NewKubernetesPeerDiscovery(pdConfig)
@@ -215,10 +229,12 @@ func (m *CNIMonitor) Stop() {
 func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error) {
 	config := &CNIMonitorConfig{
 		Discovery: DiscoveryConfig{
-			Method:          "kubernetes",
-			Namespace:       defaultCNINamespace,
-			LabelSelector:   defaultCNILabelSelector,
-			RefreshInterval: defaultCNIRefreshInterval,
+			Method:                   "kubernetes",
+			Namespace:                defaultCNINamespace,
+			LabelSelector:            defaultCNILabelSelector,
+			RefreshInterval:          defaultCNIRefreshInterval,
+			OverlayTestEnabled:       defaultOverlayTestEnabled,
+			OverlayTestLabelSelector: defaultOverlayTestLabelSelector,
 		},
 		Connectivity: ConnectivityConfig{
 			PingCount:         defaultCNIPingCount,
@@ -262,6 +278,12 @@ func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error)
 					config.Discovery.StaticPeers = append(config.Discovery.StaticPeers, peerIP)
 				}
 			}
+		}
+		if overlayTestEnabled, ok := discoveryMap["overlayTestEnabled"].(bool); ok {
+			config.Discovery.OverlayTestEnabled = overlayTestEnabled
+		}
+		if overlayTestLabelSelector, ok := discoveryMap["overlayTestLabelSelector"].(string); ok {
+			config.Discovery.OverlayTestLabelSelector = overlayTestLabelSelector
 		}
 	}
 
@@ -484,8 +506,16 @@ func (m *CNIMonitor) checkPeerConnectivity(ctx context.Context, peer Peer) *Peer
 		peerStatus.FailureCount = existingStatus.FailureCount
 	}
 
+	// Determine which IP to ping based on overlay test mode
+	// When overlay test is enabled, we ping the PodIP (overlay network)
+	// When disabled (legacy mode), we ping the NodeIP (host network)
+	pingIP := peer.NodeIP
+	if m.config.Discovery.OverlayTestEnabled && peer.PodIP != "" {
+		pingIP = peer.PodIP
+	}
+
 	// Ping the peer
-	results, err := m.pinger.Ping(ctx, peer.NodeIP, m.config.Connectivity.PingCount, m.config.Connectivity.PingTimeout)
+	results, err := m.pinger.Ping(ctx, pingIP, m.config.Connectivity.PingCount, m.config.Connectivity.PingTimeout)
 	if err != nil {
 		peerStatus.Reachable = false
 		peerStatus.ConsecutiveFails++
