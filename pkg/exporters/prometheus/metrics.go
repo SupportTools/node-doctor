@@ -24,22 +24,22 @@ type Metrics struct {
 	UptimeSeconds    *prometheus.GaugeVec
 
 	// Network latency gauge metrics
-	GatewayLatencySeconds     *prometheus.GaugeVec
-	PeerLatencySeconds        *prometheus.GaugeVec
-	PeerLatencyAvgSeconds     *prometheus.GaugeVec
-	PeerReachable             *prometheus.GaugeVec
-	PeersTotal                *prometheus.GaugeVec
-	PeersReachableTotal       *prometheus.GaugeVec
-	DNSLatencySeconds         *prometheus.GaugeVec
-	APIServerLatencySeconds   *prometheus.GaugeVec
+	GatewayLatencySeconds   *prometheus.GaugeVec
+	PeerLatencySeconds      *prometheus.GaugeVec
+	PeerLatencyAvgSeconds   *prometheus.GaugeVec
+	PeerReachable           *prometheus.GaugeVec
+	PeersTotal              *prometheus.GaugeVec
+	PeersReachableTotal     *prometheus.GaugeVec
+	DNSLatencySeconds       *prometheus.GaugeVec
+	APIServerLatencySeconds *prometheus.GaugeVec
 
 	// Histogram metrics
-	MonitorCheckDuration         *prometheus.HistogramVec
-	ExportDuration               *prometheus.HistogramVec
-	GatewayLatencyHistogram      *prometheus.HistogramVec
-	PeerLatencyHistogram         *prometheus.HistogramVec
-	DNSLatencyHistogram          *prometheus.HistogramVec
-	APIServerLatencyHistogram    *prometheus.HistogramVec
+	MonitorCheckDuration      *prometheus.HistogramVec
+	ExportDuration            *prometheus.HistogramVec
+	GatewayLatencyHistogram   *prometheus.HistogramVec
+	PeerLatencyHistogram      *prometheus.HistogramVec
+	DNSLatencyHistogram       *prometheus.HistogramVec
+	APIServerLatencyHistogram *prometheus.HistogramVec
 }
 
 // NewMetrics creates a new Metrics instance with all metric definitions

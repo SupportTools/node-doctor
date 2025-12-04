@@ -96,9 +96,9 @@ type ProblemDetector struct {
 	configFilePath    string
 	monitorFactory    MonitorFactory
 	configChangeCh    <-chan struct{}
-	reloadMutex    sync.Mutex      // Protects reload operations
-	started        bool
-	passedMonitors []types.Monitor // Monitors passed directly to constructor
+	reloadMutex       sync.Mutex // Protects reload operations
+	started           bool
+	passedMonitors    []types.Monitor // Monitors passed directly to constructor
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload

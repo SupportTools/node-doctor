@@ -404,13 +404,13 @@ type LatencyMetrics struct {
 
 // GatewayLatency represents latency to the default gateway.
 type GatewayLatency struct {
-	GatewayIP     string        `json:"gateway_ip"`
-	LatencyMs     float64       `json:"latency_ms"`
-	AvgLatencyMs  float64       `json:"avg_latency_ms"`
-	MaxLatencyMs  float64       `json:"max_latency_ms"`
-	Reachable     bool          `json:"reachable"`
-	PingCount     int           `json:"ping_count"`
-	SuccessCount  int           `json:"success_count"`
+	GatewayIP    string  `json:"gateway_ip"`
+	LatencyMs    float64 `json:"latency_ms"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	MaxLatencyMs float64 `json:"max_latency_ms"`
+	Reachable    bool    `json:"reachable"`
+	PingCount    int     `json:"ping_count"`
+	SuccessCount int     `json:"success_count"`
 }
 
 // PeerLatency represents latency to a peer node.
@@ -424,12 +424,12 @@ type PeerLatency struct {
 
 // DNSLatency represents DNS resolution latency.
 type DNSLatency struct {
-	DNSServer   string  `json:"dns_server"`
-	Domain      string  `json:"domain"`
-	RecordType  string  `json:"record_type"`
-	DomainType  string  `json:"domain_type"` // "cluster", "external", "custom"
-	LatencyMs   float64 `json:"latency_ms"`
-	Success     bool    `json:"success"`
+	DNSServer  string  `json:"dns_server"`
+	Domain     string  `json:"domain"`
+	RecordType string  `json:"record_type"`
+	DomainType string  `json:"domain_type"` // "cluster", "external", "custom"
+	LatencyMs  float64 `json:"latency_ms"`
+	Success    bool    `json:"success"`
 }
 
 // APIServerLatency represents Kubernetes API server response latency.
