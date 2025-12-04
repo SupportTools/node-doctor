@@ -4,12 +4,21 @@ package network
 import (
 	"context"
 	"fmt"
+	"log"
+	"math/rand"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 )
+
+// pingSequence is a global counter for ICMP sequence numbers
+var pingSequence uint32
+
+// pingID is a random ID generated at startup to avoid collisions with other processes
+var pingID = uint16(rand.Uint32())
 
 // PingResult represents the result of a single ping operation.
 type PingResult struct {
@@ -97,19 +106,23 @@ func (p *defaultPinger) Ping(ctx context.Context, target string, count int, time
 
 // singlePing performs a single ICMP echo request/reply.
 func (p *defaultPinger) singlePing(ctx context.Context, conn *icmp.PacketConn, ip net.IP, timeout time.Duration) PingResult {
-	// Create ICMP echo request message
+	// Use unique sequence number for each ping to avoid collisions
+	seq := uint16(atomic.AddUint32(&pingSequence, 1) & 0xFFFF)
+
+	// Create ICMP echo request message with unique ID and sequence
 	msg := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Code: 0,
 		Body: &icmp.Echo{
-			ID:   1, // Process ID would be better but keeping it simple
-			Seq:  1,
-			Data: []byte("node-doctor-gateway-ping"),
+			ID:   int(pingID),
+			Seq:  int(seq),
+			Data: []byte("node-doctor-ping"),
 		},
 	}
 
 	msgBytes, err := msg.Marshal(nil)
 	if err != nil {
+		log.Printf("[DEBUG] Ping to %s: failed to marshal ICMP message: %v", ip, err)
 		return PingResult{
 			Success: false,
 			Error:   fmt.Errorf("failed to marshal ICMP message: %w", err),
@@ -119,6 +132,7 @@ func (p *defaultPinger) singlePing(ctx context.Context, conn *icmp.PacketConn, i
 	// Set deadline for this ping
 	deadline := time.Now().Add(timeout)
 	if err := conn.SetDeadline(deadline); err != nil {
+		log.Printf("[DEBUG] Ping to %s: failed to set deadline: %v", ip, err)
 		return PingResult{
 			Success: false,
 			Error:   fmt.Errorf("failed to set deadline: %w", err),
@@ -129,52 +143,72 @@ func (p *defaultPinger) singlePing(ctx context.Context, conn *icmp.PacketConn, i
 	start := time.Now()
 	_, err = conn.WriteTo(msgBytes, &net.IPAddr{IP: ip})
 	if err != nil {
+		log.Printf("[DEBUG] Ping to %s: failed to send: %v", ip, err)
 		return PingResult{
 			Success: false,
 			Error:   fmt.Errorf("failed to send ICMP echo request: %w", err),
 		}
 	}
 
-	// Wait for echo reply
+	// Wait for echo reply - loop to handle receiving other processes' ICMP replies
 	reply := make([]byte, 1500)
-	n, peer, err := conn.ReadFrom(reply)
-	rtt := time.Since(start)
-
-	if err != nil {
-		return PingResult{
-			Success: false,
-			Error:   fmt.Errorf("failed to receive ICMP echo reply: %w", err),
+	for {
+		// Check context
+		select {
+		case <-ctx.Done():
+			return PingResult{
+				Success: false,
+				Error:   ctx.Err(),
+			}
+		default:
 		}
-	}
 
-	// Parse reply
-	replyMsg, err := icmp.ParseMessage(1, reply[:n]) // 1 = ICMP protocol for IPv4
-	if err != nil {
-		return PingResult{
-			Success: false,
-			Error:   fmt.Errorf("failed to parse ICMP reply: %w", err),
+		n, peer, err := conn.ReadFrom(reply)
+		rtt := time.Since(start)
+
+		if err != nil {
+			// Only log actual failures (usually timeout)
+			log.Printf("[DEBUG] Ping to %s: timeout after %v: %v", ip, rtt, err)
+			return PingResult{
+				Success: false,
+				Error:   fmt.Errorf("failed to receive ICMP echo reply: %w", err),
+			}
 		}
-	}
 
-	// Verify it's an echo reply
-	if replyMsg.Type != ipv4.ICMPTypeEchoReply {
-		return PingResult{
-			Success: false,
-			Error:   fmt.Errorf("received unexpected ICMP type: %v", replyMsg.Type),
+		// Parse reply
+		replyMsg, err := icmp.ParseMessage(1, reply[:n]) // 1 = ICMP protocol for IPv4
+		if err != nil {
+			log.Printf("[DEBUG] Ping to %s: failed to parse reply from %s: %v", ip, peer.String(), err)
+			return PingResult{
+				Success: false,
+				Error:   fmt.Errorf("failed to parse ICMP reply: %w", err),
+			}
 		}
-	}
 
-	// Verify it's from the target IP
-	if peer.String() != ip.String() {
-		return PingResult{
-			Success: false,
-			Error:   fmt.Errorf("received reply from unexpected host: %s (expected %s)", peer.String(), ip.String()),
+		// Skip non-echo-reply messages (e.g., destination unreachable)
+		if replyMsg.Type != ipv4.ICMPTypeEchoReply {
+			continue
 		}
-	}
 
-	return PingResult{
-		Success: true,
-		RTT:     rtt,
-		Error:   nil,
+		// Verify it's from the target IP
+		if peer.String() != ip.String() {
+			continue
+		}
+
+		// Verify ID and Seq match our request
+		echoReply, ok := replyMsg.Body.(*icmp.Echo)
+		if !ok {
+			continue
+		}
+
+		if echoReply.ID != int(pingID) || echoReply.Seq != int(seq) {
+			continue
+		}
+
+		return PingResult{
+			Success: true,
+			RTT:     rtt,
+			Error:   nil,
+		}
 	}
 }

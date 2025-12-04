@@ -4,6 +4,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +109,10 @@ type CNIMonitor struct {
 	mu             sync.Mutex
 	peerStatuses   map[string]*PeerStatus // keyed by node name
 	started        bool
+
+	// State tracking for delta-based event emission (issue #8)
+	lastHighLatencyPeers         []string // Previous high latency peer list
+	lastPersistentlyUnreachable  []string // Previous persistently unreachable peer list
 
 	*monitors.BaseMonitor
 }
@@ -394,6 +399,7 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	reachableCount := 0
 	unreachablePeers := make([]string, 0)
 	highLatencyPeers := make([]string, 0)
+	persistentlyUnreachablePeers := make([]string, 0) // Peers exceeding failure threshold
 	var totalLatency time.Duration
 
 	for _, peer := range peers {
@@ -407,33 +413,67 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 			reachableCount++
 			totalLatency += peerStatus.AvgLatency
 
-			// Check for high latency
+			// Check for high latency (collect but don't emit individual events)
 			if peerStatus.AvgLatency > m.config.Connectivity.CriticalLatency {
 				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
-				status.AddEvent(types.NewEvent(
-					types.EventWarning,
-					"HighPeerLatency",
-					fmt.Sprintf("High latency to peer %s: %.2fms (critical threshold: %.2fms)",
-						peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond),
-						float64(m.config.Connectivity.CriticalLatency)/float64(time.Millisecond)),
-				))
 			} else if peerStatus.AvgLatency > m.config.Connectivity.WarningLatency {
 				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
 			}
 		} else {
 			unreachablePeers = append(unreachablePeers, peer.NodeName)
 
-			// Check if this is a persistent failure
+			// Track peers that have exceeded the failure threshold
 			if peerStatus.ConsecutiveFails >= m.config.Connectivity.FailureThreshold {
-				status.AddEvent(types.NewEvent(
-					types.EventError,
-					"PeerUnreachable",
-					fmt.Sprintf("Peer %s has been unreachable for %d consecutive checks",
-						peer.NodeName, peerStatus.ConsecutiveFails),
-				))
+				persistentlyUnreachablePeers = append(persistentlyUnreachablePeers,
+					fmt.Sprintf("%s (%d consecutive failures)", peer.NodeName, peerStatus.ConsecutiveFails))
 			}
 		}
 	}
+
+	// Emit aggregate events only on state changes (delta-based emission, fixes issue #8)
+	// This prevents duplicate events when the same peers are problematic across checks
+	m.mu.Lock()
+	previousHighLatency := m.lastHighLatencyPeers
+	previousUnreachable := m.lastPersistentlyUnreachable
+	m.mu.Unlock()
+
+	// Aggregate event for high latency peers (only on change)
+	if len(highLatencyPeers) > 0 && peerListChanged(highLatencyPeers, previousHighLatency) {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"HighPeerLatencySummary",
+			formatPeerListMessage("High latency detected to %d peer(s)", highLatencyPeers, 5),
+		))
+	} else if len(highLatencyPeers) == 0 && len(previousHighLatency) > 0 {
+		// Emit recovery event when latency issues are resolved
+		status.AddEvent(types.NewEvent(
+			types.EventInfo,
+			"HighPeerLatencyRecovered",
+			fmt.Sprintf("High latency resolved for %d peer(s)", len(previousHighLatency)),
+		))
+	}
+
+	// Aggregate event for persistently unreachable peers (only on change)
+	if len(persistentlyUnreachablePeers) > 0 && peerListChanged(persistentlyUnreachablePeers, previousUnreachable) {
+		status.AddEvent(types.NewEvent(
+			types.EventError,
+			"PeersUnreachableSummary",
+			formatPeerListMessage("%d peer(s) persistently unreachable", persistentlyUnreachablePeers, 5),
+		))
+	} else if len(persistentlyUnreachablePeers) == 0 && len(previousUnreachable) > 0 {
+		// Emit recovery event when peers become reachable again
+		status.AddEvent(types.NewEvent(
+			types.EventInfo,
+			"PeersReachableRecovered",
+			fmt.Sprintf("%d peer(s) now reachable again", len(previousUnreachable)),
+		))
+	}
+
+	// Update state tracking for next check
+	m.mu.Lock()
+	m.lastHighLatencyPeers = highLatencyPeers
+	m.lastPersistentlyUnreachable = persistentlyUnreachablePeers
+	m.mu.Unlock()
 
 	// Calculate reachability percentage
 	totalPeers := len(peers)
@@ -585,4 +625,41 @@ func (m *CNIMonitor) GetPeerStatuses() map[string]*PeerStatus {
 		statuses[k] = &statusCopy
 	}
 	return statuses
+}
+
+// formatPeerListMessage formats a message with a peer list, truncating if necessary.
+// headerFormat should contain exactly one %d verb for the total count.
+// maxDisplay limits how many peers are shown before truncating with "and N more".
+func formatPeerListMessage(headerFormat string, peers []string, maxDisplay int) string {
+	total := len(peers)
+	header := fmt.Sprintf(headerFormat, total)
+	if total == 0 {
+		return header
+	}
+	if total <= maxDisplay {
+		return fmt.Sprintf("%s: %s", header, strings.Join(peers, ", "))
+	}
+	displayed := peers[:maxDisplay]
+	remaining := total - maxDisplay
+	return fmt.Sprintf("%s: %s, and %d more", header, strings.Join(displayed, ", "), remaining)
+}
+
+// peerListChanged compares two peer lists and returns true if they differ.
+// This is used for delta-based event emission to avoid duplicate events.
+func peerListChanged(current, previous []string) bool {
+	if len(current) != len(previous) {
+		return true
+	}
+	// Create a map of previous entries for O(1) lookup
+	prevMap := make(map[string]struct{}, len(previous))
+	for _, p := range previous {
+		prevMap[p] = struct{}{}
+	}
+	// Check if all current entries exist in previous
+	for _, p := range current {
+		if _, exists := prevMap[p]; !exists {
+			return true
+		}
+	}
+	return false
 }
