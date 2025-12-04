@@ -418,6 +418,14 @@ func (m *APIServerMonitor) checkAPIServer(ctx context.Context) (*types.Status, e
 	}
 	// Note: Latency info is already captured in APIServerReachable message above
 
+	// Set API server latency metrics for Prometheus export
+	status.SetLatencyMetrics(&types.LatencyMetrics{
+		APIServer: &types.APIServerLatency{
+			LatencyMs: float64(metrics.Latency.Microseconds()) / 1000.0,
+			Reachable: true,
+		},
+	})
+
 	return status, nil
 }
 

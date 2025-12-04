@@ -23,9 +23,23 @@ type Metrics struct {
 	StartTimeSeconds *prometheus.GaugeVec
 	UptimeSeconds    *prometheus.GaugeVec
 
+	// Network latency gauge metrics
+	GatewayLatencySeconds     *prometheus.GaugeVec
+	PeerLatencySeconds        *prometheus.GaugeVec
+	PeerLatencyAvgSeconds     *prometheus.GaugeVec
+	PeerReachable             *prometheus.GaugeVec
+	PeersTotal                *prometheus.GaugeVec
+	PeersReachableTotal       *prometheus.GaugeVec
+	DNSLatencySeconds         *prometheus.GaugeVec
+	APIServerLatencySeconds   *prometheus.GaugeVec
+
 	// Histogram metrics
-	MonitorCheckDuration *prometheus.HistogramVec
-	ExportDuration       *prometheus.HistogramVec
+	MonitorCheckDuration         *prometheus.HistogramVec
+	ExportDuration               *prometheus.HistogramVec
+	GatewayLatencyHistogram      *prometheus.HistogramVec
+	PeerLatencyHistogram         *prometheus.HistogramVec
+	DNSLatencyHistogram          *prometheus.HistogramVec
+	APIServerLatencyHistogram    *prometheus.HistogramVec
 }
 
 // NewMetrics creates a new Metrics instance with all metric definitions
@@ -167,6 +181,95 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node"},
 		),
 
+		// Network latency gauge metrics
+		GatewayLatencySeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "gateway_latency_seconds",
+				Help:        "Current latency to the default gateway in seconds",
+				ConstLabels: labels,
+			},
+			[]string{"node", "gateway_ip"},
+		),
+
+		PeerLatencySeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peer_latency_seconds",
+				Help:        "Last measured latency to peer node in seconds",
+				ConstLabels: labels,
+			},
+			[]string{"node", "peer_node", "peer_ip"},
+		),
+
+		PeerLatencyAvgSeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peer_latency_avg_seconds",
+				Help:        "Average latency to peer node in seconds",
+				ConstLabels: labels,
+			},
+			[]string{"node", "peer_node", "peer_ip"},
+		),
+
+		PeerReachable: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peer_reachable",
+				Help:        "Whether peer node is reachable (1 = reachable, 0 = unreachable)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "peer_node", "peer_ip"},
+		),
+
+		PeersTotal: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peers_total",
+				Help:        "Total number of discovered peer nodes",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
+		PeersReachableTotal: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peers_reachable_total",
+				Help:        "Number of reachable peer nodes",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
+		DNSLatencySeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_latency_seconds",
+				Help:        "DNS resolution latency in seconds",
+				ConstLabels: labels,
+			},
+			[]string{"node", "dns_server", "domain", "record_type"},
+		),
+
+		APIServerLatencySeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "apiserver_latency_seconds",
+				Help:        "Kubernetes API server response latency in seconds",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
 		// Histogram metrics
 		MonitorCheckDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -191,6 +294,54 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			},
 			[]string{"node", "exporter", "operation"},
 		),
+
+		GatewayLatencyHistogram: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "gateway_latency_histogram_seconds",
+				Help:        "Distribution of gateway latency in seconds",
+				ConstLabels: labels,
+				Buckets:     []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
+			},
+			[]string{"node", "gateway_ip"},
+		),
+
+		PeerLatencyHistogram: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peer_latency_histogram_seconds",
+				Help:        "Distribution of peer node latency in seconds",
+				ConstLabels: labels,
+				Buckets:     []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
+			},
+			[]string{"node", "peer_node"},
+		),
+
+		DNSLatencyHistogram: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_latency_histogram_seconds",
+				Help:        "Distribution of DNS resolution latency in seconds",
+				ConstLabels: labels,
+				Buckets:     []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0},
+			},
+			[]string{"node", "domain_type"},
+		),
+
+		APIServerLatencyHistogram: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "apiserver_latency_histogram_seconds",
+				Help:        "Distribution of API server response latency in seconds",
+				ConstLabels: labels,
+				Buckets:     []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
+			},
+			[]string{"node"},
+		),
 	}
 
 	return m, nil
@@ -212,6 +363,19 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.UptimeSeconds,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
+		// Network latency metrics
+		m.GatewayLatencySeconds,
+		m.PeerLatencySeconds,
+		m.PeerLatencyAvgSeconds,
+		m.PeerReachable,
+		m.PeersTotal,
+		m.PeersReachableTotal,
+		m.DNSLatencySeconds,
+		m.APIServerLatencySeconds,
+		m.GatewayLatencyHistogram,
+		m.PeerLatencyHistogram,
+		m.DNSLatencyHistogram,
+		m.APIServerLatencyHistogram,
 	}
 
 	for _, collector := range collectors {
@@ -239,6 +403,19 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.UptimeSeconds,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
+		// Network latency metrics
+		m.GatewayLatencySeconds,
+		m.PeerLatencySeconds,
+		m.PeerLatencyAvgSeconds,
+		m.PeerReachable,
+		m.PeersTotal,
+		m.PeersReachableTotal,
+		m.DNSLatencySeconds,
+		m.APIServerLatencySeconds,
+		m.GatewayLatencyHistogram,
+		m.PeerLatencyHistogram,
+		m.DNSLatencyHistogram,
+		m.APIServerLatencyHistogram,
 	}
 
 	for _, collector := range collectors {

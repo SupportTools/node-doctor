@@ -269,6 +269,19 @@ func (m *GatewayMonitor) checkGateway(ctx context.Context) (*types.Status, error
 	// Calculate average latency
 	avgLatency := totalRTT / time.Duration(successCount)
 
+	// Set latency metrics for Prometheus export
+	status.SetLatencyMetrics(&types.LatencyMetrics{
+		Gateway: &types.GatewayLatency{
+			GatewayIP:    gatewayIP,
+			LatencyMs:    float64(avgLatency.Microseconds()) / 1000.0,
+			AvgLatencyMs: float64(avgLatency.Microseconds()) / 1000.0,
+			MaxLatencyMs: float64(maxRTT.Microseconds()) / 1000.0,
+			Reachable:    true,
+			PingCount:    len(results),
+			SuccessCount: successCount,
+		},
+	})
+
 	// Check for high latency
 	if avgLatency > m.config.LatencyThreshold {
 		status.AddEvent(types.NewEvent(

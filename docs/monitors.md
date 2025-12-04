@@ -299,13 +299,13 @@ events:
 
 ### DNS Monitor
 
-Monitors DNS resolution for cluster-internal and external domains.
+Comprehensive DNS resolution monitoring for cluster-internal, external, and custom domains with advanced intermittent failure detection capabilities.
 
 **Monitor Type:** `network-dns-check`
 
-**Source File:** `pkg/monitors/network/dns.go:300`
+**Source File:** `pkg/monitors/network/dns.go`
 
-**Configuration:**
+#### Basic Configuration
 
 ```yaml
 monitors:
@@ -323,42 +323,631 @@ monitors:
       customQueries:
         - domain: api.example.com
           recordType: A
-          expectedAnswers: ["192.168.1.100"]
+        - domain: ldap.internal.corp
+          recordType: A
+          testEachNameserver: true    # Test against each DNS server
+        - domain: critical-service.internal
+          recordType: A
+          consistencyCheck: true      # Enable rapid consistency checks
       latencyThreshold: 1s
+      nameserverCheckEnabled: true
       failureCountThreshold: 3
+      resolverPath: /etc/resolv.conf
 ```
 
 **Default Values:**
 - `clusterDomains`: ["kubernetes.default.svc.cluster.local"]
 - `externalDomains`: ["google.com", "cloudflare.com"]
 - `latencyThreshold`: 1 second
+- `nameserverCheckEnabled`: false
 - `failureCountThreshold`: 3
+- `resolverPath`: /etc/resolv.conf
 
-**Key Features:**
-- Cluster and external DNS resolution testing
-- Custom DNS query support with expected answer validation
-- Latency measurement and threshold alerting
-- Nameserver detection from `/etc/resolv.conf`
-- Failure threshold to prevent transient alert spam
+#### Enhanced Features
 
-**Events Generated:**
-- `DNSResolutionFailed` (Error): DNS query failed
-- `DNSHighLatency` (Warning): DNS query exceeded latency threshold
-- `DNSRecovered` (Info): DNS resolution recovered
+##### 1. Per-Nameserver Domain Testing
 
-**Conditions:**
-- `DNSUnhealthy`: True when failure threshold exceeded
+Test a specific domain against each configured nameserver individually to identify which DNS server is causing issues.
 
-**Example Status:**
+```yaml
+config:
+  customQueries:
+    - domain: "critical-service.internal.corp"
+      recordType: "A"
+      testEachNameserver: true  # Test against each nameserver in /etc/resolv.conf
+```
 
+**Use Cases:**
+- Identify which upstream DNS server is failing
+- Detect intermittent issues caused by DNS server round-robin
+- Troubleshoot split-horizon DNS problems
+
+**Generated Conditions:**
+- `CustomDNSDown`: All nameservers failed to resolve the domain
+- `DNSResolutionDegraded`: Some nameservers working, others failing
+- `CustomDNSHealthy`: All nameservers responding successfully
+
+##### 2. Success Rate Tracking (Sliding Window)
+
+Track DNS resolution success rate over a sliding window to detect intermittent failures that consecutive-failure tracking misses.
+
+```yaml
+config:
+  successRateTracking:
+    enabled: true
+    windowSize: 10              # Track last 10 checks
+    failureRateThreshold: 30    # Alert if >30% failures (accepts 0-100 or 0.0-1.0)
+    minSamplesRequired: 5       # Need at least 5 samples before alerting
+```
+
+**Default Values:**
+- `enabled`: false (disabled by default)
+- `windowSize`: 10
+- `failureRateThreshold`: 0.3 (30%)
+- `minSamplesRequired`: 5
+
+**Problem Solved:**
+
+Traditional consecutive failure tracking misses intermittent issues:
+```
+Check 1: SUCCESS
+Check 2: FAIL
+Check 3: SUCCESS
+Check 4: FAIL
+Check 5: FAIL
+Check 6: SUCCESS
+Check 7: FAIL
+```
+With `failureCountThreshold: 3`, no alert fires because consecutive failures never reach 3. But 57% of checks are failing!
+
+**Generated Conditions:**
+- `ClusterDNSDegraded`: Cluster DNS failure rate exceeds threshold
+- `ClusterDNSIntermittent`: Some cluster DNS failures (below threshold)
+- `ExternalDNSDegraded`: External DNS failure rate exceeds threshold
+- `ExternalDNSIntermittent`: Some external DNS failures (below threshold)
+
+##### 3. DNS Error Type Classification
+
+Automatically classifies DNS errors to help identify root causes faster.
+
+**Error Types:**
+| Type | Indicates | Go Error Patterns |
+|------|-----------|-------------------|
+| `Timeout` | Network issues, server overload, firewall | `i/o timeout`, `context deadline exceeded` |
+| `NXDOMAIN` | Domain doesn't exist, typo, missing record | `no such host`, `DNSError.IsNotFound` |
+| `SERVFAIL` | Upstream DNS error, DNSSEC validation failure | `server misbehaving` |
+| `Refused` | DNS server down, wrong port, firewall | `connection refused` |
+| `Temporary` | Transient failure, retry may succeed | `DNSError.IsTemporary` |
+| `Unknown` | Unclassified error | Other errors |
+
+**Example Event:**
 ```yaml
 events:
   - severity: Error
-    reason: DNSResolutionFailed
-    message: "Failed to resolve kubernetes.default.svc.cluster.local: no such host"
+    reason: CustomDNSQueryFailed
+    message: "[NXDOMAIN] Failed to resolve custom domain ldap.corp.internal: no such host"
+```
+
+##### 4. Consistency Checking (Rapid Multi-Query)
+
+Perform multiple rapid DNS queries to detect intermittent DNS issues that single queries miss.
+
+```yaml
+config:
+  consistencyChecking:
+    enabled: true
+    queriesPerCheck: 5            # Make 5 rapid queries (range: 2-20)
+    intervalBetweenQueries: 200ms # Delay between queries (range: 10ms-5s)
+  customQueries:
+    - domain: "critical-service.internal.corp"
+      consistencyCheck: true      # Enable for this specific query
+```
+
+**Default Values:**
+- `enabled`: false (disabled by default)
+- `queriesPerCheck`: 5
+- `intervalBetweenQueries`: 200ms
+
+**Detection Capabilities:**
+- **All queries succeed with same IPs** → `DNSResolutionConsistent`
+- **All queries fail** → `DNSResolutionDown`
+- **Some succeed, some fail** → `DNSResolutionIntermittent`
+- **All succeed but different IPs** → `DNSResolutionInconsistent`
+
+**Example Status:**
+```yaml
+events:
   - severity: Warning
-    reason: DNSHighLatency
-    message: "DNS query for google.com took 1.5s, exceeds 1s threshold"
+    reason: ConsistencyCheckIntermittent
+    message: "[Timeout] Intermittent DNS resolution for critical-service.internal.corp: 3/5 queries succeeded (avg latency: 150ms)"
+conditions:
+  - type: DNSResolutionIntermittent
+    status: "True"
+    reason: IntermittentConsistencyFailures
+    message: "Domain critical-service.internal.corp: 3/5 queries succeeded (60.0% success rate)"
+```
+
+#### Complete Configuration Reference
+
+```yaml
+monitors:
+  - name: dns-health
+    type: network-dns-check
+    interval: 30s
+    timeout: 10s
+    config:
+      # Basic domain testing
+      clusterDomains:
+        - kubernetes.default.svc.cluster.local
+      externalDomains:
+        - google.com
+        - cloudflare.com
+
+      # Custom domain queries with per-query options
+      customQueries:
+        - domain: "api.example.com"
+          recordType: "A"                  # Currently only "A" supported
+        - domain: "ldap.internal.corp"
+          recordType: "A"
+          testEachNameserver: true         # Test each nameserver individually
+        - domain: "critical-service.internal"
+          recordType: "A"
+          consistencyCheck: true           # Enable consistency checking
+
+      # Thresholds
+      latencyThreshold: 1s                 # Max acceptable query latency
+      failureCountThreshold: 3             # Consecutive failures before alert
+
+      # Nameserver configuration
+      nameserverCheckEnabled: true         # Check nameserver reachability
+      resolverPath: /etc/resolv.conf       # Path to resolver config
+
+      # Success rate tracking (sliding window)
+      successRateTracking:
+        enabled: true
+        windowSize: 10
+        failureRateThreshold: 30           # 30% (accepts 0-100 or 0.0-1.0)
+        minSamplesRequired: 5
+
+      # Consistency checking (rapid multi-query)
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 5                 # 2-20 queries per check
+        intervalBetweenQueries: 200ms      # 10ms-5s between queries
+```
+
+#### Events Generated
+
+| Event | Severity | Description |
+|-------|----------|-------------|
+| `ClusterDNSResolutionFailed` | Error | Cluster DNS query failed |
+| `ExternalDNSResolutionFailed` | Error | External DNS query failed |
+| `CustomDNSQueryFailed` | Error | Custom domain query failed |
+| `ClusterDNSNoRecords` | Warning | No A records for cluster domain |
+| `ExternalDNSNoRecords` | Warning | No A records for external domain |
+| `CustomDNSNoRecords` | Warning | No A records for custom domain |
+| `HighClusterDNSLatency` | Warning | Cluster DNS latency exceeds threshold |
+| `HighExternalDNSLatency` | Warning | External DNS latency exceeds threshold |
+| `HighCustomDNSLatency` | Warning | Custom DNS latency exceeds threshold |
+| `NameserverUnreachable` | Warning | Nameserver failed to respond |
+| `NameserverDomainResolutionFailed` | Warning | Specific nameserver failed for domain |
+| `NameserverDomainLatencyHigh` | Warning | Nameserver latency exceeds threshold |
+| `ConsistencyCheckIntermittent` | Warning | Some consistency check queries failed |
+| `ConsistencyCheckAllFailed` | Error | All consistency check queries failed |
+| `ConsistencyCheckIPVariation` | Warning | Varying IPs across queries |
+| `ConsistencyCheckHighLatency` | Warning | Average latency exceeds threshold |
+| `ConsistencyCheckCancelled` | Warning | Check cancelled (context timeout) |
+| `UnsupportedQueryType` | Warning | Record type other than A requested |
+| `ResolverConfigParseError` | Warning | Failed to parse /etc/resolv.conf |
+| `NoNameserversConfigured` | Warning | No nameservers found in config |
+
+#### Conditions
+
+Node conditions are prefixed with `NodeDoctor` when exported to Kubernetes:
+
+| Condition (as shown in kubectl) | Description |
+|--------------------------------|-------------|
+| `NodeDoctorClusterDNSDown` | Cluster DNS failed repeatedly |
+| `NodeDoctorClusterDNSHealthy` | Cluster DNS resolution is healthy |
+| `NodeDoctorNetworkUnreachable` | External DNS failed repeatedly |
+| `NodeDoctorNetworkReachable` | External DNS resolution is healthy |
+| `NodeDoctorClusterDNSDegraded` | Cluster DNS failure rate exceeds threshold |
+| `NodeDoctorClusterDNSIntermittent` | Cluster DNS has intermittent failures |
+| `NodeDoctorExternalDNSDegraded` | External DNS failure rate exceeds threshold |
+| `NodeDoctorExternalDNSIntermittent` | External DNS has intermittent failures |
+| `NodeDoctorCustomDNSDown` | All nameservers failed for custom domain |
+| `NodeDoctorCustomDNSHealthy` | All nameservers healthy for custom domain |
+| `NodeDoctorDNSResolutionDegraded` | Partial nameserver failure for domain |
+| `NodeDoctorDNSResolutionConsistent` | Consistency check: all queries consistent |
+| `NodeDoctorDNSResolutionIntermittent` | Consistency check: some queries failed |
+| `NodeDoctorDNSResolutionInconsistent` | Consistency check: varying IP addresses (expected for CDN/load-balanced domains) |
+| `NodeDoctorDNSResolutionDown` | Consistency check: all queries failed |
+
+**Querying DNS Conditions:**
+
+```bash
+# View all DNS conditions for a node
+kubectl describe node <node-name> | grep -E "NodeDoctorDNS|NodeDoctorCluster|NodeDoctorCustomDNS"
+
+# Example output:
+#   NodeDoctorDNSResolutionConsistent   True   ConsistentResolution   Domain google.com: all 5 queries succeeded with consistent IPs
+#   NodeDoctorCustomDNSHealthy          True   AllNameserversHealthy  Domain cloudflare.com: all 1 nameservers responding
+#   NodeDoctorClusterDNSHealthy         True   ClusterDNSResolved     Cluster DNS resolution is healthy
+```
+
+#### Example: Enterprise LDAP DNS Monitoring
+
+```yaml
+monitors:
+  - name: ldap-dns-critical
+    type: network-dns-check
+    interval: 30s
+    timeout: 10s
+    config:
+      clusterDomains: []              # Disable cluster DNS checks
+      externalDomains: []             # Disable external DNS checks
+      customQueries:
+        - domain: "ldap.corp.internal"
+          recordType: "A"
+          testEachNameserver: true    # Identify failing DNS servers
+          consistencyCheck: true      # Detect intermittent failures
+        - domain: "auth.corp.internal"
+          recordType: "A"
+          testEachNameserver: true
+      latencyThreshold: 500ms         # Stricter latency for auth services
+      nameserverCheckEnabled: true
+      failureCountThreshold: 2        # Alert faster for critical domains
+      successRateTracking:
+        enabled: true
+        windowSize: 20                # Track more samples
+        failureRateThreshold: 10      # 10% failure rate threshold
+        minSamplesRequired: 5
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 10           # More queries for higher confidence
+        intervalBetweenQueries: 100ms # Faster queries
+```
+
+#### Example Status Output
+
+```yaml
+events:
+  - severity: Warning
+    reason: NameserverDomainResolutionFailed
+    message: "[Timeout] Nameserver 10.154.57.53 failed to resolve ldap.corp.internal: i/o timeout"
+  - severity: Warning
+    reason: ConsistencyCheckIntermittent
+    message: "[Timeout] Intermittent DNS resolution for ldap.corp.internal: 8/10 queries succeeded (avg latency: 120ms)"
+conditions:
+  - type: DNSResolutionDegraded
+    status: "True"
+    reason: PartialNameserverFailure
+    message: "Domain ldap.corp.internal: 2/3 nameservers responding (failed: 10.154.57.53)"
+  - type: DNSResolutionIntermittent
+    status: "True"
+    reason: IntermittentConsistencyFailures
+    message: "Domain ldap.corp.internal: 8/10 queries succeeded (80.0% success rate)"
+```
+
+#### Best Practices for DNS Monitoring
+
+##### Identifying Critical DNS Dependencies
+
+Before configuring DNS monitoring, identify domains critical to your infrastructure:
+
+| Dependency Type | Examples | Risk Level |
+|-----------------|----------|------------|
+| **Authentication** | LDAP/AD servers, OAuth providers | Critical - auth failures block users |
+| **Databases** | PostgreSQL, MySQL, MongoDB hostnames | Critical - app failures |
+| **Service Mesh** | Consul, Istio service discovery | High - service routing failures |
+| **External APIs** | Payment gateways, third-party services | High - feature degradation |
+| **Container Registries** | gcr.io, docker.io, custom registries | Medium - deployment failures |
+| **Cluster Services** | kubernetes.default.svc.cluster.local | Critical - pod communication |
+
+##### Common DNS Issues in Kubernetes Clusters
+
+| Issue | Symptoms | Detection Method |
+|-------|----------|------------------|
+| **Upstream DNS overload** | Intermittent timeouts in large clusters (100+ nodes) | Success rate tracking, consistency checking |
+| **Custom TLD misconfiguration** | NXDOMAIN for .local, .internal, .test domains | Error type classification shows NXDOMAIN |
+| **Split-horizon DNS** | Different results from different nameservers | Per-nameserver testing |
+| **CoreDNS pod failures** | Cluster DNS fails, external works | Compare clusterDomains vs externalDomains results |
+| **DNS cache TTL issues** | Stale IPs after service migration | Consistency checking shows IP variation |
+| **Network policy blocking** | Timeout to specific nameservers | Per-nameserver testing with error classification |
+
+##### Configuration Examples by Use Case
+
+**1. Basic External Connectivity Check:**
+```yaml
+monitors:
+  - name: external-dns
+    type: network-dns-check
+    interval: 60s
+    config:
+      clusterDomains: []                    # Skip cluster DNS
+      externalDomains:
+        - google.com
+        - cloudflare.com
+      latencyThreshold: 2s
+      failureCountThreshold: 3
+```
+
+**2. Custom TLD Monitoring (.internal, .local):**
+```yaml
+monitors:
+  - name: internal-dns
+    type: network-dns-check
+    interval: 30s
+    config:
+      clusterDomains: []
+      externalDomains: []
+      customQueries:
+        - domain: "app.internal.corp"
+          recordType: "A"
+          testEachNameserver: true          # Find which DNS server fails
+        - domain: "db.internal.corp"
+          recordType: "A"
+          testEachNameserver: true
+      nameserverCheckEnabled: true
+      failureCountThreshold: 2
+```
+
+**3. High-Availability DNS Validation:**
+```yaml
+monitors:
+  - name: ha-dns-check
+    type: network-dns-check
+    interval: 15s                           # More frequent checks
+    config:
+      customQueries:
+        - domain: "api-gateway.prod.svc.cluster.local"
+          consistencyCheck: true            # Detect intermittent failures
+          testEachNameserver: true          # Check all DNS servers
+      successRateTracking:
+        enabled: true
+        windowSize: 20
+        failureRateThreshold: 5             # 5% threshold for critical services
+        minSamplesRequired: 10
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 10
+        intervalBetweenQueries: 50ms        # Aggressive testing
+```
+
+**4. Database Hostname Monitoring:**
+```yaml
+monitors:
+  - name: database-dns
+    type: network-dns-check
+    interval: 30s
+    config:
+      customQueries:
+        - domain: "postgres-primary.db.svc.cluster.local"
+          recordType: "A"
+          consistencyCheck: true
+        - domain: "postgres-replica.db.svc.cluster.local"
+          recordType: "A"
+          consistencyCheck: true
+        - domain: "redis-master.cache.svc.cluster.local"
+          recordType: "A"
+      latencyThreshold: 100ms               # Low latency for DB connections
+      failureCountThreshold: 1              # Alert immediately
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 5
+```
+
+##### Remediation Guidance
+
+When DNS issues are detected, consider these remediation steps:
+
+| Condition | Cause | Remediation |
+|-----------|-------|-------------|
+| `ClusterDNSDown` | CoreDNS pods unhealthy | Check `kubectl -n kube-system get pods -l k8s-app=kube-dns` |
+| `DNSResolutionDegraded` (partial nameserver failure) | One upstream DNS server failing | Update `/etc/resolv.conf` or CoreDNS upstream servers |
+| `DNSResolutionIntermittent` | Overloaded DNS servers | Increase CoreDNS replicas, enable DNS caching |
+| NXDOMAIN errors | Missing DNS record or zone | Add record to DNS zone, check CoreDNS stub domains |
+| High latency | Network congestion, distant DNS | Use local caching DNS, reduce TTL for faster updates |
+| `DNSResolutionInconsistent` (varying IPs) | DNS load balancing, stale cache | Verify expected behavior, check TTL settings |
+
+**CoreDNS Stub Domain Configuration:**
+
+If custom TLDs (.internal, .corp) are failing, configure CoreDNS stub domains:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+    corp.internal:53 {
+        errors
+        cache 30
+        forward . 10.0.0.53 10.0.0.54  # Internal DNS servers
+    }
+```
+
+**Temporary `/etc/hosts` Workaround:**
+
+For immediate mitigation while DNS is fixed:
+
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  hostAliases:
+    - ip: "10.0.1.100"
+      hostnames:
+        - "ldap.corp.internal"
+    - ip: "10.0.1.101"
+      hostnames:
+        - "auth.corp.internal"
+```
+
+##### Integration with Kubernetes Events
+
+DNS conditions appear as node conditions viewable via `kubectl`:
+
+```bash
+# View all DNS-related node conditions
+kubectl describe node <node-name> | grep -E "NodeDoctorDNS|NodeDoctorCluster|NodeDoctorCustomDNS"
+
+# Example output from a healthy node:
+#   NodeDoctorDNSResolutionConsistent   True   ConsistentResolution     Domain google.com: all 5 queries succeeded with consistent IPs 142.251.32.46 (avg latency: 4.65ms)
+#   NodeDoctorCustomDNSHealthy          True   AllNameserversHealthy    Domain cloudflare.com: all 1 nameservers responding
+#   NodeDoctorClusterDNSHealthy         True   ClusterDNSResolved       Cluster DNS resolution is healthy
+#   NodeDoctorDNSResolutionInconsistent True   InconsistentIPAddresses  Domain google.com: 3 unique IPs returned across 5 queries
+
+# Check DNS conditions across all nodes
+kubectl get nodes -o name | xargs -I {} sh -c 'echo "=== {} ===" && kubectl describe {} | grep -E "NodeDoctorDNS|NodeDoctorCluster|NodeDoctorCustomDNS"'
+```
+
+**Alerting with Prometheus:**
+
+Node Doctor exports DNS metrics that can be used for alerting:
+
+```yaml
+# Example Prometheus alert rules (using kube-state-metrics node conditions)
+groups:
+  - name: dns-alerts
+    rules:
+      - alert: DNSResolutionIntermittent
+        expr: |
+          kube_node_status_condition{condition="NodeDoctorDNSResolutionIntermittent", status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Intermittent DNS resolution on {{ $labels.node }}"
+          description: "DNS resolution is intermittent, indicating upstream DNS issues"
+
+      - alert: DNSResolutionDegraded
+        expr: |
+          kube_node_status_condition{condition="NodeDoctorDNSResolutionDegraded", status="true"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Degraded DNS resolution on {{ $labels.node }}"
+          description: "One or more DNS servers are failing for critical domains"
+
+      - alert: ClusterDNSDown
+        expr: |
+          kube_node_status_condition{condition="NodeDoctorClusterDNSDown", status="true"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cluster DNS is down on {{ $labels.node }}"
+          description: "Cluster DNS resolution has repeatedly failed"
+
+      - alert: CustomDNSUnhealthy
+        expr: |
+          kube_node_status_condition{condition="NodeDoctorCustomDNSDown", status="true"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Custom DNS domains failing on {{ $labels.node }}"
+          description: "All nameservers are failing for custom domain queries"
+```
+
+**Complete Testing Configuration:**
+
+This configuration enables all DNS monitoring features for comprehensive testing:
+
+```yaml
+monitors:
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 15s  # More frequent for testing
+    timeout: 10s
+    config:
+      # Standard cluster DNS domains
+      clusterDomains:
+        - kubernetes.default.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+
+      # External DNS domains
+      externalDomains:
+        - google.com
+        - cloudflare.com
+
+      # Custom queries with all features enabled
+      customQueries:
+        # Test per-nameserver checking
+        - domain: "kubernetes.default.svc.cluster.local"
+          recordType: "A"
+          testEachNameserver: true
+
+        # Test consistency checking
+        - domain: "google.com"
+          recordType: "A"
+          consistencyCheck: true
+
+        # Test both features together
+        - domain: "cloudflare.com"
+          recordType: "A"
+          testEachNameserver: true
+          consistencyCheck: true
+
+      latencyThreshold: 1s
+      nameserverCheckEnabled: true
+      failureCountThreshold: 2
+
+      # Success rate tracking - sliding window
+      successRateTracking:
+        enabled: true
+        windowSize: 10
+        failureRateThreshold: 20  # 20% failure rate threshold
+        minSamplesRequired: 3
+
+      # Consistency checking - rapid multi-query
+      consistencyChecking:
+        enabled: true
+        queriesPerCheck: 5
+        intervalBetweenQueries: 100ms
+```
+
+**Expected Conditions When Testing:**
+
+| Condition | Expected Value | Notes |
+|-----------|----------------|-------|
+| `NodeDoctorClusterDNSHealthy` | True | Cluster DNS should resolve |
+| `NodeDoctorCustomDNSHealthy` | True | Per-nameserver tests passing |
+| `NodeDoctorDNSResolutionConsistent` | True | Queries returning consistent results |
+| `NodeDoctorDNSResolutionInconsistent` | True (for google.com) | **Expected** - Google uses DNS round-robin, multiple IPs is normal |
+
+> **Note:** `NodeDoctorDNSResolutionInconsistent=True` for domains like google.com is **expected behavior**. Large CDN/cloud providers use DNS load balancing which returns different IPs. This condition helps detect unexpected IP variation in domains where you expect a single IP.
+
+**SLO/SLA Tracking:**
+
+Use success rate tracking for DNS SLOs:
+
+```yaml
+# Configuration for 99.9% DNS availability SLO
+successRateTracking:
+  enabled: true
+  windowSize: 100                # Track 100 checks
+  failureRateThreshold: 0.1      # 0.1% = 99.9% availability
+  minSamplesRequired: 50         # Need 50 samples before alerting
 ```
 
 ---

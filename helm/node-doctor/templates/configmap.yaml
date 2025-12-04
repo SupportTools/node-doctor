@@ -79,6 +79,35 @@ data:
           ioHealthCheck: {{ .Values.monitors.disk.ioHealthCheck }}
       {{- end }}
 
+      {{- if .Values.overlayTest.enabled }}
+      # CNI Connectivity Monitor - Tests overlay network connectivity
+      # Uses overlay-test pods for accurate CNI testing
+      - name: cni-connectivity
+        type: network-cni-check
+        enabled: true
+        interval: 30s
+        timeout: 15s
+        config:
+          discovery:
+            method: kubernetes
+            namespace: {{ .Release.Namespace }}
+            labelSelector: app={{ include "node-doctor.name" . }}-overlay-test
+            refreshInterval: 5m
+            overlayTestEnabled: true
+            overlayTestLabelSelector: app={{ include "node-doctor.name" . }}-overlay-test
+          connectivity:
+            pingCount: 3
+            pingTimeout: 5s
+            warningLatency: 50ms
+            criticalLatency: 200ms
+            failureThreshold: 3
+            minReachablePeers: 80
+          cniHealth:
+            enabled: true
+            configPath: /etc/cni/net.d
+            checkInterfaces: true
+      {{- end }}
+
     exporters:
       kubernetes:
         enabled: {{ .Values.exporters.kubernetes.enabled }}

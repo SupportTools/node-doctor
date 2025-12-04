@@ -6,6 +6,7 @@ package network
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -19,8 +20,168 @@ import (
 
 // DNSQuery represents a custom DNS query configuration.
 type DNSQuery struct {
-	Domain     string
-	RecordType string // Currently only "A" is supported
+	Domain             string
+	RecordType         string // Currently only "A" is supported
+	TestEachNameserver bool   // Test this domain against each nameserver individually
+	ConsistencyCheck   bool   // Enable consistency checking with multiple rapid queries
+}
+
+// NameserverDomainStatus tracks the status of DNS resolution for a specific
+// nameserver and domain combination.
+type NameserverDomainStatus struct {
+	Nameserver   string
+	Domain       string
+	FailureCount int
+	LastSuccess  time.Time
+	LastLatency  time.Duration
+}
+
+// CheckResult represents a single DNS check outcome for success rate tracking.
+type CheckResult struct {
+	Timestamp time.Time
+	Success   bool
+	Latency   time.Duration
+}
+
+// RingBuffer implements a fixed-size circular buffer for tracking check results.
+// It provides O(1) insertions and O(n) success rate calculation.
+type RingBuffer struct {
+	buffer     []*CheckResult
+	size       int
+	writeIndex int
+	count      int // Number of valid entries (up to size)
+}
+
+// NewRingBuffer creates a new ring buffer with specified capacity.
+func NewRingBuffer(size int) *RingBuffer {
+	if size <= 0 {
+		size = 10 // Default minimum size
+	}
+	return &RingBuffer{
+		buffer: make([]*CheckResult, size),
+		size:   size,
+	}
+}
+
+// Add appends a result to the buffer, overwriting the oldest entry if full.
+func (rb *RingBuffer) Add(result *CheckResult) {
+	rb.buffer[rb.writeIndex] = result
+	rb.writeIndex = (rb.writeIndex + 1) % rb.size
+	if rb.count < rb.size {
+		rb.count++
+	}
+}
+
+// GetSuccessRate calculates the success percentage in the buffer.
+// Returns 0.0 if no entries exist.
+func (rb *RingBuffer) GetSuccessRate() float64 {
+	if rb.count == 0 {
+		return 0.0
+	}
+
+	successCount := 0
+	for i := 0; i < rb.count; i++ {
+		if rb.buffer[i] != nil && rb.buffer[i].Success {
+			successCount++
+		}
+	}
+
+	return float64(successCount) / float64(rb.count)
+}
+
+// GetFailureRate calculates the failure percentage in the buffer.
+func (rb *RingBuffer) GetFailureRate() float64 {
+	return 1.0 - rb.GetSuccessRate()
+}
+
+// Count returns the number of valid entries in the buffer.
+func (rb *RingBuffer) Count() int {
+	return rb.count
+}
+
+// Size returns the capacity of the buffer.
+func (rb *RingBuffer) Size() int {
+	return rb.size
+}
+
+// SuccessRateConfig holds configuration for success rate tracking.
+type SuccessRateConfig struct {
+	Enabled              bool    `json:"enabled"`
+	WindowSize           int     `json:"windowSize"`           // Number of checks to track (default: 10)
+	FailureRateThreshold float64 `json:"failureRateThreshold"` // Alert if failure rate exceeds this (default: 0.3 = 30%)
+	MinSamplesRequired   int     `json:"minSamplesRequired"`   // Minimum samples before alerting (default: 5)
+}
+
+// ConsistencyCheckConfig holds configuration for DNS consistency checking.
+// Consistency checking performs multiple rapid queries to detect intermittent DNS issues.
+type ConsistencyCheckConfig struct {
+	Enabled                bool          `json:"enabled"`
+	QueriesPerCheck        int           `json:"queriesPerCheck"`        // Number of rapid queries (default: 5)
+	IntervalBetweenQueries time.Duration `json:"intervalBetweenQueries"` // Delay between queries (default: 200ms)
+}
+
+// DNSErrorType represents the classification of DNS errors for better diagnostics.
+type DNSErrorType string
+
+const (
+	// DNSErrorTimeout indicates the DNS query timed out.
+	// Suggests: Network issues, server overload, or firewall blocking.
+	DNSErrorTimeout DNSErrorType = "Timeout"
+
+	// DNSErrorNXDOMAIN indicates the domain does not exist.
+	// Suggests: Typo in domain, missing DNS record, or DNS zone not configured.
+	DNSErrorNXDOMAIN DNSErrorType = "NXDOMAIN"
+
+	// DNSErrorSERVFAIL indicates the server failed to complete the query.
+	// Suggests: Upstream DNS server error or DNSSEC validation failure.
+	DNSErrorSERVFAIL DNSErrorType = "SERVFAIL"
+
+	// DNSErrorRefused indicates the connection to the DNS server was refused.
+	// Suggests: DNS server down, wrong port, or firewall blocking.
+	DNSErrorRefused DNSErrorType = "Refused"
+
+	// DNSErrorTemporary indicates a temporary/transient DNS failure.
+	// Suggests: Retry may succeed.
+	DNSErrorTemporary DNSErrorType = "Temporary"
+
+	// DNSErrorUnknown indicates an unclassified DNS error.
+	DNSErrorUnknown DNSErrorType = "Unknown"
+)
+
+// classifyDNSError analyzes a DNS error and returns its classification.
+// This helps identify root causes: NXDOMAIN suggests misconfiguration,
+// while Timeout suggests infrastructure issues.
+func classifyDNSError(err error) DNSErrorType {
+	if err == nil {
+		return DNSErrorUnknown
+	}
+
+	// Check for net.DNSError type first (most specific information)
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsNotFound {
+			return DNSErrorNXDOMAIN
+		}
+		if dnsErr.IsTemporary {
+			return DNSErrorTemporary
+		}
+	}
+
+	// Fall back to string matching for error messages
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "i/o timeout"),
+		strings.Contains(errStr, "context deadline exceeded"):
+		return DNSErrorTimeout
+	case strings.Contains(errStr, "no such host"):
+		return DNSErrorNXDOMAIN
+	case strings.Contains(errStr, "server misbehaving"):
+		return DNSErrorSERVFAIL
+	case strings.Contains(errStr, "connection refused"):
+		return DNSErrorRefused
+	default:
+		return DNSErrorUnknown
+	}
 }
 
 // DNSMonitorConfig holds the configuration for the DNS monitor.
@@ -45,6 +206,12 @@ type DNSMonitorConfig struct {
 
 	// FailureCountThreshold is the number of consecutive failures before reporting NetworkUnreachable
 	FailureCountThreshold int `json:"failureCountThreshold"`
+
+	// SuccessRateTracking configures sliding window success rate tracking
+	SuccessRateTracking *SuccessRateConfig `json:"successRateTracking"`
+
+	// ConsistencyChecking configures DNS consistency verification via multiple rapid queries
+	ConsistencyChecking *ConsistencyCheckConfig `json:"consistencyChecking"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -57,6 +224,16 @@ type DNSMonitor struct {
 	mu                   sync.Mutex
 	clusterFailureCount  int
 	externalFailureCount int
+
+	// Per-nameserver domain failure tracking (key: "nameserver:domain")
+	nameserverDomainStatus map[string]*NameserverDomainStatus
+
+	// Success rate tracking with sliding window
+	clusterSuccessTracker  *RingBuffer
+	externalSuccessTracker *RingBuffer
+
+	// Latency metrics collected during each check cycle (for Prometheus export)
+	latencyMetrics []types.DNSLatency
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
@@ -93,10 +270,13 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 
 	// Create DNS monitor
 	monitor := &DNSMonitor{
-		name:        config.Name,
-		config:      dnsConfig,
-		resolver:    newDefaultResolver(),
-		BaseMonitor: baseMonitor,
+		name:                   config.Name,
+		config:                 dnsConfig,
+		resolver:               newDefaultResolver(),
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+		clusterSuccessTracker:  NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
+		externalSuccessTracker: NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
+		BaseMonitor:            baseMonitor,
 	}
 
 	// Set the check function
@@ -136,6 +316,40 @@ func ValidateDNSConfig(config types.MonitorConfig) error {
 	// Validate failure count threshold
 	if dnsConfig.FailureCountThreshold < 1 {
 		return fmt.Errorf("failureCountThreshold must be at least 1, got %d", dnsConfig.FailureCountThreshold)
+	}
+
+	// Validate success rate tracking config if enabled
+	if dnsConfig.SuccessRateTracking != nil && dnsConfig.SuccessRateTracking.Enabled {
+		srt := dnsConfig.SuccessRateTracking
+
+		if srt.WindowSize <= 0 || srt.WindowSize > 10000 {
+			return fmt.Errorf("successRateTracking.windowSize must be between 1 and 10000, got %d", srt.WindowSize)
+		}
+
+		if srt.MinSamplesRequired <= 0 {
+			return fmt.Errorf("successRateTracking.minSamplesRequired must be at least 1, got %d", srt.MinSamplesRequired)
+		}
+
+		if srt.MinSamplesRequired > srt.WindowSize {
+			return fmt.Errorf("successRateTracking.minSamplesRequired (%d) cannot exceed windowSize (%d)", srt.MinSamplesRequired, srt.WindowSize)
+		}
+
+		if srt.FailureRateThreshold <= 0 || srt.FailureRateThreshold > 1.0 {
+			return fmt.Errorf("successRateTracking.failureRateThreshold must be between 0 and 1.0, got %.2f", srt.FailureRateThreshold)
+		}
+	}
+
+	// Validate consistency checking config if enabled
+	if dnsConfig.ConsistencyChecking != nil && dnsConfig.ConsistencyChecking.Enabled {
+		cc := dnsConfig.ConsistencyChecking
+
+		if cc.QueriesPerCheck < 2 || cc.QueriesPerCheck > 20 {
+			return fmt.Errorf("consistencyChecking.queriesPerCheck must be between 2 and 20, got %d", cc.QueriesPerCheck)
+		}
+
+		if cc.IntervalBetweenQueries < 10*time.Millisecond || cc.IntervalBetweenQueries > 5*time.Second {
+			return fmt.Errorf("consistencyChecking.intervalBetweenQueries must be between 10ms and 5s, got %v", cc.IntervalBetweenQueries)
+		}
 	}
 
 	// Validate that at least one type of DNS check is configured
@@ -215,9 +429,21 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 				recordType = rt
 			}
 
+			testEachNameserver := false
+			if tns, ok := queryMap["testEachNameserver"].(bool); ok {
+				testEachNameserver = tns
+			}
+
+			consistencyCheck := false
+			if cc, ok := queryMap["consistencyCheck"].(bool); ok {
+				consistencyCheck = cc
+			}
+
 			config.CustomQueries[i] = DNSQuery{
-				Domain:     domain,
-				RecordType: recordType,
+				Domain:             domain,
+				RecordType:         recordType,
+				TestEachNameserver: testEachNameserver,
+				ConsistencyCheck:   consistencyCheck,
 			}
 		}
 	}
@@ -272,6 +498,120 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		}
 	}
 
+	// Parse SuccessRateTracking
+	if val, ok := configMap["successRateTracking"]; ok {
+		srtMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("successRateTracking must be an object")
+		}
+
+		srt := &SuccessRateConfig{}
+
+		// Parse enabled
+		if enabled, ok := srtMap["enabled"].(bool); ok {
+			srt.Enabled = enabled
+		}
+
+		// Parse windowSize
+		if ws, ok := srtMap["windowSize"]; ok {
+			switch v := ws.(type) {
+			case float64:
+				srt.WindowSize = int(v)
+			case int:
+				srt.WindowSize = v
+			default:
+				return nil, fmt.Errorf("successRateTracking.windowSize must be an integer")
+			}
+		}
+
+		// Parse failureRateThreshold (accepts percentage 0-100 or decimal 0.0-1.0)
+		if frt, ok := srtMap["failureRateThreshold"]; ok {
+			switch v := frt.(type) {
+			case float64:
+				// If value > 1, treat as percentage and convert to decimal
+				if v > 1.0 {
+					srt.FailureRateThreshold = v / 100.0
+				} else {
+					srt.FailureRateThreshold = v
+				}
+				if srt.FailureRateThreshold < 0 || srt.FailureRateThreshold > 1.0 {
+					return nil, fmt.Errorf("successRateTracking.failureRateThreshold must be between 0 and 100 (or 0.0 and 1.0)")
+				}
+			case int:
+				// Treat as percentage
+				if v < 0 || v > 100 {
+					return nil, fmt.Errorf("successRateTracking.failureRateThreshold must be between 0 and 100 (percentage), got %d", v)
+				}
+				srt.FailureRateThreshold = float64(v) / 100.0
+			default:
+				return nil, fmt.Errorf("successRateTracking.failureRateThreshold must be a number")
+			}
+		}
+
+		// Parse minSamplesRequired
+		if msr, ok := srtMap["minSamplesRequired"]; ok {
+			switch v := msr.(type) {
+			case float64:
+				srt.MinSamplesRequired = int(v)
+			case int:
+				srt.MinSamplesRequired = v
+			default:
+				return nil, fmt.Errorf("successRateTracking.minSamplesRequired must be an integer")
+			}
+		}
+
+		config.SuccessRateTracking = srt
+	}
+
+	// Parse ConsistencyChecking
+	if val, ok := configMap["consistencyChecking"]; ok {
+		ccMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("consistencyChecking must be an object")
+		}
+
+		cc := &ConsistencyCheckConfig{}
+
+		// Parse enabled
+		if enabled, ok := ccMap["enabled"].(bool); ok {
+			cc.Enabled = enabled
+		}
+
+		// Parse queriesPerCheck
+		if qpc, ok := ccMap["queriesPerCheck"]; ok {
+			switch v := qpc.(type) {
+			case float64:
+				cc.QueriesPerCheck = int(v)
+			case int:
+				cc.QueriesPerCheck = v
+			default:
+				return nil, fmt.Errorf("consistencyChecking.queriesPerCheck must be an integer")
+			}
+		}
+
+		// Parse intervalBetweenQueries
+		if ibq, ok := ccMap["intervalBetweenQueries"]; ok {
+			switch v := ibq.(type) {
+			case string:
+				duration, err := time.ParseDuration(v)
+				if err != nil {
+					return nil, fmt.Errorf("invalid consistencyChecking.intervalBetweenQueries duration: %w", err)
+				}
+				cc.IntervalBetweenQueries = duration
+			case float64:
+				// Treat as milliseconds
+				cc.IntervalBetweenQueries = time.Duration(v) * time.Millisecond
+			case int:
+				// Treat as milliseconds
+				cc.IntervalBetweenQueries = time.Duration(v) * time.Millisecond
+			default:
+				return nil, fmt.Errorf("consistencyChecking.intervalBetweenQueries must be a duration string or number")
+			}
+		}
+
+		config.ConsistencyChecking = cc
+	}
+
 	return config, nil
 }
 
@@ -302,12 +642,55 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		c.FailureCountThreshold = 3
 	}
 
+	// Default success rate tracking config
+	if c.SuccessRateTracking == nil {
+		c.SuccessRateTracking = &SuccessRateConfig{
+			Enabled:              false, // Disabled by default for backward compatibility
+			WindowSize:           10,
+			FailureRateThreshold: 0.3, // 30% failure rate threshold
+			MinSamplesRequired:   5,
+		}
+	} else {
+		// Apply defaults for fields not explicitly set
+		if c.SuccessRateTracking.WindowSize <= 0 {
+			c.SuccessRateTracking.WindowSize = 10
+		}
+		if c.SuccessRateTracking.FailureRateThreshold <= 0 {
+			c.SuccessRateTracking.FailureRateThreshold = 0.3
+		}
+		if c.SuccessRateTracking.MinSamplesRequired <= 0 {
+			c.SuccessRateTracking.MinSamplesRequired = 5
+		}
+	}
+
+	// Default consistency checking config
+	if c.ConsistencyChecking == nil {
+		c.ConsistencyChecking = &ConsistencyCheckConfig{
+			Enabled:                false, // Disabled by default for backward compatibility
+			QueriesPerCheck:        5,
+			IntervalBetweenQueries: 200 * time.Millisecond,
+		}
+	} else {
+		// Apply defaults for fields not explicitly set
+		if c.ConsistencyChecking.QueriesPerCheck <= 0 {
+			c.ConsistencyChecking.QueriesPerCheck = 5
+		}
+		if c.ConsistencyChecking.IntervalBetweenQueries <= 0 {
+			c.ConsistencyChecking.IntervalBetweenQueries = 200 * time.Millisecond
+		}
+	}
+
 	return nil
 }
 
 // checkDNS performs the DNS health check.
 func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	status := types.NewStatus(m.name)
+
+	// Clear latency metrics for this check cycle
+	m.mu.Lock()
+	m.latencyMetrics = nil
+	m.mu.Unlock()
 
 	// Check cluster DNS
 	clusterOK := m.checkClusterDNS(ctx, status)
@@ -326,7 +709,30 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	// Update failure counters and conditions
 	m.updateFailureTracking(clusterOK, externalOK, status)
 
+	// Set DNS latency metrics for Prometheus export
+	m.mu.Lock()
+	if len(m.latencyMetrics) > 0 {
+		status.SetLatencyMetrics(&types.LatencyMetrics{
+			DNS: m.latencyMetrics,
+		})
+	}
+	m.mu.Unlock()
+
 	return status, nil
+}
+
+// recordDNSLatency records a DNS latency measurement for Prometheus export.
+func (m *DNSMonitor) recordDNSLatency(domain, domainType, dnsServer, recordType string, latency time.Duration, success bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.latencyMetrics = append(m.latencyMetrics, types.DNSLatency{
+		DNSServer:  dnsServer,
+		Domain:     domain,
+		RecordType: recordType,
+		DomainType: strings.ToLower(domainType),
+		LatencyMs:  float64(latency.Microseconds()) / 1000.0,
+		Success:    success,
+	})
 }
 
 // checkClusterDNS checks cluster DNS resolution.
@@ -351,11 +757,14 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 
 		if err != nil {
 			allSuccess = false
+			errType := classifyDNSError(err)
 			status.AddEvent(types.NewEvent(
 				types.EventError,
 				domainType+"DNSResolutionFailed",
-				fmt.Sprintf("Failed to resolve %s domain %s: %v", strings.ToLower(domainType), domain, err),
+				fmt.Sprintf("[%s] Failed to resolve %s domain %s: %v", errType, strings.ToLower(domainType), domain, err),
 			))
+			// Record failed DNS query latency
+			m.recordDNSLatency(domain, domainType, "system", "A", latency, false)
 			continue
 		}
 
@@ -366,8 +775,13 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 				domainType+"DNSNoRecords",
 				fmt.Sprintf("No A records found for %s domain %s", strings.ToLower(domainType), domain),
 			))
+			// Record as failed since no records found
+			m.recordDNSLatency(domain, domainType, "system", "A", latency, false)
 			continue
 		}
+
+		// Record successful DNS query latency
+		m.recordDNSLatency(domain, domainType, "system", "A", latency, true)
 
 		// Check latency
 		if latency > m.config.LatencyThreshold {
@@ -395,16 +809,37 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 			continue
 		}
 
+		// Use per-nameserver testing if enabled
+		if query.TestEachNameserver {
+			m.checkDomainAgainstNameservers(ctx, status, query.Domain)
+			continue
+		}
+
+		// Use consistency checking if enabled (both per-query and global)
+		if query.ConsistencyCheck && m.config.ConsistencyChecking != nil && m.config.ConsistencyChecking.Enabled {
+			m.checkDomainConsistency(ctx, status, query.Domain)
+			continue
+		}
+
+		// Standard resolution using system resolver
 		start := time.Now()
 		addrs, err := m.resolver.LookupHost(ctx, query.Domain)
 		latency := time.Since(start)
 
+		recordType := query.RecordType
+		if recordType == "" {
+			recordType = "A"
+		}
+
 		if err != nil {
+			errType := classifyDNSError(err)
 			status.AddEvent(types.NewEvent(
 				types.EventError,
 				"CustomDNSQueryFailed",
-				fmt.Sprintf("Failed to resolve custom domain %s: %v", query.Domain, err),
+				fmt.Sprintf("[%s] Failed to resolve custom domain %s: %v", errType, query.Domain, err),
 			))
+			// Record failed custom DNS query latency
+			m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, false)
 			continue
 		}
 
@@ -414,8 +849,13 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 				"CustomDNSNoRecords",
 				fmt.Sprintf("No A records found for custom domain %s", query.Domain),
 			))
+			// Record as failed since no records found
+			m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, false)
 			continue
 		}
+
+		// Record successful custom DNS query latency
+		m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, true)
 
 		// Check latency
 		if latency > m.config.LatencyThreshold {
@@ -426,6 +866,363 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 			))
 		}
 	}
+}
+
+// checkDomainConsistency performs multiple rapid DNS queries to detect intermittent failures.
+// It reports DNSResolutionIntermittent if some queries fail or return different results,
+// and DNSResolutionConsistent if all queries succeed with consistent results.
+func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.Status, domain string) {
+	cc := m.config.ConsistencyChecking
+	queriesCount := cc.QueriesPerCheck
+	interval := cc.IntervalBetweenQueries
+
+	// Track results
+	type queryResult struct {
+		success bool
+		addrs   []string
+		err     error
+		latency time.Duration
+	}
+	results := make([]queryResult, queriesCount)
+
+	// Perform rapid queries with configured interval
+	for i := 0; i < queriesCount; i++ {
+		if i > 0 {
+			// Wait between queries (not before first query)
+			select {
+			case <-ctx.Done():
+				status.AddEvent(types.NewEvent(
+					types.EventWarning,
+					"ConsistencyCheckCancelled",
+					fmt.Sprintf("Consistency check for %s cancelled after %d/%d queries: %v", domain, i, queriesCount, ctx.Err()),
+				))
+				return
+			case <-time.After(interval):
+			}
+		}
+
+		start := time.Now()
+		addrs, err := m.resolver.LookupHost(ctx, domain)
+		results[i] = queryResult{
+			success: err == nil && len(addrs) > 0,
+			addrs:   addrs,
+			err:     err,
+			latency: time.Since(start),
+		}
+	}
+
+	// Analyze results
+	successCount := 0
+	failureCount := 0
+	var totalLatency time.Duration
+	allAddrs := make(map[string]int) // Track which IPs were returned and how often
+	var firstError error
+
+	for _, r := range results {
+		totalLatency += r.latency
+		if r.success {
+			successCount++
+			for _, addr := range r.addrs {
+				allAddrs[addr]++
+			}
+		} else {
+			failureCount++
+			if firstError == nil {
+				firstError = r.err
+			}
+		}
+	}
+
+	// Calculate average latency (guard against division by zero)
+	var avgLatency time.Duration
+	if queriesCount > 0 {
+		avgLatency = totalLatency / time.Duration(queriesCount)
+	}
+
+	// Determine consistency of IP addresses
+	// IP results are consistent if every successful query returned exactly the same set of IPs
+	ipConsistent := true
+	if successCount > 1 {
+		// Build the first successful query's IP set as reference
+		var referenceSet map[string]bool
+		for _, r := range results {
+			if r.success {
+				referenceSet = make(map[string]bool, len(r.addrs))
+				for _, addr := range r.addrs {
+					referenceSet[addr] = true
+				}
+				break
+			}
+		}
+
+		// Compare all other successful queries against the reference set
+		for _, r := range results {
+			if !r.success {
+				continue
+			}
+			// Check if this result has the same IPs as reference
+			if len(r.addrs) != len(referenceSet) {
+				ipConsistent = false
+				break
+			}
+			for _, addr := range r.addrs {
+				if !referenceSet[addr] {
+					ipConsistent = false
+					break
+				}
+			}
+			if !ipConsistent {
+				break
+			}
+		}
+	}
+
+	// Generate events and conditions based on results
+	if failureCount == queriesCount {
+		// All queries failed
+		errType := DNSErrorUnknown
+		if firstError != nil {
+			errType = classifyDNSError(firstError)
+		}
+		status.AddEvent(types.NewEvent(
+			types.EventError,
+			"ConsistencyCheckAllFailed",
+			fmt.Sprintf("[%s] All %d consistency check queries failed for %s: %v", errType, queriesCount, domain, firstError),
+		))
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionDown",
+			types.ConditionTrue,
+			"AllConsistencyQueriesFailed",
+			fmt.Sprintf("Domain %s: all %d rapid queries failed", domain, queriesCount),
+		))
+	} else if failureCount > 0 {
+		// Some queries failed - intermittent issue detected
+		errType := DNSErrorUnknown
+		if firstError != nil {
+			errType = classifyDNSError(firstError)
+		}
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ConsistencyCheckIntermittent",
+			fmt.Sprintf("[%s] Intermittent DNS resolution for %s: %d/%d queries succeeded (avg latency: %v)", errType, domain, successCount, queriesCount, avgLatency),
+		))
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionIntermittent",
+			types.ConditionTrue,
+			"IntermittentConsistencyFailures",
+			fmt.Sprintf("Domain %s: %d/%d queries succeeded (%.1f%% success rate)", domain, successCount, queriesCount, float64(successCount)/float64(queriesCount)*100),
+		))
+	} else if !ipConsistent {
+		// All queries succeeded but returned different IPs
+		ipList := make([]string, 0, len(allAddrs))
+		for ip := range allAddrs {
+			ipList = append(ipList, ip)
+		}
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ConsistencyCheckIPVariation",
+			fmt.Sprintf("DNS resolution for %s returned varying IPs across %d queries: %s (avg latency: %v)", domain, queriesCount, strings.Join(ipList, ", "), avgLatency),
+		))
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionInconsistent",
+			types.ConditionTrue,
+			"InconsistentIPAddresses",
+			fmt.Sprintf("Domain %s: %d unique IPs returned across %d queries", domain, len(allAddrs), queriesCount),
+		))
+	} else {
+		// All queries succeeded with consistent results
+		ipList := make([]string, 0, len(allAddrs))
+		for ip := range allAddrs {
+			ipList = append(ipList, ip)
+		}
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionConsistent",
+			types.ConditionTrue,
+			"ConsistentResolution",
+			fmt.Sprintf("Domain %s: all %d queries succeeded with consistent IPs %s (avg latency: %v)", domain, queriesCount, strings.Join(ipList, ", "), avgLatency),
+		))
+	}
+
+	// Check average latency
+	if avgLatency > m.config.LatencyThreshold {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ConsistencyCheckHighLatency",
+			fmt.Sprintf("Average DNS latency for %s across %d queries: %v (threshold: %v)", domain, queriesCount, avgLatency, m.config.LatencyThreshold),
+		))
+	}
+}
+
+// maxNameserverDomainEntries is the maximum number of entries in the nameserverDomainStatus map
+// to prevent unbounded memory growth.
+const maxNameserverDomainEntries = 1000
+
+// checkDomainAgainstNameservers tests a domain against each configured nameserver individually.
+// This enables detection of intermittent DNS failures caused by specific nameserver issues.
+func (m *DNSMonitor) checkDomainAgainstNameservers(ctx context.Context, status *types.Status, domain string) {
+	nameservers, err := m.parseResolverConfig()
+	if err != nil {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"ResolverConfigParseError",
+			fmt.Sprintf("Failed to parse resolver config for per-nameserver testing: %v", err),
+		))
+		return
+	}
+
+	if len(nameservers) == 0 {
+		status.AddEvent(types.NewEvent(
+			types.EventWarning,
+			"NoNameserversConfigured",
+			fmt.Sprintf("No nameservers found for per-nameserver testing of %s", domain),
+		))
+		return
+	}
+
+	// Collect results from each nameserver (outside of lock to avoid holding mutex during I/O)
+	type nsResult struct {
+		nameserver string
+		err        error
+		latency    time.Duration
+	}
+	results := make([]nsResult, 0, len(nameservers))
+
+	for _, ns := range nameservers {
+		// Create a custom resolver for this specific nameserver
+		resolver := m.createNameserverResolver(ns)
+
+		// Perform the lookup with timeout (no lock held during network I/O)
+		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		start := time.Now()
+		_, lookupErr := resolver.LookupHost(queryCtx, domain)
+		latency := time.Since(start)
+		cancel()
+
+		results = append(results, nsResult{
+			nameserver: ns,
+			err:        lookupErr,
+			latency:    latency,
+		})
+	}
+
+	// Now process results with lock held (only for map access)
+	successCount := 0
+	failedServers := []string{}
+	totalServers := len(nameservers)
+
+	m.mu.Lock()
+	// Clean up old entries if map is at or above limit
+	if len(m.nameserverDomainStatus) >= maxNameserverDomainEntries {
+		m.cleanupOldNameserverStatus()
+	}
+
+	for _, result := range results {
+		key := fmt.Sprintf("%s:%s", result.nameserver, domain)
+		nsStatus := m.getOrCreateNameserverStatus(key, result.nameserver, domain)
+
+		if result.err != nil {
+			nsStatus.FailureCount++
+			failedServers = append(failedServers, result.nameserver)
+		} else {
+			successCount++
+			nsStatus.FailureCount = 0
+			nsStatus.LastSuccess = time.Now()
+			nsStatus.LastLatency = result.latency
+		}
+	}
+	m.mu.Unlock()
+
+	// Generate events outside of lock
+	for _, result := range results {
+		if result.err != nil {
+			errType := classifyDNSError(result.err)
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"NameserverDomainResolutionFailed",
+				fmt.Sprintf("[%s] Nameserver %s failed to resolve %s: %v", errType, result.nameserver, domain, result.err),
+			))
+		} else if result.latency > m.config.LatencyThreshold {
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"NameserverDomainLatencyHigh",
+				fmt.Sprintf("Nameserver %s resolved %s in %v (threshold: %v)", result.nameserver, domain, result.latency, m.config.LatencyThreshold),
+			))
+		}
+	}
+
+	// Report aggregate condition based on results
+	if successCount == 0 && totalServers > 0 {
+		// All nameservers failed
+		status.AddCondition(types.NewCondition(
+			"CustomDNSDown",
+			types.ConditionTrue,
+			"AllNameserversFailed",
+			fmt.Sprintf("Domain %s: all %d nameservers failed to resolve", domain, totalServers),
+		))
+	} else if successCount > 0 && len(failedServers) > 0 {
+		// Partial failure - some nameservers working, some not
+		status.AddCondition(types.NewCondition(
+			"DNSResolutionDegraded",
+			types.ConditionTrue,
+			"PartialNameserverFailure",
+			fmt.Sprintf("Domain %s: %d/%d nameservers responding (failed: %s)",
+				domain, successCount, totalServers, strings.Join(failedServers, ", ")),
+		))
+	} else if successCount == totalServers {
+		// All nameservers succeeded
+		status.AddCondition(types.NewCondition(
+			"CustomDNSHealthy",
+			types.ConditionTrue,
+			"AllNameserversHealthy",
+			fmt.Sprintf("Domain %s: all %d nameservers responding", domain, totalServers),
+		))
+	}
+}
+
+// cleanupOldNameserverStatus removes stale entries from the nameserverDomainStatus map.
+// Caller must hold m.mu lock.
+func (m *DNSMonitor) cleanupOldNameserverStatus() {
+	// Remove entries that:
+	// 1. Have NEVER succeeded (IsZero), OR
+	// 2. Haven't succeeded recently (before cutoff)
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for key, status := range m.nameserverDomainStatus {
+		if status.LastSuccess.IsZero() || status.LastSuccess.Before(cutoff) {
+			delete(m.nameserverDomainStatus, key)
+		}
+	}
+	// If still too large after cleanup, clear and rebuild
+	if len(m.nameserverDomainStatus) > maxNameserverDomainEntries/2 {
+		m.nameserverDomainStatus = make(map[string]*NameserverDomainStatus)
+	}
+}
+
+// createNameserverResolver creates a resolver that uses a specific nameserver.
+// Supports both IPv4 and IPv6 nameservers.
+func (m *DNSMonitor) createNameserverResolver(nameserver string) *net.Resolver {
+	// Use net.JoinHostPort to properly handle IPv6 addresses (e.g., [2001:4860:4860::8888]:53)
+	addr := net.JoinHostPort(nameserver, "53")
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 2 * time.Second}
+			return d.DialContext(ctx, "udp", addr)
+		},
+	}
+}
+
+// getOrCreateNameserverStatus retrieves or creates a NameserverDomainStatus for tracking.
+// Caller must hold m.mu lock.
+func (m *DNSMonitor) getOrCreateNameserverStatus(key, nameserver, domain string) *NameserverDomainStatus {
+	if status, exists := m.nameserverDomainStatus[key]; exists {
+		return status
+	}
+	status := &NameserverDomainStatus{
+		Nameserver: nameserver,
+		Domain:     domain,
+	}
+	m.nameserverDomainStatus[key] = status
+	return status
 }
 
 // checkNameservers verifies nameserver reachability.
@@ -454,19 +1251,12 @@ func (m *DNSMonitor) checkNameservers(ctx context.Context, status *types.Status)
 		// We'll use google.com as a test domain (widely available and reliable)
 		testDomain := "google.com"
 
-		// Create a custom resolver for this specific nameserver
-		// Note: This is simplified - in production you might want to use a more robust approach
-		resolver := &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 2 * time.Second}
-				return d.DialContext(ctx, "udp", ns+":53")
-			},
-		}
+		// Reuse createNameserverResolver for proper IPv4/IPv6 handling
+		resolver := m.createNameserverResolver(ns)
 
 		// Try to resolve using this nameserver
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := resolver.LookupHost(ctx, testDomain)
+		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := resolver.LookupHost(queryCtx, testDomain)
 		cancel()
 
 		if err != nil {
@@ -533,6 +1323,16 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 		m.externalFailureCount = 0
 	}
 
+	// Track success rate in sliding window
+	m.clusterSuccessTracker.Add(&CheckResult{
+		Timestamp: time.Now(),
+		Success:   clusterOK,
+	})
+	m.externalSuccessTracker.Add(&CheckResult{
+		Timestamp: time.Now(),
+		Success:   externalOK,
+	})
+
 	// Report ClusterDNSDown condition if cluster DNS failures exceed threshold
 	if m.clusterFailureCount >= m.config.FailureCountThreshold {
 		status.AddCondition(types.NewCondition(
@@ -569,5 +1369,64 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 			"ExternalDNSResolved",
 			"External DNS resolution is healthy",
 		))
+	}
+
+	// Check success rate thresholds if enabled
+	if m.config.SuccessRateTracking.Enabled {
+		m.checkSuccessRateConditions(status)
+	}
+}
+
+// checkSuccessRateConditions evaluates success rates and adds conditions when thresholds are exceeded.
+// Caller must hold m.mu lock.
+func (m *DNSMonitor) checkSuccessRateConditions(status *types.Status) {
+	srtConfig := m.config.SuccessRateTracking
+
+	// Check cluster DNS success rate
+	if m.clusterSuccessTracker.Count() >= srtConfig.MinSamplesRequired {
+		clusterFailureRate := m.clusterSuccessTracker.GetFailureRate()
+
+		if clusterFailureRate >= srtConfig.FailureRateThreshold {
+			status.AddCondition(types.NewCondition(
+				"ClusterDNSDegraded",
+				types.ConditionTrue,
+				"HighClusterDNSFailureRate",
+				fmt.Sprintf("Cluster DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
+					clusterFailureRate*100, srtConfig.FailureRateThreshold*100, m.clusterSuccessTracker.Count()),
+			))
+		} else if clusterFailureRate > 0 {
+			// Some failures but below threshold - intermittent
+			status.AddCondition(types.NewCondition(
+				"ClusterDNSIntermittent",
+				types.ConditionTrue,
+				"IntermittentClusterDNSFailures",
+				fmt.Sprintf("Cluster DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
+					clusterFailureRate*100, srtConfig.FailureRateThreshold*100),
+			))
+		}
+	}
+
+	// Check external DNS success rate
+	if m.externalSuccessTracker.Count() >= srtConfig.MinSamplesRequired {
+		externalFailureRate := m.externalSuccessTracker.GetFailureRate()
+
+		if externalFailureRate >= srtConfig.FailureRateThreshold {
+			status.AddCondition(types.NewCondition(
+				"ExternalDNSDegraded",
+				types.ConditionTrue,
+				"HighExternalDNSFailureRate",
+				fmt.Sprintf("External DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
+					externalFailureRate*100, srtConfig.FailureRateThreshold*100, m.externalSuccessTracker.Count()),
+			))
+		} else if externalFailureRate > 0 {
+			// Some failures but below threshold - intermittent
+			status.AddCondition(types.NewCondition(
+				"ExternalDNSIntermittent",
+				types.ConditionTrue,
+				"IntermittentExternalDNSFailures",
+				fmt.Sprintf("External DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
+					externalFailureRate*100, srtConfig.FailureRateThreshold*100),
+			))
+		}
 	}
 }

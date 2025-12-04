@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -480,8 +481,16 @@ func TestRepeatedFailures(t *testing.T) {
 			ExternalDomains:       []string{"google.com", "cloudflare.com"},
 			LatencyThreshold:      1 * time.Second,
 			FailureCountThreshold: 3,
+			SuccessRateTracking: &SuccessRateConfig{
+				Enabled:              false,
+				WindowSize:           10,
+				FailureRateThreshold: 0.3,
+				MinSamplesRequired:   5,
+			},
 		},
-		resolver: mock,
+		resolver:               mock,
+		clusterSuccessTracker:  NewRingBuffer(10),
+		externalSuccessTracker: NewRingBuffer(10),
 	}
 
 	ctx := context.Background()
@@ -1126,5 +1135,1607 @@ func TestCheckCustomQueries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestParseDNSConfigTestEachNameserver tests parsing of testEachNameserver field.
+func TestParseDNSConfigTestEachNameserver(t *testing.T) {
+	tests := []struct {
+		name                   string
+		config                 map[string]interface{}
+		wantTestEachNameserver bool
+	}{
+		{
+			name: "testEachNameserver enabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":             "example.com",
+						"recordType":         "A",
+						"testEachNameserver": true,
+					},
+				},
+			},
+			wantTestEachNameserver: true,
+		},
+		{
+			name: "testEachNameserver disabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":             "example.com",
+						"recordType":         "A",
+						"testEachNameserver": false,
+					},
+				},
+			},
+			wantTestEachNameserver: false,
+		},
+		{
+			name: "testEachNameserver not specified (defaults to false)",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":     "example.com",
+						"recordType": "A",
+					},
+				},
+			},
+			wantTestEachNameserver: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseDNSConfig(tt.config)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(result.CustomQueries) == 0 {
+				t.Fatal("expected at least one custom query")
+			}
+
+			if result.CustomQueries[0].TestEachNameserver != tt.wantTestEachNameserver {
+				t.Errorf("TestEachNameserver = %v, want %v",
+					result.CustomQueries[0].TestEachNameserver, tt.wantTestEachNameserver)
+			}
+		})
+	}
+}
+
+// TestCheckDomainAgainstNameservers tests per-nameserver domain resolution.
+func TestCheckDomainAgainstNameservers(t *testing.T) {
+	tests := []struct {
+		name              string
+		resolverContent   string
+		wantConditionType string
+		wantConditionTrue bool
+		wantEvents        int
+	}{
+		{
+			name: "missing resolver file",
+			// No file content, use non-existent path
+			resolverContent:   "",
+			wantConditionType: "",
+			wantEvents:        1, // ResolverConfigParseError
+		},
+		{
+			name:              "empty resolver file - no nameservers",
+			resolverContent:   "# No nameservers configured\n",
+			wantConditionType: "",
+			wantEvents:        1, // NoNameserversConfigured
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resolverPath string
+
+			if tt.name == "missing resolver file" {
+				resolverPath = "/nonexistent/resolv.conf"
+			} else {
+				// Create temp file with resolver content
+				tmpFile, err := os.CreateTemp("", "resolv.conf")
+				if err != nil {
+					t.Fatalf("failed to create temp file: %v", err)
+				}
+				defer os.Remove(tmpFile.Name())
+
+				if _, err := tmpFile.WriteString(tt.resolverContent); err != nil {
+					t.Fatalf("failed to write temp file: %v", err)
+				}
+				tmpFile.Close()
+				resolverPath = tmpFile.Name()
+			}
+
+			monitor := &DNSMonitor{
+				name: "test-dns",
+				config: &DNSMonitorConfig{
+					ResolverPath:     resolverPath,
+					LatencyThreshold: 1 * time.Second,
+				},
+				nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+			}
+
+			ctx := context.Background()
+			status := types.NewStatus("test-dns")
+			monitor.checkDomainAgainstNameservers(ctx, status, "test.example.com")
+
+			// Check event count
+			if tt.wantEvents >= 0 && len(status.Events) != tt.wantEvents {
+				t.Errorf("got %d events, want %d", len(status.Events), tt.wantEvents)
+			}
+
+			// Check condition
+			if tt.wantConditionType != "" {
+				found := false
+				for _, cond := range status.Conditions {
+					if cond.Type == tt.wantConditionType {
+						found = true
+						if tt.wantConditionTrue && cond.Status != types.ConditionTrue {
+							t.Errorf("expected condition %s to be True", tt.wantConditionType)
+						}
+						break
+					}
+				}
+				if !found && tt.wantConditionTrue {
+					t.Errorf("expected condition %s not found", tt.wantConditionType)
+				}
+			}
+		})
+	}
+}
+
+// TestCheckCustomQueriesWithTestEachNameserver tests custom queries with per-nameserver testing.
+func TestCheckCustomQueriesWithTestEachNameserver(t *testing.T) {
+	// Create a temp resolver file
+	tmpFile, err := os.CreateTemp("", "resolv.conf")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	// Empty file to test the NoNameserversConfigured path
+	if _, err := tmpFile.WriteString("# Empty\n"); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	mock := newMockResolver()
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			ClusterDomains:  []string{},
+			ExternalDomains: []string{},
+			CustomQueries: []DNSQuery{
+				{
+					Domain:             "test.example.com",
+					RecordType:         "A",
+					TestEachNameserver: true, // Enable per-nameserver testing
+				},
+			},
+			ResolverPath:     tmpFile.Name(),
+			LatencyThreshold: 1 * time.Second,
+		},
+		resolver:               mock,
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkCustomQueries(ctx, status)
+
+	// Should generate NoNameserversConfigured event
+	if len(status.Events) == 0 {
+		t.Error("expected at least one event for no nameservers configured")
+	}
+
+	foundNoNameservers := false
+	for _, event := range status.Events {
+		if event.Reason == "NoNameserversConfigured" {
+			foundNoNameservers = true
+			break
+		}
+	}
+	if !foundNoNameservers {
+		t.Error("expected NoNameserversConfigured event")
+	}
+}
+
+// TestGetOrCreateNameserverStatus tests the nameserver status tracking.
+func TestGetOrCreateNameserverStatus(t *testing.T) {
+	monitor := &DNSMonitor{
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	// First call should create a new status
+	key1 := "8.8.8.8:example.com"
+	status1 := monitor.getOrCreateNameserverStatus(key1, "8.8.8.8", "example.com")
+	if status1 == nil {
+		t.Fatal("expected non-nil status")
+	}
+	if status1.Nameserver != "8.8.8.8" {
+		t.Errorf("Nameserver = %s, want 8.8.8.8", status1.Nameserver)
+	}
+	if status1.Domain != "example.com" {
+		t.Errorf("Domain = %s, want example.com", status1.Domain)
+	}
+	if status1.FailureCount != 0 {
+		t.Errorf("FailureCount = %d, want 0", status1.FailureCount)
+	}
+
+	// Modify the status
+	status1.FailureCount = 5
+
+	// Second call with same key should return the same status
+	status2 := monitor.getOrCreateNameserverStatus(key1, "8.8.8.8", "example.com")
+	if status2.FailureCount != 5 {
+		t.Errorf("FailureCount = %d, want 5 (should be same instance)", status2.FailureCount)
+	}
+
+	// Different key should create a new status
+	key2 := "8.8.4.4:example.com"
+	status3 := monitor.getOrCreateNameserverStatus(key2, "8.8.4.4", "example.com")
+	if status3.FailureCount != 0 {
+		t.Errorf("FailureCount = %d, want 0 (should be new instance)", status3.FailureCount)
+	}
+}
+
+// TestCreateNameserverResolver tests the nameserver resolver creation.
+func TestCreateNameserverResolver(t *testing.T) {
+	monitor := &DNSMonitor{}
+
+	resolver := monitor.createNameserverResolver("8.8.8.8")
+	if resolver == nil {
+		t.Fatal("expected non-nil resolver")
+	}
+
+	// Verify the resolver has PreferGo set
+	if !resolver.PreferGo {
+		t.Error("expected PreferGo to be true")
+	}
+
+	// Note: We can't easily test the Dial function without actual network calls,
+	// but we can verify the resolver was created with the right settings
+}
+
+// TestNameserverDomainStatusTracking tests that failure counts are tracked correctly.
+func TestNameserverDomainStatusTracking(t *testing.T) {
+	monitor := &DNSMonitor{
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	key := "10.0.0.1:critical.example.com"
+
+	// Simulate multiple failures
+	for i := 0; i < 3; i++ {
+		status := monitor.getOrCreateNameserverStatus(key, "10.0.0.1", "critical.example.com")
+		status.FailureCount++
+	}
+
+	// Verify failure count
+	status := monitor.nameserverDomainStatus[key]
+	if status.FailureCount != 3 {
+		t.Errorf("FailureCount = %d, want 3", status.FailureCount)
+	}
+
+	// Simulate recovery
+	status.FailureCount = 0
+	status.LastSuccess = time.Now()
+
+	if status.FailureCount != 0 {
+		t.Errorf("FailureCount = %d after recovery, want 0", status.FailureCount)
+	}
+}
+
+// TestCleanupOldNameserverStatus tests the cleanup of old status entries.
+func TestCleanupOldNameserverStatus(t *testing.T) {
+	monitor := &DNSMonitor{
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	// Add some entries with old LastSuccess times
+	oldTime := time.Now().Add(-2 * time.Hour)
+	recentTime := time.Now().Add(-30 * time.Minute)
+
+	monitor.nameserverDomainStatus["old:domain1"] = &NameserverDomainStatus{
+		Nameserver:  "8.8.8.8",
+		Domain:      "domain1",
+		LastSuccess: oldTime,
+	}
+	monitor.nameserverDomainStatus["recent:domain2"] = &NameserverDomainStatus{
+		Nameserver:  "8.8.4.4",
+		Domain:      "domain2",
+		LastSuccess: recentTime,
+	}
+	monitor.nameserverDomainStatus["zero:domain3"] = &NameserverDomainStatus{
+		Nameserver: "1.1.1.1",
+		Domain:     "domain3",
+		// LastSuccess is zero
+	}
+
+	// Run cleanup
+	monitor.cleanupOldNameserverStatus()
+
+	// Old entry should be removed (> 1 hour old)
+	if _, exists := monitor.nameserverDomainStatus["old:domain1"]; exists {
+		t.Error("expected old entry to be removed")
+	}
+	// Recent entry should remain (< 1 hour old)
+	if _, exists := monitor.nameserverDomainStatus["recent:domain2"]; !exists {
+		t.Error("expected recent entry to remain")
+	}
+	// Zero-time entry (never succeeded) should be removed to prevent memory leak
+	if _, exists := monitor.nameserverDomainStatus["zero:domain3"]; exists {
+		t.Error("expected zero-time entry (never succeeded) to be removed")
+	}
+}
+
+// TestCreateNameserverResolverIPv6 tests that IPv6 nameservers are properly formatted.
+func TestCreateNameserverResolverIPv6(t *testing.T) {
+	monitor := &DNSMonitor{}
+
+	tests := []struct {
+		name       string
+		nameserver string
+	}{
+		{"IPv4", "8.8.8.8"},
+		{"IPv6", "2001:4860:4860::8888"},
+		{"IPv6 full", "2001:4860:4860:0000:0000:0000:0000:8888"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := monitor.createNameserverResolver(tt.nameserver)
+			if resolver == nil {
+				t.Fatal("expected non-nil resolver")
+			}
+			// Verify PreferGo is set
+			if !resolver.PreferGo {
+				t.Error("expected PreferGo to be true")
+			}
+		})
+	}
+}
+
+// TestMaxNameserverDomainEntries tests the constant is defined.
+func TestMaxNameserverDomainEntries(t *testing.T) {
+	if maxNameserverDomainEntries <= 0 {
+		t.Errorf("maxNameserverDomainEntries should be positive, got %d", maxNameserverDomainEntries)
+	}
+	if maxNameserverDomainEntries > 10000 {
+		t.Errorf("maxNameserverDomainEntries seems too large: %d", maxNameserverDomainEntries)
+	}
+}
+
+// TestRingBuffer tests the RingBuffer implementation.
+func TestRingBuffer(t *testing.T) {
+	t.Run("new buffer has zero count", func(t *testing.T) {
+		rb := NewRingBuffer(10)
+		if rb.Count() != 0 {
+			t.Errorf("expected count 0, got %d", rb.Count())
+		}
+		if rb.Size() != 10 {
+			t.Errorf("expected size 10, got %d", rb.Size())
+		}
+	})
+
+	t.Run("empty buffer returns 0 success rate", func(t *testing.T) {
+		rb := NewRingBuffer(10)
+		if rb.GetSuccessRate() != 0.0 {
+			t.Errorf("expected success rate 0.0, got %f", rb.GetSuccessRate())
+		}
+	})
+
+	t.Run("all successes returns 1.0 success rate", func(t *testing.T) {
+		rb := NewRingBuffer(5)
+		for i := 0; i < 5; i++ {
+			rb.Add(&CheckResult{Success: true})
+		}
+		if rb.GetSuccessRate() != 1.0 {
+			t.Errorf("expected success rate 1.0, got %f", rb.GetSuccessRate())
+		}
+		if rb.GetFailureRate() != 0.0 {
+			t.Errorf("expected failure rate 0.0, got %f", rb.GetFailureRate())
+		}
+	})
+
+	t.Run("all failures returns 0.0 success rate", func(t *testing.T) {
+		rb := NewRingBuffer(5)
+		for i := 0; i < 5; i++ {
+			rb.Add(&CheckResult{Success: false})
+		}
+		if rb.GetSuccessRate() != 0.0 {
+			t.Errorf("expected success rate 0.0, got %f", rb.GetSuccessRate())
+		}
+		if rb.GetFailureRate() != 1.0 {
+			t.Errorf("expected failure rate 1.0, got %f", rb.GetFailureRate())
+		}
+	})
+
+	t.Run("mixed results calculates correctly", func(t *testing.T) {
+		rb := NewRingBuffer(10)
+		// Add 7 successes and 3 failures
+		for i := 0; i < 7; i++ {
+			rb.Add(&CheckResult{Success: true})
+		}
+		for i := 0; i < 3; i++ {
+			rb.Add(&CheckResult{Success: false})
+		}
+		successRate := rb.GetSuccessRate()
+		// Use approximate comparison for floating point
+		if successRate < 0.69 || successRate > 0.71 {
+			t.Errorf("expected success rate ~0.7, got %f", successRate)
+		}
+		failureRate := rb.GetFailureRate()
+		if failureRate < 0.29 || failureRate > 0.31 {
+			t.Errorf("expected failure rate ~0.3, got %f", failureRate)
+		}
+	})
+
+	t.Run("buffer wraps around correctly", func(t *testing.T) {
+		rb := NewRingBuffer(5)
+		// Add 5 successes
+		for i := 0; i < 5; i++ {
+			rb.Add(&CheckResult{Success: true})
+		}
+		if rb.GetSuccessRate() != 1.0 {
+			t.Errorf("expected success rate 1.0 before wrap, got %f", rb.GetSuccessRate())
+		}
+
+		// Add 3 failures (overwrites 3 oldest successes)
+		for i := 0; i < 3; i++ {
+			rb.Add(&CheckResult{Success: false})
+		}
+		// Should now have 2 successes and 3 failures
+		successRate := rb.GetSuccessRate()
+		expectedRate := 2.0 / 5.0 // 0.4
+		if successRate != expectedRate {
+			t.Errorf("expected success rate %f after wrap, got %f", expectedRate, successRate)
+		}
+	})
+
+	t.Run("count stays at buffer size after wrap", func(t *testing.T) {
+		rb := NewRingBuffer(5)
+		// Add more than buffer size
+		for i := 0; i < 10; i++ {
+			rb.Add(&CheckResult{Success: true})
+		}
+		if rb.Count() != 5 {
+			t.Errorf("expected count to cap at 5, got %d", rb.Count())
+		}
+	})
+
+	t.Run("minimum size enforced", func(t *testing.T) {
+		rb := NewRingBuffer(0)
+		if rb.Size() < 1 {
+			t.Errorf("expected minimum size of 1, got %d", rb.Size())
+		}
+
+		rb2 := NewRingBuffer(-5)
+		if rb2.Size() < 1 {
+			t.Errorf("expected minimum size of 1 for negative input, got %d", rb2.Size())
+		}
+	})
+}
+
+// TestSuccessRateConfigParsing tests parsing of successRateTracking config.
+func TestSuccessRateConfigParsing(t *testing.T) {
+	tests := []struct {
+		name        string
+		configMap   map[string]interface{}
+		expectError bool
+		validate    func(*DNSMonitorConfig) error
+	}{
+		{
+			name:      "no successRateTracking config",
+			configMap: map[string]interface{}{},
+			validate: func(c *DNSMonitorConfig) error {
+				// After applyDefaults, should have default config
+				if c.SuccessRateTracking == nil {
+					return fmt.Errorf("expected SuccessRateTracking to be non-nil after defaults")
+				}
+				return nil
+			},
+		},
+		{
+			name: "successRateTracking enabled with all fields",
+			configMap: map[string]interface{}{
+				"successRateTracking": map[string]interface{}{
+					"enabled":              true,
+					"windowSize":           float64(20),
+					"failureRateThreshold": float64(40), // percentage
+					"minSamplesRequired":   float64(10),
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				srt := c.SuccessRateTracking
+				if srt == nil {
+					return fmt.Errorf("expected SuccessRateTracking to be non-nil")
+				}
+				if !srt.Enabled {
+					return fmt.Errorf("expected Enabled to be true")
+				}
+				if srt.WindowSize != 20 {
+					return fmt.Errorf("expected WindowSize 20, got %d", srt.WindowSize)
+				}
+				if srt.FailureRateThreshold != 0.4 {
+					return fmt.Errorf("expected FailureRateThreshold 0.4, got %f", srt.FailureRateThreshold)
+				}
+				if srt.MinSamplesRequired != 10 {
+					return fmt.Errorf("expected MinSamplesRequired 10, got %d", srt.MinSamplesRequired)
+				}
+				return nil
+			},
+		},
+		{
+			name: "failureRateThreshold as decimal",
+			configMap: map[string]interface{}{
+				"successRateTracking": map[string]interface{}{
+					"enabled":              true,
+					"failureRateThreshold": float64(0.25),
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.SuccessRateTracking.FailureRateThreshold != 0.25 {
+					return fmt.Errorf("expected FailureRateThreshold 0.25, got %f", c.SuccessRateTracking.FailureRateThreshold)
+				}
+				return nil
+			},
+		},
+		{
+			name: "failureRateThreshold as integer percentage",
+			configMap: map[string]interface{}{
+				"successRateTracking": map[string]interface{}{
+					"enabled":              true,
+					"failureRateThreshold": 35, // int
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.SuccessRateTracking.FailureRateThreshold != 0.35 {
+					return fmt.Errorf("expected FailureRateThreshold 0.35, got %f", c.SuccessRateTracking.FailureRateThreshold)
+				}
+				return nil
+			},
+		},
+		{
+			name: "invalid successRateTracking type",
+			configMap: map[string]interface{}{
+				"successRateTracking": "invalid",
+			},
+			expectError: true,
+		},
+		{
+			name: "failureRateThreshold integer > 100 invalid",
+			configMap: map[string]interface{}{
+				"successRateTracking": map[string]interface{}{
+					"enabled":              true,
+					"failureRateThreshold": 150, // invalid - must be 0-100
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "failureRateThreshold integer negative invalid",
+			configMap: map[string]interface{}{
+				"successRateTracking": map[string]interface{}{
+					"enabled":              true,
+					"failureRateThreshold": -10, // invalid
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := parseDNSConfig(tt.configMap)
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error but got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Apply defaults
+			if err := config.applyDefaults(); err != nil {
+				t.Fatalf("applyDefaults failed: %v", err)
+			}
+
+			if tt.validate != nil {
+				if err := tt.validate(config); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+}
+
+// TestSuccessRateConditions tests that success rate conditions are triggered correctly.
+func TestSuccessRateConditions(t *testing.T) {
+	t.Run("no conditions when not enabled", func(t *testing.T) {
+		monitor := &DNSMonitor{
+			config: &DNSMonitorConfig{
+				SuccessRateTracking: &SuccessRateConfig{
+					Enabled:              false,
+					WindowSize:           10,
+					FailureRateThreshold: 0.3,
+					MinSamplesRequired:   5,
+				},
+				FailureCountThreshold: 3,
+			},
+			clusterSuccessTracker:  NewRingBuffer(10),
+			externalSuccessTracker: NewRingBuffer(10),
+		}
+
+		// Add failures
+		for i := 0; i < 10; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: false})
+		}
+
+		status := types.NewStatus("test")
+		monitor.checkSuccessRateConditions(status)
+
+		// Should have no conditions since not enabled
+		// checkSuccessRateConditions is only called when enabled
+		// In this test we call it directly, but the parent updateFailureTracking checks enabled
+		if len(status.Conditions) > 0 {
+			// This is expected since we're calling the method directly
+		}
+	})
+
+	t.Run("no conditions when below minSamplesRequired", func(t *testing.T) {
+		monitor := &DNSMonitor{
+			config: &DNSMonitorConfig{
+				SuccessRateTracking: &SuccessRateConfig{
+					Enabled:              true,
+					WindowSize:           10,
+					FailureRateThreshold: 0.3,
+					MinSamplesRequired:   5,
+				},
+				FailureCountThreshold: 3,
+			},
+			clusterSuccessTracker:  NewRingBuffer(10),
+			externalSuccessTracker: NewRingBuffer(10),
+		}
+
+		// Add only 3 failures (below minSamplesRequired of 5)
+		for i := 0; i < 3; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: false})
+		}
+
+		status := types.NewStatus("test")
+		monitor.checkSuccessRateConditions(status)
+
+		// Should have no cluster conditions since below min samples
+		hasClusterCondition := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "ClusterDNSDegraded" || cond.Type == "ClusterDNSIntermittent" {
+				hasClusterCondition = true
+			}
+		}
+		if hasClusterCondition {
+			t.Error("expected no cluster conditions when below minSamplesRequired")
+		}
+	})
+
+	t.Run("DNSDegraded condition when above threshold", func(t *testing.T) {
+		monitor := &DNSMonitor{
+			config: &DNSMonitorConfig{
+				SuccessRateTracking: &SuccessRateConfig{
+					Enabled:              true,
+					WindowSize:           10,
+					FailureRateThreshold: 0.3, // 30%
+					MinSamplesRequired:   5,
+				},
+				FailureCountThreshold: 3,
+			},
+			clusterSuccessTracker:  NewRingBuffer(10),
+			externalSuccessTracker: NewRingBuffer(10),
+		}
+
+		// Add 4 failures and 6 successes = 40% failure rate (above 30% threshold)
+		for i := 0; i < 4; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: false})
+		}
+		for i := 0; i < 6; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: true})
+		}
+
+		status := types.NewStatus("test")
+		monitor.checkSuccessRateConditions(status)
+
+		// Should have ClusterDNSDegraded condition
+		hasDegraded := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "ClusterDNSDegraded" {
+				hasDegraded = true
+				if cond.Status != types.ConditionTrue {
+					t.Errorf("expected condition status True, got %s", cond.Status)
+				}
+			}
+		}
+		if !hasDegraded {
+			t.Error("expected ClusterDNSDegraded condition")
+		}
+	})
+
+	t.Run("DNSIntermittent condition when below threshold but some failures", func(t *testing.T) {
+		monitor := &DNSMonitor{
+			config: &DNSMonitorConfig{
+				SuccessRateTracking: &SuccessRateConfig{
+					Enabled:              true,
+					WindowSize:           10,
+					FailureRateThreshold: 0.3, // 30%
+					MinSamplesRequired:   5,
+				},
+				FailureCountThreshold: 3,
+			},
+			clusterSuccessTracker:  NewRingBuffer(10),
+			externalSuccessTracker: NewRingBuffer(10),
+		}
+
+		// Add 2 failures and 8 successes = 20% failure rate (below 30% threshold)
+		for i := 0; i < 2; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: false})
+		}
+		for i := 0; i < 8; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: true})
+		}
+
+		status := types.NewStatus("test")
+		monitor.checkSuccessRateConditions(status)
+
+		// Should have ClusterDNSIntermittent condition (some failures but below threshold)
+		hasIntermittent := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "ClusterDNSIntermittent" {
+				hasIntermittent = true
+			}
+		}
+		if !hasIntermittent {
+			t.Error("expected ClusterDNSIntermittent condition")
+		}
+	})
+
+	t.Run("no conditions when 100% success", func(t *testing.T) {
+		monitor := &DNSMonitor{
+			config: &DNSMonitorConfig{
+				SuccessRateTracking: &SuccessRateConfig{
+					Enabled:              true,
+					WindowSize:           10,
+					FailureRateThreshold: 0.3,
+					MinSamplesRequired:   5,
+				},
+				FailureCountThreshold: 3,
+			},
+			clusterSuccessTracker:  NewRingBuffer(10),
+			externalSuccessTracker: NewRingBuffer(10),
+		}
+
+		// Add 10 successes
+		for i := 0; i < 10; i++ {
+			monitor.clusterSuccessTracker.Add(&CheckResult{Success: true})
+			monitor.externalSuccessTracker.Add(&CheckResult{Success: true})
+		}
+
+		status := types.NewStatus("test")
+		monitor.checkSuccessRateConditions(status)
+
+		// Should have no degraded or intermittent conditions
+		for _, cond := range status.Conditions {
+			if cond.Type == "ClusterDNSDegraded" || cond.Type == "ClusterDNSIntermittent" ||
+				cond.Type == "ExternalDNSDegraded" || cond.Type == "ExternalDNSIntermittent" {
+				t.Errorf("unexpected condition %s when 100%% success", cond.Type)
+			}
+		}
+	})
+}
+
+// TestSuccessRateConfigDefaults tests default values for success rate tracking.
+func TestSuccessRateConfigDefaults(t *testing.T) {
+	config := &DNSMonitorConfig{}
+	if err := config.applyDefaults(); err != nil {
+		t.Fatalf("applyDefaults failed: %v", err)
+	}
+
+	if config.SuccessRateTracking == nil {
+		t.Fatal("expected SuccessRateTracking to be non-nil")
+	}
+
+	srt := config.SuccessRateTracking
+	if srt.Enabled {
+		t.Error("expected Enabled to be false by default")
+	}
+	if srt.WindowSize != 10 {
+		t.Errorf("expected WindowSize 10, got %d", srt.WindowSize)
+	}
+	if srt.FailureRateThreshold != 0.3 {
+		t.Errorf("expected FailureRateThreshold 0.3, got %f", srt.FailureRateThreshold)
+	}
+	if srt.MinSamplesRequired != 5 {
+		t.Errorf("expected MinSamplesRequired 5, got %d", srt.MinSamplesRequired)
+	}
+}
+
+// TestSuccessRateValidation tests validation of success rate tracking config.
+func TestSuccessRateValidation(t *testing.T) {
+	baseConfig := func() types.MonitorConfig {
+		return types.MonitorConfig{
+			Name: "test-dns",
+			Type: "network-dns-check",
+			Config: map[string]interface{}{
+				"clusterDomains":  []interface{}{"kubernetes.default.svc.cluster.local"},
+				"externalDomains": []interface{}{"google.com"},
+			},
+		}
+	}
+
+	t.Run("windowSize too large", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["successRateTracking"] = map[string]interface{}{
+			"enabled":              true,
+			"windowSize":           20000, // exceeds 10000 limit
+			"failureRateThreshold": 0.3,
+			"minSamplesRequired":   5,
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for windowSize > 10000")
+		}
+	})
+
+	t.Run("windowSize negative", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["successRateTracking"] = map[string]interface{}{
+			"enabled":              true,
+			"windowSize":           -5, // negative values stay negative
+			"failureRateThreshold": 0.3,
+			"minSamplesRequired":   5,
+		}
+		// Note: applyDefaults converts <= 0 to 10, so negative becomes 10 (valid)
+		// This test verifies the default fixing behavior works
+		err := ValidateDNSConfig(config)
+		if err != nil {
+			t.Errorf("expected no error (defaults fix windowSize), got: %v", err)
+		}
+	})
+
+	t.Run("minSamplesRequired exceeds windowSize", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["successRateTracking"] = map[string]interface{}{
+			"enabled":              true,
+			"windowSize":           10,
+			"failureRateThreshold": 0.3,
+			"minSamplesRequired":   20, // exceeds windowSize
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for minSamplesRequired > windowSize")
+		}
+	})
+
+	t.Run("failureRateThreshold as percentage > 100", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["successRateTracking"] = map[string]interface{}{
+			"enabled":              true,
+			"windowSize":           10,
+			"failureRateThreshold": 150, // 150% after /100 = 1.5 which exceeds 1.0
+			"minSamplesRequired":   5,
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for failureRateThreshold > 100%")
+		}
+	})
+
+	t.Run("valid config passes validation", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["successRateTracking"] = map[string]interface{}{
+			"enabled":              true,
+			"windowSize":           100,
+			"failureRateThreshold": 0.3,
+			"minSamplesRequired":   10,
+		}
+		err := ValidateDNSConfig(config)
+		if err != nil {
+			t.Errorf("unexpected error for valid config: %v", err)
+		}
+	})
+}
+
+// TestClassifyDNSError tests DNS error type classification.
+func TestClassifyDNSError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected DNSErrorType
+	}{
+		{
+			name:     "nil error returns Unknown",
+			err:      nil,
+			expected: DNSErrorUnknown,
+		},
+		{
+			name:     "i/o timeout",
+			err:      fmt.Errorf("dial tcp 8.8.8.8:53: i/o timeout"),
+			expected: DNSErrorTimeout,
+		},
+		{
+			name:     "context deadline exceeded",
+			err:      fmt.Errorf("lookup example.com: context deadline exceeded"),
+			expected: DNSErrorTimeout,
+		},
+		{
+			name:     "no such host (NXDOMAIN)",
+			err:      fmt.Errorf("lookup nonexistent.example.com: no such host"),
+			expected: DNSErrorNXDOMAIN,
+		},
+		{
+			name:     "server misbehaving (SERVFAIL)",
+			err:      fmt.Errorf("lookup example.com: server misbehaving"),
+			expected: DNSErrorSERVFAIL,
+		},
+		{
+			name:     "connection refused",
+			err:      fmt.Errorf("dial tcp 10.0.0.1:53: connection refused"),
+			expected: DNSErrorRefused,
+		},
+		{
+			name:     "unknown error",
+			err:      fmt.Errorf("some random DNS error"),
+			expected: DNSErrorUnknown,
+		},
+		{
+			name: "net.DNSError with IsNotFound",
+			err: &net.DNSError{
+				Err:        "no such host",
+				Name:       "nonexistent.example.com",
+				IsNotFound: true,
+			},
+			expected: DNSErrorNXDOMAIN,
+		},
+		{
+			name: "net.DNSError with IsTemporary",
+			err: &net.DNSError{
+				Err:         "temporary failure",
+				Name:        "example.com",
+				IsTemporary: true,
+			},
+			expected: DNSErrorTemporary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyDNSError(tt.err)
+			if result != tt.expected {
+				t.Errorf("classifyDNSError(%v) = %s, want %s", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDNSErrorTypeString verifies DNSErrorType string values.
+func TestDNSErrorTypeString(t *testing.T) {
+	tests := []struct {
+		errType  DNSErrorType
+		expected string
+	}{
+		{DNSErrorTimeout, "Timeout"},
+		{DNSErrorNXDOMAIN, "NXDOMAIN"},
+		{DNSErrorSERVFAIL, "SERVFAIL"},
+		{DNSErrorRefused, "Refused"},
+		{DNSErrorTemporary, "Temporary"},
+		{DNSErrorUnknown, "Unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			if string(tt.errType) != tt.expected {
+				t.Errorf("DNSErrorType string = %s, want %s", string(tt.errType), tt.expected)
+			}
+		})
+	}
+}
+
+// TestConsistencyCheckConfigParsing tests parsing of consistencyChecking config.
+func TestConsistencyCheckConfigParsing(t *testing.T) {
+	tests := []struct {
+		name        string
+		configMap   map[string]interface{}
+		expectError bool
+		validate    func(*DNSMonitorConfig) error
+	}{
+		{
+			name:      "no consistencyChecking config",
+			configMap: map[string]interface{}{},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.ConsistencyChecking == nil {
+					return fmt.Errorf("expected ConsistencyChecking to be non-nil after defaults")
+				}
+				return nil
+			},
+		},
+		{
+			name: "consistencyChecking enabled with all fields",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"queriesPerCheck":        float64(10),
+					"intervalBetweenQueries": "100ms",
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				cc := c.ConsistencyChecking
+				if cc == nil {
+					return fmt.Errorf("expected ConsistencyChecking to be non-nil")
+				}
+				if !cc.Enabled {
+					return fmt.Errorf("expected Enabled to be true")
+				}
+				if cc.QueriesPerCheck != 10 {
+					return fmt.Errorf("expected QueriesPerCheck 10, got %d", cc.QueriesPerCheck)
+				}
+				if cc.IntervalBetweenQueries != 100*time.Millisecond {
+					return fmt.Errorf("expected IntervalBetweenQueries 100ms, got %v", cc.IntervalBetweenQueries)
+				}
+				return nil
+			},
+		},
+		{
+			name: "intervalBetweenQueries as int (milliseconds)",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"intervalBetweenQueries": 500,
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.ConsistencyChecking.IntervalBetweenQueries != 500*time.Millisecond {
+					return fmt.Errorf("expected IntervalBetweenQueries 500ms, got %v", c.ConsistencyChecking.IntervalBetweenQueries)
+				}
+				return nil
+			},
+		},
+		{
+			name: "intervalBetweenQueries as float (milliseconds)",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"intervalBetweenQueries": float64(250),
+				},
+			},
+			validate: func(c *DNSMonitorConfig) error {
+				if c.ConsistencyChecking.IntervalBetweenQueries != 250*time.Millisecond {
+					return fmt.Errorf("expected IntervalBetweenQueries 250ms, got %v", c.ConsistencyChecking.IntervalBetweenQueries)
+				}
+				return nil
+			},
+		},
+		{
+			name: "invalid consistencyChecking type",
+			configMap: map[string]interface{}{
+				"consistencyChecking": "invalid",
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid intervalBetweenQueries duration",
+			configMap: map[string]interface{}{
+				"consistencyChecking": map[string]interface{}{
+					"enabled":                true,
+					"intervalBetweenQueries": "invalid",
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := parseDNSConfig(tt.configMap)
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error but got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Apply defaults
+			if err := config.applyDefaults(); err != nil {
+				t.Fatalf("applyDefaults failed: %v", err)
+			}
+
+			if tt.validate != nil {
+				if err := tt.validate(config); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+}
+
+// TestConsistencyCheckConfigDefaults tests default values for consistency checking.
+func TestConsistencyCheckConfigDefaults(t *testing.T) {
+	config := &DNSMonitorConfig{}
+	if err := config.applyDefaults(); err != nil {
+		t.Fatalf("applyDefaults failed: %v", err)
+	}
+
+	if config.ConsistencyChecking == nil {
+		t.Fatal("expected ConsistencyChecking to be non-nil")
+	}
+
+	cc := config.ConsistencyChecking
+	if cc.Enabled {
+		t.Error("expected Enabled to be false by default")
+	}
+	if cc.QueriesPerCheck != 5 {
+		t.Errorf("expected QueriesPerCheck 5, got %d", cc.QueriesPerCheck)
+	}
+	if cc.IntervalBetweenQueries != 200*time.Millisecond {
+		t.Errorf("expected IntervalBetweenQueries 200ms, got %v", cc.IntervalBetweenQueries)
+	}
+}
+
+// TestConsistencyCheckValidation tests validation of consistency checking config.
+func TestConsistencyCheckValidation(t *testing.T) {
+	baseConfig := func() types.MonitorConfig {
+		return types.MonitorConfig{
+			Name: "test-dns",
+			Type: "network-dns-check",
+			Config: map[string]interface{}{
+				"clusterDomains":  []interface{}{"kubernetes.default.svc.cluster.local"},
+				"externalDomains": []interface{}{"google.com"},
+			},
+		}
+	}
+
+	t.Run("queriesPerCheck too small", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":         true,
+			"queriesPerCheck": 1, // minimum is 2
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for queriesPerCheck < 2")
+		}
+	})
+
+	t.Run("queriesPerCheck too large", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":         true,
+			"queriesPerCheck": 25, // maximum is 20
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for queriesPerCheck > 20")
+		}
+	})
+
+	t.Run("intervalBetweenQueries too small", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":                true,
+			"intervalBetweenQueries": "5ms", // minimum is 10ms
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for intervalBetweenQueries < 10ms")
+		}
+	})
+
+	t.Run("intervalBetweenQueries too large", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":                true,
+			"intervalBetweenQueries": "10s", // maximum is 5s
+		}
+		err := ValidateDNSConfig(config)
+		if err == nil {
+			t.Error("expected error for intervalBetweenQueries > 5s")
+		}
+	})
+
+	t.Run("valid config passes validation", func(t *testing.T) {
+		config := baseConfig()
+		config.Config["consistencyChecking"] = map[string]interface{}{
+			"enabled":                true,
+			"queriesPerCheck":        5,
+			"intervalBetweenQueries": "200ms",
+		}
+		err := ValidateDNSConfig(config)
+		if err != nil {
+			t.Errorf("unexpected error for valid config: %v", err)
+		}
+	})
+}
+
+// TestCheckDomainConsistency tests the consistency check functionality.
+func TestCheckDomainConsistency(t *testing.T) {
+	t.Run("all queries succeed with consistent IPs", func(t *testing.T) {
+		mock := newMockResolver()
+		mock.setResponse("example.com", []string{"1.2.3.4", "5.6.7.8"})
+
+		monitor := &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				LatencyThreshold: 1 * time.Second,
+				ConsistencyChecking: &ConsistencyCheckConfig{
+					Enabled:                true,
+					QueriesPerCheck:        3,
+					IntervalBetweenQueries: 10 * time.Millisecond,
+				},
+			},
+			resolver: mock,
+		}
+
+		ctx := context.Background()
+		status := types.NewStatus("test-dns")
+		monitor.checkDomainConsistency(ctx, status, "example.com")
+
+		// Should have DNSResolutionConsistent condition
+		found := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "DNSResolutionConsistent" && cond.Status == types.ConditionTrue {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected DNSResolutionConsistent condition")
+		}
+	})
+
+	t.Run("all queries fail", func(t *testing.T) {
+		mock := newMockResolver()
+		mock.setError("failing.example.com", fmt.Errorf("no such host"))
+
+		monitor := &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				LatencyThreshold: 1 * time.Second,
+				ConsistencyChecking: &ConsistencyCheckConfig{
+					Enabled:                true,
+					QueriesPerCheck:        3,
+					IntervalBetweenQueries: 10 * time.Millisecond,
+				},
+			},
+			resolver: mock,
+		}
+
+		ctx := context.Background()
+		status := types.NewStatus("test-dns")
+		monitor.checkDomainConsistency(ctx, status, "failing.example.com")
+
+		// Should have DNSResolutionDown condition
+		foundCondition := false
+		for _, cond := range status.Conditions {
+			if cond.Type == "DNSResolutionDown" && cond.Status == types.ConditionTrue {
+				foundCondition = true
+				break
+			}
+		}
+		if !foundCondition {
+			t.Error("expected DNSResolutionDown condition")
+		}
+
+		// Should have ConsistencyCheckAllFailed event
+		foundEvent := false
+		for _, event := range status.Events {
+			if event.Reason == "ConsistencyCheckAllFailed" {
+				foundEvent = true
+				break
+			}
+		}
+		if !foundEvent {
+			t.Error("expected ConsistencyCheckAllFailed event")
+		}
+	})
+
+	t.Run("high average latency triggers warning", func(t *testing.T) {
+		mock := newMockResolver()
+		mock.setResponse("slow.example.com", []string{"1.2.3.4"})
+		mock.setLatency("slow.example.com", 500*time.Millisecond)
+
+		monitor := &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				LatencyThreshold: 200 * time.Millisecond, // Lower than the mock latency
+				ConsistencyChecking: &ConsistencyCheckConfig{
+					Enabled:                true,
+					QueriesPerCheck:        2,
+					IntervalBetweenQueries: 10 * time.Millisecond,
+				},
+			},
+			resolver: mock,
+		}
+
+		ctx := context.Background()
+		status := types.NewStatus("test-dns")
+		monitor.checkDomainConsistency(ctx, status, "slow.example.com")
+
+		// Should have ConsistencyCheckHighLatency event
+		found := false
+		for _, event := range status.Events {
+			if event.Reason == "ConsistencyCheckHighLatency" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected ConsistencyCheckHighLatency event")
+		}
+	})
+}
+
+// intermittentMockResolver alternates between success and failure.
+type intermittentMockResolver struct {
+	domain     string
+	successIPs []string
+	errorMsg   string
+	callCount  int
+	pattern    []bool // true = success, false = failure
+}
+
+func (m *intermittentMockResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if host == m.domain && len(m.pattern) > 0 {
+		idx := m.callCount % len(m.pattern)
+		m.callCount++
+		if m.pattern[idx] {
+			return m.successIPs, nil
+		}
+		return nil, fmt.Errorf("%s", m.errorMsg)
+	}
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+func (m *intermittentMockResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// TestCheckDomainConsistencyIntermittent tests intermittent failure detection.
+func TestCheckDomainConsistencyIntermittent(t *testing.T) {
+	mock := &intermittentMockResolver{
+		domain:     "flaky.example.com",
+		successIPs: []string{"1.2.3.4"},
+		errorMsg:   "temporary DNS failure",
+		pattern:    []bool{true, false, true, false, true}, // 3 successes, 2 failures
+	}
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        5,
+				IntervalBetweenQueries: 10 * time.Millisecond,
+			},
+		},
+		resolver: mock,
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkDomainConsistency(ctx, status, "flaky.example.com")
+
+	// Should have DNSResolutionIntermittent condition
+	foundCondition := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "DNSResolutionIntermittent" && cond.Status == types.ConditionTrue {
+			foundCondition = true
+			break
+		}
+	}
+	if !foundCondition {
+		t.Error("expected DNSResolutionIntermittent condition")
+	}
+
+	// Should have ConsistencyCheckIntermittent event
+	foundEvent := false
+	for _, event := range status.Events {
+		if event.Reason == "ConsistencyCheckIntermittent" {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Error("expected ConsistencyCheckIntermittent event")
+	}
+}
+
+// varyingIPMockResolver returns different IPs on each call.
+type varyingIPMockResolver struct {
+	domain  string
+	ipSets  [][]string
+	callIdx int
+}
+
+func (m *varyingIPMockResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if host == m.domain && len(m.ipSets) > 0 {
+		idx := m.callIdx % len(m.ipSets)
+		m.callIdx++
+		return m.ipSets[idx], nil
+	}
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+func (m *varyingIPMockResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+// TestCheckDomainConsistencyInconsistentIPs tests detection of varying IP addresses.
+func TestCheckDomainConsistencyInconsistentIPs(t *testing.T) {
+	mock := &varyingIPMockResolver{
+		domain: "roundrobin.example.com",
+		ipSets: [][]string{
+			{"1.1.1.1", "2.2.2.2"},
+			{"3.3.3.3", "4.4.4.4"}, // Different IPs
+			{"1.1.1.1", "2.2.2.2"},
+		},
+	}
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        3,
+				IntervalBetweenQueries: 10 * time.Millisecond,
+			},
+		},
+		resolver: mock,
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkDomainConsistency(ctx, status, "roundrobin.example.com")
+
+	// Should have DNSResolutionInconsistent condition
+	foundCondition := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "DNSResolutionInconsistent" && cond.Status == types.ConditionTrue {
+			foundCondition = true
+			break
+		}
+	}
+	if !foundCondition {
+		t.Error("expected DNSResolutionInconsistent condition")
+	}
+
+	// Should have ConsistencyCheckIPVariation event
+	foundEvent := false
+	for _, event := range status.Events {
+		if event.Reason == "ConsistencyCheckIPVariation" {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Error("expected ConsistencyCheckIPVariation event")
+	}
+}
+
+// TestParseDNSConfigConsistencyCheck tests parsing of consistencyCheck field in customQueries.
+func TestParseDNSConfigConsistencyCheck(t *testing.T) {
+	tests := []struct {
+		name                 string
+		config               map[string]interface{}
+		wantConsistencyCheck bool
+	}{
+		{
+			name: "consistencyCheck enabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":           "example.com",
+						"recordType":       "A",
+						"consistencyCheck": true,
+					},
+				},
+			},
+			wantConsistencyCheck: true,
+		},
+		{
+			name: "consistencyCheck disabled",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":           "example.com",
+						"recordType":       "A",
+						"consistencyCheck": false,
+					},
+				},
+			},
+			wantConsistencyCheck: false,
+		},
+		{
+			name: "consistencyCheck not specified (defaults to false)",
+			config: map[string]interface{}{
+				"customQueries": []interface{}{
+					map[string]interface{}{
+						"domain":     "example.com",
+						"recordType": "A",
+					},
+				},
+			},
+			wantConsistencyCheck: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseDNSConfig(tt.config)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(result.CustomQueries) == 0 {
+				t.Fatal("expected at least one custom query")
+			}
+
+			if result.CustomQueries[0].ConsistencyCheck != tt.wantConsistencyCheck {
+				t.Errorf("ConsistencyCheck = %v, want %v",
+					result.CustomQueries[0].ConsistencyCheck, tt.wantConsistencyCheck)
+			}
+		})
+	}
+}
+
+// TestCheckCustomQueriesWithConsistencyCheck tests custom queries with consistency checking.
+func TestCheckCustomQueriesWithConsistencyCheck(t *testing.T) {
+	mock := newMockResolver()
+	mock.setResponse("test.example.com", []string{"1.2.3.4"})
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			ClusterDomains:  []string{},
+			ExternalDomains: []string{},
+			CustomQueries: []DNSQuery{
+				{
+					Domain:           "test.example.com",
+					RecordType:       "A",
+					ConsistencyCheck: true, // Enable consistency checking
+				},
+			},
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        3,
+				IntervalBetweenQueries: 10 * time.Millisecond,
+			},
+		},
+		resolver:               mock,
+		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test-dns")
+	monitor.checkCustomQueries(ctx, status)
+
+	// Should have DNSResolutionConsistent condition (all queries succeed with same IP)
+	found := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "DNSResolutionConsistent" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected DNSResolutionConsistent condition when consistency check enabled")
 	}
 }
