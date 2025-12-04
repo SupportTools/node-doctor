@@ -361,6 +361,8 @@ func ValidateDNSConfig(config types.MonitorConfig) error {
 }
 
 // parseDNSConfig parses the DNS monitor configuration from a map.
+//
+//nolint:gocyclo // Config parsing functions have inherently high complexity due to many fields
 func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error) {
 	if configMap == nil {
 		return &DNSMonitorConfig{}, nil

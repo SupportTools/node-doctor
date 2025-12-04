@@ -226,6 +226,8 @@ func (m *CNIMonitor) Stop() {
 }
 
 // parseCNIConfig parses the CNI monitor configuration from a map.
+//
+//nolint:gocyclo // Config parsing functions have inherently high complexity due to many fields
 func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error) {
 	config := &CNIMonitorConfig{
 		Discovery: DiscoveryConfig{
