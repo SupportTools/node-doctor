@@ -314,3 +314,30 @@ features:
   enableMetrics: true
   enableProfiling: false
   enableTracing: false
+
+# Overlay test configuration for CNI connectivity testing
+overlayTest:
+  # Enable overlay test pods - required for accurate CNI connectivity testing
+  enabled: true
+
+  # Image for overlay test pods (minimal image, just needs to exist and be pingable)
+  image:
+    repository: busybox
+    tag: "1.36"
+    pullPolicy: IfNotPresent
+
+  # Resource limits for overlay test pods (minimal - just needs to sleep)
+  resources:
+    requests:
+      cpu: 1m
+      memory: 4Mi
+    limits:
+      cpu: 10m
+      memory: 16Mi
+
+  # Update strategy
+  updateStrategy:
+    maxUnavailable: "25%"
+
+  # Priority class (empty = no priority class)
+  priorityClassName: ""
