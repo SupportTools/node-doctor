@@ -99,10 +99,6 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 	test.AssertEqual(t, 1, len(statuses), "Expected 1 status")
 	test.AssertEqual(t, "test-monitor", statuses[0].Source, "Status source mismatch")
 
-	// Verify no problems were exported (healthy status)
-	problems := mockExporter.GetProblems()
-	test.AssertEqual(t, 0, len(problems), "Expected 0 problems for healthy status")
-
 	// Test 2: Send an unhealthy status with errors
 	mockMonitor.SendStatus(&types.Status{
 		Source:    "test-monitor",
@@ -139,29 +135,31 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 	statuses = mockExporter.GetStatuses()
 	test.AssertEqual(t, 2, len(statuses), "Expected 2 statuses")
 
-	// Verify problems were detected and exported
-	problems = mockExporter.GetProblems()
-	test.AssertTrue(t, len(problems) >= 3, "Expected at least 3 problems (2 events + 1 condition)")
+	// Verify the unhealthy status contains the expected events and conditions
+	// Note: Since GitHub issue #7 fix, we only export Status objects (not Problems)
+	// The Status contains all events and conditions for the exporter to process
+	unhealthyStatus := statuses[1]
+	test.AssertEqual(t, 2, len(unhealthyStatus.Events), "Expected 2 events in unhealthy status")
+	test.AssertEqual(t, 1, len(unhealthyStatus.Conditions), "Expected 1 condition in unhealthy status")
 
-	// Verify problem details
-	var hasServiceFailed, hasHighLatency, hasNotReady bool
-	for _, problem := range problems {
-		if problem.Type == "event-ServiceFailed" {
+	// Verify event details in the status
+	var hasServiceFailed, hasHighLatency bool
+	for _, event := range unhealthyStatus.Events {
+		if event.Reason == "ServiceFailed" {
 			hasServiceFailed = true
-			test.AssertEqual(t, types.ProblemCritical, problem.Severity, "ServiceFailed should be critical")
+			test.AssertEqual(t, types.EventError, event.Severity, "ServiceFailed should be error severity")
 		}
-		if problem.Type == "event-HighLatency" {
+		if event.Reason == "HighLatency" {
 			hasHighLatency = true
-			test.AssertEqual(t, types.ProblemWarning, problem.Severity, "HighLatency should be warning")
-		}
-		if problem.Type == "condition-Ready" {
-			hasNotReady = true
-			test.AssertEqual(t, types.ProblemCritical, problem.Severity, "Ready=False should be critical")
+			test.AssertEqual(t, types.EventWarning, event.Severity, "HighLatency should be warning severity")
 		}
 	}
-	test.AssertTrue(t, hasServiceFailed, "Missing ServiceFailed problem")
-	test.AssertTrue(t, hasHighLatency, "Missing HighLatency problem")
-	test.AssertTrue(t, hasNotReady, "Missing Ready=False problem")
+	test.AssertTrue(t, hasServiceFailed, "Missing ServiceFailed event")
+	test.AssertTrue(t, hasHighLatency, "Missing HighLatency event")
+
+	// Verify condition details in the status
+	test.AssertEqual(t, "Ready", unhealthyStatus.Conditions[0].Type, "Condition type mismatch")
+	test.AssertEqual(t, types.ConditionFalse, unhealthyStatus.Conditions[0].Status, "Ready condition should be False")
 
 	// Stop detector
 	cancel()
@@ -294,8 +292,10 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 	wg.Wait()
 }
 
-// TestProblemDeduplication tests that duplicate problems are not re-exported
-func TestProblemDeduplication(t *testing.T) {
+// TestStatusExportFlow tests that all statuses are exported without modification
+// Note: Problem deduplication was removed in GitHub issue #7 fix - the detector
+// now only exports Status objects, and any deduplication happens at the exporter level.
+func TestStatusExportFlow(t *testing.T) {
 	_, cancel := test.TestContext(t, 30*time.Second)
 	defer cancel()
 
@@ -306,7 +306,7 @@ func TestProblemDeduplication(t *testing.T) {
 		APIVersion: "node-doctor.io/v1alpha1",
 		Kind:       "NodeDoctorConfig",
 		Metadata: types.ConfigMetadata{
-			Name: "dedup-test",
+			Name: "status-export-test",
 		},
 		Settings: types.GlobalSettings{
 			NodeName:          "test-node",
@@ -328,7 +328,7 @@ func TestProblemDeduplication(t *testing.T) {
 	}
 
 	// Create temp config file for test
-	configPath := test.TempConfigFile(t, "dedup-test")
+	configPath := test.TempConfigFile(t, "status-export-test")
 
 	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil)
 	test.AssertNoError(t, err)
@@ -342,7 +342,7 @@ func TestProblemDeduplication(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Send the same error event 3 times
+	// Send multiple statuses with the same error event
 	for i := 0; i < 3; i++ {
 		mockMonitor.SendStatus(&types.Status{
 			Source:    "test-monitor",
@@ -363,16 +363,18 @@ func TestProblemDeduplication(t *testing.T) {
 	// Wait for processing
 	time.Sleep(300 * time.Millisecond)
 
-	// Verify exporter received 3 statuses
+	// Verify exporter received all 3 statuses (no deduplication at detector level)
 	statuses := mockExporter.GetStatuses()
 	test.AssertEqual(t, 3, len(statuses), "Expected 3 statuses")
 
-	// Verify only 1 problem was exported (deduplication)
-	problems := mockExporter.GetProblems()
-	test.AssertEqual(t, 1, len(problems), "Expected 1 deduplicated problem")
-	test.AssertEqual(t, "event-ServiceFailed", problems[0].Type, "Problem type mismatch")
+	// Verify each status contains the expected event
+	for i, status := range statuses {
+		test.AssertEqual(t, 1, len(status.Events), "Expected 1 event in status %d", i)
+		test.AssertEqual(t, "ServiceFailed", status.Events[0].Reason, "Event reason mismatch in status %d", i)
+		test.AssertEqual(t, types.EventError, status.Events[0].Severity, "Event severity mismatch in status %d", i)
+	}
 
-	// Send same problem but with different severity - should be exported as new
+	// Send status with different severity
 	mockMonitor.SendStatus(&types.Status{
 		Source:    "test-monitor",
 		Timestamp: time.Now(),
@@ -389,9 +391,10 @@ func TestProblemDeduplication(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify new problem was exported due to severity change
-	problems = mockExporter.GetProblems()
-	test.AssertTrue(t, len(problems) >= 2, "Expected at least 2 problems after severity change")
+	// Verify fourth status was exported
+	statuses = mockExporter.GetStatuses()
+	test.AssertEqual(t, 4, len(statuses), "Expected 4 statuses")
+	test.AssertEqual(t, types.EventWarning, statuses[3].Events[0].Severity, "Fourth status should have warning severity")
 
 	cancel()
 	wg.Wait()
