@@ -103,19 +103,19 @@ func (em *EventManager) CreateEvent(ctx context.Context, event corev1.Event) err
 		namespace = "default"
 	}
 
-	// Check rate limiting first
-	if !em.checkRateLimit() {
-		log.Printf("[WARN] Event rate limit exceeded (%d/min), dropping event: %s",
-			em.maxEventsPerMin, event.Reason)
-		return fmt.Errorf("event rate limit exceeded")
-	}
-
-	// Check deduplication
+	// Check deduplication FIRST - duplicates should not consume rate limit quota
 	signature := CreateEventSignature(event)
 	if em.isDuplicate(signature) {
 		log.Printf("[DEBUG] Duplicate event suppressed: %s (signature: %s)",
 			event.Reason, signature.Hash())
 		return nil
+	}
+
+	// Check rate limiting only for non-duplicate events
+	if !em.checkRateLimit() {
+		log.Printf("[WARN] Event rate limit exceeded (%d/min), dropping event: %s",
+			em.maxEventsPerMin, event.Reason)
+		return fmt.Errorf("event rate limit exceeded")
 	}
 
 	// Create the event

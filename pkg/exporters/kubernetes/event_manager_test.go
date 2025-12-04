@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -163,19 +164,19 @@ func TestEventRateLimiting(t *testing.T) {
 	manager := createTestEventManager(2, time.Minute) // Limit to 2 events per minute
 	ctx := context.Background()
 
-	// Create events up to the limit
+	// Create unique events up to the limit (different Reasons to avoid deduplication)
 	for i := 0; i < 2; i++ {
 		event := corev1.Event{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "rate-limit-event-" + string(rune('1'+i)),
+				Name:      fmt.Sprintf("rate-limit-event-%d", i+1),
 				Namespace: "test-namespace",
 			},
 			InvolvedObject: corev1.ObjectReference{
 				Kind: "Node",
 				Name: "test-node",
 			},
-			Reason:         "RateLimitTest",
-			Message:        "Rate limit message",
+			Reason:         fmt.Sprintf("RateLimitTest%d", i+1), // Unique reason to avoid deduplication
+			Message:        fmt.Sprintf("Rate limit message %d", i+1),
 			Type:           corev1.EventTypeNormal,
 			FirstTimestamp: metav1.NewTime(time.Now()),
 			LastTimestamp:  metav1.NewTime(time.Now()),
