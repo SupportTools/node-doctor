@@ -96,11 +96,9 @@ type ProblemDetector struct {
 	configFilePath    string
 	monitorFactory    MonitorFactory
 	configChangeCh    <-chan struct{}
-	reloadMutex       sync.Mutex // Protects reload operations
-	started           bool
-	seenProblems      map[string]*types.Problem // For deduplication
-	problemsMutex     sync.RWMutex              // Protects seenProblems
-	passedMonitors    []types.Monitor           // Monitors passed directly to constructor
+	reloadMutex    sync.Mutex      // Protects reload operations
+	started        bool
+	passedMonitors []types.Monitor // Monitors passed directly to constructor
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -150,7 +148,6 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 		configWatcher:  configWatcher,
 		configFilePath: configFilePath,
 		monitorFactory: monitorFactory,
-		seenProblems:   make(map[string]*types.Problem),
 		passedMonitors: monitors, // Store passed monitors to start in Start()
 	}
 
@@ -345,19 +342,9 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	// Update statistics
 	pd.stats.IncrementStatusesReceived()
 
-	// Convert status to problems for testing
-	problems := pd.statusToProblems(status)
-	pd.stats.AddProblemsDetected(len(problems))
-
-	// Apply deduplication
-	newProblems := pd.deduplicateProblems(problems)
-	pd.stats.AddProblemsDeduplicated(len(newProblems))
-
-	for _, problem := range newProblems {
-		pd.processProblem(problem)
-	}
-
-	// Export to all exporters
+	// Export to all exporters (single path - Status contains all data)
+	// Note: Previously this also called ExportProblem() for converted problems,
+	// causing duplicate Kubernetes resources. See GitHub issue #7.
 	for _, exporter := range pd.exporters {
 		if err := exporter.ExportStatus(pd.ctx, status); err != nil {
 			log.Printf("[WARN] Failed to export status to exporter: %v", err)
@@ -365,98 +352,6 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 		} else {
 			pd.stats.IncrementExportsSucceeded()
 		}
-	}
-}
-
-// processProblem processes a problem for testing purposes
-func (pd *ProblemDetector) processProblem(problem *types.Problem) {
-	// Export to all exporters
-	for _, exporter := range pd.exporters {
-		if err := exporter.ExportProblem(pd.ctx, problem); err != nil {
-			log.Printf("[WARN] Failed to export problem to exporter: %v", err)
-			pd.stats.IncrementExportsFailed()
-		} else {
-			pd.stats.IncrementExportsSucceeded()
-		}
-	}
-}
-
-// statusToProblems converts a status update to problems for testing
-func (pd *ProblemDetector) statusToProblems(status *types.Status) []*types.Problem {
-	var problems []*types.Problem
-
-	// Convert conditions to problems
-	for _, condition := range status.Conditions {
-		if condition.Status == types.ConditionFalse {
-			problems = append(problems, &types.Problem{
-				Type:       "condition-" + condition.Type,
-				Resource:   status.Source,
-				Message:    condition.Message,
-				Severity:   types.ProblemCritical, // False conditions are critical problems
-				DetectedAt: condition.Transition,
-				Metadata: map[string]string{
-					"condition": condition.Type,
-				},
-			})
-		}
-	}
-
-	// Convert high severity events to problems
-	for _, event := range status.Events {
-		if event.Severity == types.EventError || event.Severity == types.EventWarning {
-			severity := pd.eventSeverityToProblemSeverity(event.Severity)
-			problems = append(problems, &types.Problem{
-				Type:       "event-" + event.Reason,
-				Resource:   status.Source,
-				Message:    event.Message,
-				Severity:   severity,
-				DetectedAt: event.Timestamp,
-				Metadata: map[string]string{
-					"event": event.Reason,
-				},
-			})
-		}
-	}
-
-	return problems
-}
-
-// deduplicateProblems filters out problems that have already been seen with the same severity
-func (pd *ProblemDetector) deduplicateProblems(problems []*types.Problem) []*types.Problem {
-	pd.problemsMutex.Lock()
-	defer pd.problemsMutex.Unlock()
-
-	var newProblems []*types.Problem
-
-	for _, problem := range problems {
-		// Create a unique key for this problem
-		key := fmt.Sprintf("%s:%s:%s", problem.Type, problem.Resource, problem.Severity)
-
-		// Check if we've seen this exact problem before
-		if existingProblem, exists := pd.seenProblems[key]; exists {
-			// If severity is the same, skip (it's a duplicate)
-			if existingProblem.Severity == problem.Severity {
-				continue
-			}
-		}
-
-		// This is a new problem or severity has changed
-		pd.seenProblems[key] = problem
-		newProblems = append(newProblems, problem)
-	}
-
-	return newProblems
-}
-
-// eventSeverityToProblemSeverity converts EventSeverity to ProblemSeverity
-func (pd *ProblemDetector) eventSeverityToProblemSeverity(severity types.EventSeverity) types.ProblemSeverity {
-	switch severity {
-	case types.EventError:
-		return types.ProblemCritical
-	case types.EventWarning:
-		return types.ProblemWarning
-	default:
-		return types.ProblemInfo
 	}
 }
 

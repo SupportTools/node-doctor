@@ -202,145 +202,6 @@ func TestProblemDetector_StatusProcessing(t *testing.T) {
 	}
 }
 
-func TestStatusToProblems_Events(t *testing.T) {
-	helper := NewTestHelper()
-	config := helper.CreateTestConfig()
-	factory := NewMockMonitorFactory()
-	detector, _ := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory)
-
-	tests := []struct {
-		name               string
-		status             *types.Status
-		expectedCount      int
-		containsTypes      []string // Check for presence, not order
-		containsSeverities []types.ProblemSeverity
-	}{
-		{
-			name: "error event",
-			status: func() *types.Status {
-				status := types.NewStatus("test-source")
-				status.AddEvent(types.NewEvent(types.EventError, "CriticalError", "Critical error occurred"))
-				status.AddCondition(types.NewCondition("SystemHealth", types.ConditionFalse, "HealthCheck", "System not healthy"))
-				return status
-			}(),
-			expectedCount:      2, // 1 error event + 1 false condition
-			containsTypes:      []string{"event-CriticalError", "condition-SystemHealth"},
-			containsSeverities: []types.ProblemSeverity{types.ProblemCritical}, // Both error events and false conditions are Critical
-		},
-		{
-			name: "warning event",
-			status: func() *types.Status {
-				status := types.NewStatus("test-source")
-				status.AddEvent(types.NewEvent(types.EventWarning, "PerformanceWarning", "Warning occurred"))
-				return status
-			}(),
-			expectedCount:      1,
-			containsTypes:      []string{"event-PerformanceWarning"},
-			containsSeverities: []types.ProblemSeverity{types.ProblemWarning},
-		},
-		{
-			name: "healthy status",
-			status: func() *types.Status {
-				status := types.NewStatus("test-source")
-				status.AddCondition(types.NewCondition("Ready", types.ConditionTrue, "Ready", "Ready"))
-				return status
-			}(),
-			expectedCount: 0, // Info events and true conditions are ignored
-		},
-		{
-			name:          "empty status",
-			status:        types.NewStatus("test-source"),
-			expectedCount: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			problems := detector.statusToProblems(tt.status)
-
-			if len(problems) != tt.expectedCount {
-				t.Errorf("statusToProblems() problem count = %d, want %d", len(problems), tt.expectedCount)
-			}
-
-			// Check that all expected types are present
-			if tt.expectedCount > 0 {
-				problemTypes := make(map[string]bool)
-				problemSeverities := make(map[types.ProblemSeverity]bool)
-
-				for _, problem := range problems {
-					problemTypes[problem.Type] = true
-					problemSeverities[problem.Severity] = true
-				}
-
-				for _, expectedType := range tt.containsTypes {
-					if !problemTypes[expectedType] {
-						t.Errorf("statusToProblems() missing expected problem type: %s", expectedType)
-					}
-				}
-
-				for _, expectedSeverity := range tt.containsSeverities {
-					if !problemSeverities[expectedSeverity] {
-						t.Errorf("statusToProblems() missing expected problem severity: %s", expectedSeverity)
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestStatusToProblems_Conditions(t *testing.T) {
-	helper := NewTestHelper()
-	config := helper.CreateTestConfig()
-	factory := NewMockMonitorFactory()
-	detector, _ := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory)
-
-	status := types.NewStatus("test-source")
-	status.AddCondition(types.NewCondition("DiskPressure", types.ConditionFalse, "DiskFull", "Disk is full"))
-	status.AddCondition(types.NewCondition("NetworkReady", types.ConditionTrue, "NetworkOK", "Network is ready"))
-	status.AddCondition(types.NewCondition("UnknownCondition", types.ConditionUnknown, "Unknown", "Status unknown"))
-
-	problems := detector.statusToProblems(status)
-
-	// Should only create problem for False condition
-	if len(problems) != 1 {
-		t.Errorf("statusToProblems() problem count = %d, want 1", len(problems))
-	}
-
-	if problems[0].Type != "condition-DiskPressure" {
-		t.Errorf("statusToProblems() problem type = %s, want condition-DiskPressure", problems[0].Type)
-	}
-}
-
-func TestDeduplicateProblems(t *testing.T) {
-	helper := NewTestHelper()
-	config := helper.CreateTestConfig()
-	factory := NewMockMonitorFactory()
-	detector, _ := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory)
-
-	// First set of problems
-	problem1 := types.NewProblem("disk-full", "node1", types.ProblemCritical, "Disk is full")
-	problem2 := types.NewProblem("memory-pressure", "node1", types.ProblemWarning, "Memory pressure detected")
-
-	newProblems := detector.deduplicateProblems([]*types.Problem{problem1, problem2})
-	if len(newProblems) != 2 {
-		t.Errorf("First deduplication expected 2 new problems, got %d", len(newProblems))
-	}
-
-	// Same problems again (should be deduplicated)
-	problem1Dup := types.NewProblem("disk-full", "node1", types.ProblemCritical, "Disk is full")
-	newProblems = detector.deduplicateProblems([]*types.Problem{problem1Dup})
-	if len(newProblems) != 0 {
-		t.Errorf("Second deduplication expected 0 new problems, got %d", len(newProblems))
-	}
-
-	// Same type/resource but different severity (should be reported)
-	problem1Updated := types.NewProblem("disk-full", "node1", types.ProblemWarning, "Disk pressure reduced")
-	newProblems = detector.deduplicateProblems([]*types.Problem{problem1Updated})
-	if len(newProblems) != 1 {
-		t.Errorf("Third deduplication expected 1 new problem, got %d", len(newProblems))
-	}
-}
-
 func TestExportDistribution(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()
@@ -556,9 +417,9 @@ func TestExportFailureIsolation(t *testing.T) {
 	config := helper.CreateTestConfig()
 
 	// Create exporters with different failure behaviors
+	// Note: We only test status export failures since ExportProblem is no longer called (issue #7 fix)
 	successExporter := NewMockExporter("success-exporter")
 	failStatusExporter := NewMockExporter("fail-status").SetStatusExportError(fmt.Errorf("status export failed"))
-	failProblemExporter := NewMockExporter("fail-problem").SetProblemExportError(fmt.Errorf("problem export failed"))
 
 	factory := NewMockMonitorFactory().SetCreateFunc(func(config types.MonitorConfig) (types.Monitor, error) {
 		status := types.NewStatus(config.Name)
@@ -566,7 +427,7 @@ func TestExportFailureIsolation(t *testing.T) {
 		return NewMockMonitor(config.Name).AddStatusUpdate(status), nil
 	})
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failStatusExporter, failProblemExporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failStatusExporter}, "/tmp/test-config.yaml", factory)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -650,7 +511,7 @@ func TestStatisticsTracking(t *testing.T) {
 	})
 
 	successExporter := NewMockExporter("success-exp")
-	failExporter := NewMockExporter("fail-exp").SetProblemExportError(fmt.Errorf("export failed"))
+	failExporter := NewMockExporter("fail-exp").SetStatusExportError(fmt.Errorf("export failed"))
 
 	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failExporter}, "/tmp/test-config.yaml", factory)
 	if err != nil {
@@ -678,9 +539,6 @@ func TestStatisticsTracking(t *testing.T) {
 	// Verify processing statistics
 	if stats.GetStatusesReceived() == 0 {
 		t.Errorf("Expected statuses to be received")
-	}
-	if stats.GetProblemsDetected() == 0 {
-		t.Errorf("Expected problems to be detected")
 	}
 
 	// Verify export statistics
