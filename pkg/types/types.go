@@ -385,3 +385,76 @@ func (p *Problem) String() string {
 	return fmt.Sprintf("[%s] %s on %s: %s (detected at %s)",
 		p.Severity, p.Type, p.Resource, p.Message, p.DetectedAt.Format(time.RFC3339))
 }
+
+// LatencyMetrics contains network latency measurements for Prometheus export.
+// Monitors should populate this in Status.Metadata["latency_metrics"].
+type LatencyMetrics struct {
+	// Gateway latency metrics
+	Gateway *GatewayLatency `json:"gateway,omitempty"`
+
+	// Peer latency metrics (CNI/cross-node connectivity)
+	Peers []PeerLatency `json:"peers,omitempty"`
+
+	// DNS latency metrics
+	DNS []DNSLatency `json:"dns,omitempty"`
+
+	// API server latency
+	APIServer *APIServerLatency `json:"apiserver,omitempty"`
+}
+
+// GatewayLatency represents latency to the default gateway.
+type GatewayLatency struct {
+	GatewayIP     string        `json:"gateway_ip"`
+	LatencyMs     float64       `json:"latency_ms"`
+	AvgLatencyMs  float64       `json:"avg_latency_ms"`
+	MaxLatencyMs  float64       `json:"max_latency_ms"`
+	Reachable     bool          `json:"reachable"`
+	PingCount     int           `json:"ping_count"`
+	SuccessCount  int           `json:"success_count"`
+}
+
+// PeerLatency represents latency to a peer node.
+type PeerLatency struct {
+	PeerNode     string  `json:"peer_node"`
+	PeerIP       string  `json:"peer_ip"`
+	LatencyMs    float64 `json:"latency_ms"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	Reachable    bool    `json:"reachable"`
+}
+
+// DNSLatency represents DNS resolution latency.
+type DNSLatency struct {
+	DNSServer   string  `json:"dns_server"`
+	Domain      string  `json:"domain"`
+	RecordType  string  `json:"record_type"`
+	DomainType  string  `json:"domain_type"` // "cluster", "external", "custom"
+	LatencyMs   float64 `json:"latency_ms"`
+	Success     bool    `json:"success"`
+}
+
+// APIServerLatency represents Kubernetes API server response latency.
+type APIServerLatency struct {
+	LatencyMs float64 `json:"latency_ms"`
+	Reachable bool    `json:"reachable"`
+}
+
+// SetLatencyMetrics is a helper to set latency metrics in Status.Metadata.
+func (s *Status) SetLatencyMetrics(metrics *LatencyMetrics) *Status {
+	if s.Metadata == nil {
+		s.Metadata = make(map[string]interface{})
+	}
+	s.Metadata["latency_metrics"] = metrics
+	return s
+}
+
+// GetLatencyMetrics retrieves latency metrics from Status.Metadata.
+// Returns nil if not set or if type assertion fails.
+func (s *Status) GetLatencyMetrics() *LatencyMetrics {
+	if s.Metadata == nil {
+		return nil
+	}
+	if metrics, ok := s.Metadata["latency_metrics"].(*LatencyMetrics); ok {
+		return metrics
+	}
+	return nil
+}

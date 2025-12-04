@@ -487,6 +487,26 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 			reachableCount, totalPeers, reachablePercent, avgLatencyStr),
 	))
 
+	// Set peer latency metrics for Prometheus export
+	m.mu.Lock()
+	peerLatencies := make([]types.PeerLatency, 0, len(m.peerStatuses))
+	for _, ps := range m.peerStatuses {
+		peerLatencies = append(peerLatencies, types.PeerLatency{
+			PeerNode:     ps.Peer.NodeName,
+			PeerIP:       ps.Peer.NodeIP,
+			LatencyMs:    float64(ps.LastLatency.Microseconds()) / 1000.0,
+			AvgLatencyMs: float64(ps.AvgLatency.Microseconds()) / 1000.0,
+			Reachable:    ps.Reachable,
+		})
+	}
+	m.mu.Unlock()
+
+	if len(peerLatencies) > 0 {
+		status.SetLatencyMetrics(&types.LatencyMetrics{
+			Peers: peerLatencies,
+		})
+	}
+
 	return status, nil
 }
 

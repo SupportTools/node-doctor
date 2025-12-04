@@ -191,6 +191,9 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 	uptime := time.Since(e.startTime).Seconds()
 	e.metrics.UptimeSeconds.WithLabelValues(e.nodeName).Set(uptime)
 
+	// Extract and record latency metrics from status metadata
+	e.recordLatencyMetrics(status)
+
 	// Record successful export
 	e.metrics.ExportOperationsTotal.WithLabelValues(
 		e.nodeName, "prometheus", "status", "success").Inc()
@@ -198,6 +201,74 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 	log.Printf("[DEBUG] Exported status from %s to Prometheus", status.Source)
 
 	return nil
+}
+
+// recordLatencyMetrics extracts latency metrics from status metadata and records them
+func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
+	latencyMetrics := status.GetLatencyMetrics()
+	if latencyMetrics == nil {
+		return
+	}
+
+	// Record gateway latency metrics
+	if latencyMetrics.Gateway != nil {
+		gw := latencyMetrics.Gateway
+		latencySeconds := gw.LatencyMs / 1000.0
+
+		e.metrics.GatewayLatencySeconds.WithLabelValues(
+			e.nodeName, gw.GatewayIP).Set(latencySeconds)
+
+		e.metrics.GatewayLatencyHistogram.WithLabelValues(
+			e.nodeName, gw.GatewayIP).Observe(latencySeconds)
+	}
+
+	// Record peer latency metrics
+	if len(latencyMetrics.Peers) > 0 {
+		reachableCount := 0
+		for _, peer := range latencyMetrics.Peers {
+			latencySeconds := peer.LatencyMs / 1000.0
+			avgLatencySeconds := peer.AvgLatencyMs / 1000.0
+
+			e.metrics.PeerLatencySeconds.WithLabelValues(
+				e.nodeName, peer.PeerNode, peer.PeerIP).Set(latencySeconds)
+
+			e.metrics.PeerLatencyAvgSeconds.WithLabelValues(
+				e.nodeName, peer.PeerNode, peer.PeerIP).Set(avgLatencySeconds)
+
+			reachable := 0.0
+			if peer.Reachable {
+				reachable = 1.0
+				reachableCount++
+			}
+			e.metrics.PeerReachable.WithLabelValues(
+				e.nodeName, peer.PeerNode, peer.PeerIP).Set(reachable)
+
+			e.metrics.PeerLatencyHistogram.WithLabelValues(
+				e.nodeName, peer.PeerNode).Observe(latencySeconds)
+		}
+
+		e.metrics.PeersTotal.WithLabelValues(e.nodeName).Set(float64(len(latencyMetrics.Peers)))
+		e.metrics.PeersReachableTotal.WithLabelValues(e.nodeName).Set(float64(reachableCount))
+	}
+
+	// Record DNS latency metrics
+	for _, dns := range latencyMetrics.DNS {
+		latencySeconds := dns.LatencyMs / 1000.0
+
+		e.metrics.DNSLatencySeconds.WithLabelValues(
+			e.nodeName, dns.DNSServer, dns.Domain, dns.RecordType).Set(latencySeconds)
+
+		e.metrics.DNSLatencyHistogram.WithLabelValues(
+			e.nodeName, dns.DomainType).Observe(latencySeconds)
+	}
+
+	// Record API server latency metrics
+	if latencyMetrics.APIServer != nil {
+		latencySeconds := latencyMetrics.APIServer.LatencyMs / 1000.0
+
+		e.metrics.APIServerLatencySeconds.WithLabelValues(e.nodeName).Set(latencySeconds)
+		e.metrics.APIServerLatencyHistogram.WithLabelValues(e.nodeName).Observe(latencySeconds)
+	}
 }
 
 // ExportProblem implements types.Exporter interface for problem exports

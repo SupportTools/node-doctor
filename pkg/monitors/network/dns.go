@@ -232,6 +232,9 @@ type DNSMonitor struct {
 	clusterSuccessTracker  *RingBuffer
 	externalSuccessTracker *RingBuffer
 
+	// Latency metrics collected during each check cycle (for Prometheus export)
+	latencyMetrics []types.DNSLatency
+
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
 }
@@ -684,6 +687,11 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	status := types.NewStatus(m.name)
 
+	// Clear latency metrics for this check cycle
+	m.mu.Lock()
+	m.latencyMetrics = nil
+	m.mu.Unlock()
+
 	// Check cluster DNS
 	clusterOK := m.checkClusterDNS(ctx, status)
 
@@ -701,7 +709,30 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	// Update failure counters and conditions
 	m.updateFailureTracking(clusterOK, externalOK, status)
 
+	// Set DNS latency metrics for Prometheus export
+	m.mu.Lock()
+	if len(m.latencyMetrics) > 0 {
+		status.SetLatencyMetrics(&types.LatencyMetrics{
+			DNS: m.latencyMetrics,
+		})
+	}
+	m.mu.Unlock()
+
 	return status, nil
+}
+
+// recordDNSLatency records a DNS latency measurement for Prometheus export.
+func (m *DNSMonitor) recordDNSLatency(domain, domainType, dnsServer, recordType string, latency time.Duration, success bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.latencyMetrics = append(m.latencyMetrics, types.DNSLatency{
+		DNSServer:  dnsServer,
+		Domain:     domain,
+		RecordType: recordType,
+		DomainType: strings.ToLower(domainType),
+		LatencyMs:  float64(latency.Microseconds()) / 1000.0,
+		Success:    success,
+	})
 }
 
 // checkClusterDNS checks cluster DNS resolution.
@@ -732,6 +763,8 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 				domainType+"DNSResolutionFailed",
 				fmt.Sprintf("[%s] Failed to resolve %s domain %s: %v", errType, strings.ToLower(domainType), domain, err),
 			))
+			// Record failed DNS query latency
+			m.recordDNSLatency(domain, domainType, "system", "A", latency, false)
 			continue
 		}
 
@@ -742,8 +775,13 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 				domainType+"DNSNoRecords",
 				fmt.Sprintf("No A records found for %s domain %s", strings.ToLower(domainType), domain),
 			))
+			// Record as failed since no records found
+			m.recordDNSLatency(domain, domainType, "system", "A", latency, false)
 			continue
 		}
+
+		// Record successful DNS query latency
+		m.recordDNSLatency(domain, domainType, "system", "A", latency, true)
 
 		// Check latency
 		if latency > m.config.LatencyThreshold {
@@ -788,6 +826,11 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 		addrs, err := m.resolver.LookupHost(ctx, query.Domain)
 		latency := time.Since(start)
 
+		recordType := query.RecordType
+		if recordType == "" {
+			recordType = "A"
+		}
+
 		if err != nil {
 			errType := classifyDNSError(err)
 			status.AddEvent(types.NewEvent(
@@ -795,6 +838,8 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 				"CustomDNSQueryFailed",
 				fmt.Sprintf("[%s] Failed to resolve custom domain %s: %v", errType, query.Domain, err),
 			))
+			// Record failed custom DNS query latency
+			m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, false)
 			continue
 		}
 
@@ -804,8 +849,13 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 				"CustomDNSNoRecords",
 				fmt.Sprintf("No A records found for custom domain %s", query.Domain),
 			))
+			// Record as failed since no records found
+			m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, false)
 			continue
 		}
+
+		// Record successful custom DNS query latency
+		m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, true)
 
 		// Check latency
 		if latency > m.config.LatencyThreshold {
