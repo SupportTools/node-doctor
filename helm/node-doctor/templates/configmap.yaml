@@ -104,7 +104,8 @@ data:
             minReachablePeers: 80
           cniHealth:
             enabled: true
-            configPath: /etc/cni/net.d
+            # Use /host prefix since host filesystem is mounted at /host in container
+            configPath: /host/etc/cni/net.d
             checkInterfaces: true
       {{- end }}
 
