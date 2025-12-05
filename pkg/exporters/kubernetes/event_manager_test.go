@@ -450,3 +450,210 @@ func TestEventSignature(t *testing.T) {
 		t.Error("Same event should produce same signature hash")
 	}
 }
+
+// TestDroppedEventTracking tests that dropped events are tracked instead of logged individually
+func TestDroppedEventTracking(t *testing.T) {
+	manager := createTestEventManager(2, time.Minute) // Limit to 2 events per minute
+	ctx := context.Background()
+
+	// Create events up to the limit
+	for i := 0; i < 2; i++ {
+		event := corev1.Event{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("event-%d", i),
+				Namespace: "test-namespace",
+			},
+			InvolvedObject: corev1.ObjectReference{
+				Kind: "Node",
+				Name: "test-node",
+			},
+			Reason:         fmt.Sprintf("Reason%d", i),
+			Message:        fmt.Sprintf("Message %d", i),
+			Type:           corev1.EventTypeNormal,
+			FirstTimestamp: metav1.NewTime(time.Now()),
+			LastTimestamp:  metav1.NewTime(time.Now()),
+			Count:          1,
+		}
+		manager.CreateEvent(ctx, event)
+	}
+
+	// Verify no dropped events yet
+	manager.mu.RLock()
+	droppedBefore := manager.totalDropped
+	manager.mu.RUnlock()
+
+	if droppedBefore != 0 {
+		t.Errorf("Expected 0 dropped events before rate limiting, got %d", droppedBefore)
+	}
+
+	// Create events that should be rate limited (dropped)
+	droppedReasons := []string{"DroppedReason1", "DroppedReason2", "DroppedReason1", "DroppedReason3"}
+	for i, reason := range droppedReasons {
+		event := corev1.Event{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("dropped-event-%d", i),
+				Namespace: "test-namespace",
+			},
+			InvolvedObject: corev1.ObjectReference{
+				Kind: "Node",
+				Name: "test-node",
+			},
+			Reason:         reason,
+			Message:        fmt.Sprintf("Dropped message %d", i),
+			Type:           corev1.EventTypeWarning,
+			FirstTimestamp: metav1.NewTime(time.Now()),
+			LastTimestamp:  metav1.NewTime(time.Now()),
+			Count:          1,
+		}
+		err := manager.CreateEvent(ctx, event)
+		if err == nil {
+			t.Errorf("Event %d should have been rate limited", i)
+		}
+	}
+
+	// Verify dropped events are tracked
+	manager.mu.RLock()
+	totalDropped := manager.totalDropped
+	reasonCounts := make(map[string]int)
+	for k, v := range manager.droppedByReason {
+		reasonCounts[k] = v
+	}
+	manager.mu.RUnlock()
+
+	if totalDropped != 4 {
+		t.Errorf("Expected 4 dropped events, got %d", totalDropped)
+	}
+
+	// Check breakdown by reason
+	if reasonCounts["DroppedReason1"] != 2 {
+		t.Errorf("Expected DroppedReason1=2, got %d", reasonCounts["DroppedReason1"])
+	}
+	if reasonCounts["DroppedReason2"] != 1 {
+		t.Errorf("Expected DroppedReason2=1, got %d", reasonCounts["DroppedReason2"])
+	}
+	if reasonCounts["DroppedReason3"] != 1 {
+		t.Errorf("Expected DroppedReason3=1, got %d", reasonCounts["DroppedReason3"])
+	}
+}
+
+// TestFlushDroppedEventsSummary tests that FlushDroppedEventsSummary resets counters
+func TestFlushDroppedEventsSummary(t *testing.T) {
+	manager := createTestEventManager(1, time.Minute) // Limit to 1 event per minute
+	ctx := context.Background()
+
+	// Create one event to consume the rate limit
+	event := corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "initial-event",
+			Namespace: "test-namespace",
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Node",
+			Name: "test-node",
+		},
+		Reason:         "InitialReason",
+		Message:        "Initial message",
+		Type:           corev1.EventTypeNormal,
+		FirstTimestamp: metav1.NewTime(time.Now()),
+		LastTimestamp:  metav1.NewTime(time.Now()),
+		Count:          1,
+	}
+	manager.CreateEvent(ctx, event)
+
+	// Create dropped events
+	for i := 0; i < 5; i++ {
+		droppedEvent := corev1.Event{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("dropped-%d", i),
+				Namespace: "test-namespace",
+			},
+			InvolvedObject: corev1.ObjectReference{
+				Kind: "Node",
+				Name: "test-node",
+			},
+			Reason:         "DroppedReason",
+			Message:        fmt.Sprintf("Dropped %d", i),
+			Type:           corev1.EventTypeWarning,
+			FirstTimestamp: metav1.NewTime(time.Now()),
+			LastTimestamp:  metav1.NewTime(time.Now()),
+			Count:          1,
+		}
+		manager.CreateEvent(ctx, droppedEvent)
+	}
+
+	// Verify events are tracked
+	manager.mu.RLock()
+	beforeFlush := manager.totalDropped
+	manager.mu.RUnlock()
+
+	if beforeFlush != 5 {
+		t.Errorf("Expected 5 dropped events before flush, got %d", beforeFlush)
+	}
+
+	// Flush the summary
+	manager.FlushDroppedEventsSummary()
+
+	// Verify counters are reset
+	manager.mu.RLock()
+	afterFlush := manager.totalDropped
+	reasonCount := len(manager.droppedByReason)
+	manager.mu.RUnlock()
+
+	if afterFlush != 0 {
+		t.Errorf("Expected 0 dropped events after flush, got %d", afterFlush)
+	}
+	if reasonCount != 0 {
+		t.Errorf("Expected 0 reason counts after flush, got %d", reasonCount)
+	}
+}
+
+// TestDroppedEventsSummaryDuringCleanup tests that cleanup logs dropped events summary
+func TestDroppedEventsSummaryDuringCleanup(t *testing.T) {
+	manager := createTestEventManager(1, time.Minute)
+	ctx := context.Background()
+
+	// Create one event to consume rate limit
+	event := corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "event",
+			Namespace: "test-namespace",
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Node",
+			Name: "test-node",
+		},
+		Reason:         "Reason",
+		Message:        "Message",
+		Type:           corev1.EventTypeNormal,
+		FirstTimestamp: metav1.NewTime(time.Now()),
+		LastTimestamp:  metav1.NewTime(time.Now()),
+		Count:          1,
+	}
+	manager.CreateEvent(ctx, event)
+
+	// Track some dropped events
+	manager.trackDroppedEvent("TestReason1")
+	manager.trackDroppedEvent("TestReason1")
+	manager.trackDroppedEvent("TestReason2")
+
+	// Verify tracking
+	manager.mu.RLock()
+	beforeCleanup := manager.totalDropped
+	manager.mu.RUnlock()
+
+	if beforeCleanup != 3 {
+		t.Errorf("Expected 3 dropped events before cleanup, got %d", beforeCleanup)
+	}
+
+	// Run cleanup (which includes logDroppedEventsSummaryLocked)
+	manager.cleanup()
+
+	// Verify counters are reset after cleanup
+	manager.mu.RLock()
+	afterCleanup := manager.totalDropped
+	manager.mu.RUnlock()
+
+	if afterCleanup != 0 {
+		t.Errorf("Expected 0 dropped events after cleanup, got %d", afterCleanup)
+	}
+}

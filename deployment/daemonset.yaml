@@ -123,7 +123,7 @@ spec:
 
       containers:
       - name: node-doctor
-        image: supporttools/node-doctor:v1.5.3
+        image: supporttools/node-doctor:v1.5.4
         imagePullPolicy: IfNotPresent
 
         # Command and arguments

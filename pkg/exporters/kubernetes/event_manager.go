@@ -25,6 +25,10 @@ type EventManager struct {
 	stopCh           chan struct{}
 	stopped          bool
 	wg               sync.WaitGroup
+
+	// Dropped event tracking for aggregated logging (Issue #9)
+	droppedByReason map[string]int // Count of dropped events by reason
+	totalDropped    int            // Total dropped events since last summary
 }
 
 // NewEventManager creates a new event manager with the specified configuration
@@ -48,6 +52,8 @@ func NewEventManager(client *K8sClient, config *types.KubernetesExporterConfig) 
 		deduplicationTTL: deduplicationTTL,
 		cleanupInterval:  time.Minute, // Clean up every minute
 		stopCh:           make(chan struct{}),
+		droppedByReason:  make(map[string]int),
+		totalDropped:     0,
 	}
 
 	return manager
@@ -81,6 +87,9 @@ func (em *EventManager) Stop() {
 	close(em.stopCh)
 	em.stopped = true
 
+	// Flush any pending dropped events summary before shutdown
+	em.logDroppedEventsSummaryLocked()
+
 	// We need to wait for goroutines while holding the lock to prevent race conditions
 	// We can't unlock and relock because Start() could be called concurrently
 	// Instead, we'll use a separate mechanism to wait for completion
@@ -113,8 +122,7 @@ func (em *EventManager) CreateEvent(ctx context.Context, event corev1.Event) err
 
 	// Check rate limiting only for non-duplicate events
 	if !em.checkRateLimit() {
-		log.Printf("[WARN] Event rate limit exceeded (%d/min), dropping event: %s",
-			em.maxEventsPerMin, event.Reason)
+		em.trackDroppedEvent(event.Reason)
 		return fmt.Errorf("event rate limit exceeded")
 	}
 
@@ -143,7 +151,7 @@ func (em *EventManager) CreateEventsFromStatus(ctx context.Context, status *type
 	for _, event := range events {
 		err := em.CreateEvent(ctx, event)
 		if err != nil {
-			log.Printf("[WARN] Failed to create event from status: %v", err)
+			// Don't log per-event warnings - aggregated summary is logged periodically
 			lastErr = err
 			droppedCount++
 		} else {
@@ -266,6 +274,80 @@ func (em *EventManager) cleanup() {
 	if cleanupCount > 0 {
 		log.Printf("[DEBUG] Event manager cleanup: removed %d expired cache entries", cleanupCount)
 	}
+
+	// Log dropped events summary during cleanup cycle
+	em.logDroppedEventsSummaryLocked()
+}
+
+// trackDroppedEvent records a dropped event for aggregated logging
+func (em *EventManager) trackDroppedEvent(reason string) {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+
+	em.droppedByReason[reason]++
+	em.totalDropped++
+}
+
+// logDroppedEventsSummaryLocked logs a summary of dropped events (must hold lock)
+func (em *EventManager) logDroppedEventsSummaryLocked() {
+	if em.totalDropped == 0 {
+		return
+	}
+
+	// Build summary of dropped events by reason
+	summary := fmt.Sprintf("Dropped %d events due to rate limiting (%d/min limit). Breakdown: ",
+		em.totalDropped, em.maxEventsPerMin)
+
+	// Sort reasons by count (descending) and limit to top 5
+	type reasonCount struct {
+		reason string
+		count  int
+	}
+	var reasons []reasonCount
+	for reason, count := range em.droppedByReason {
+		reasons = append(reasons, reasonCount{reason, count})
+	}
+
+	// Simple sort by count descending
+	for i := 0; i < len(reasons); i++ {
+		for j := i + 1; j < len(reasons); j++ {
+			if reasons[j].count > reasons[i].count {
+				reasons[i], reasons[j] = reasons[j], reasons[i]
+			}
+		}
+	}
+
+	// Build reason breakdown (top 5)
+	maxReasons := 5
+	if len(reasons) < maxReasons {
+		maxReasons = len(reasons)
+	}
+
+	for i := 0; i < maxReasons; i++ {
+		if i > 0 {
+			summary += ", "
+		}
+		summary += fmt.Sprintf("%s=%d", reasons[i].reason, reasons[i].count)
+	}
+
+	if len(reasons) > 5 {
+		summary += fmt.Sprintf(", and %d more reason types", len(reasons)-5)
+	}
+
+	log.Printf("[WARN] %s", summary)
+
+	// Reset counters
+	em.droppedByReason = make(map[string]int)
+	em.totalDropped = 0
+}
+
+// FlushDroppedEventsSummary logs any pending dropped events summary
+// Call this before shutdown to ensure no dropped events go unreported
+func (em *EventManager) FlushDroppedEventsSummary() {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+
+	em.logDroppedEventsSummaryLocked()
 }
 
 // GetStats returns statistics about the event manager

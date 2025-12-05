@@ -159,7 +159,8 @@ func (ke *KubernetesExporter) ExportStatus(ctx context.Context, status *types.St
 	// Export events
 	if len(status.Events) > 0 {
 		if err := ke.eventManager.CreateEventsFromStatus(ctx, status); err != nil {
-			log.Printf("[WARN] Failed to create events from status: %v", err)
+			// Don't log here - EventManager logs aggregated summaries periodically
+			// Some events may have succeeded even if others were rate limited
 			lastErr = err
 		} else {
 			ke.updateStats(func(s *ExporterStats) {
@@ -220,7 +221,7 @@ func (ke *KubernetesExporter) ExportProblem(ctx context.Context, problem *types.
 
 	// Create event from problem
 	if err := ke.eventManager.CreateEventFromProblem(ctx, problem); err != nil {
-		log.Printf("[WARN] Failed to create event from problem: %v", err)
+		// Don't log here - EventManager logs aggregated summaries periodically
 		lastErr = err
 	} else {
 		ke.updateStats(func(s *ExporterStats) {
