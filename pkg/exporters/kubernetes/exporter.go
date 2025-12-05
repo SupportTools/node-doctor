@@ -590,3 +590,30 @@ func (ke *KubernetesExporter) GetEventManager() *EventManager {
 func (ke *KubernetesExporter) GetConditionManager() *ConditionManager {
 	return ke.conditionManager
 }
+
+// ClearManagedConditions removes all node-doctor managed conditions except the heartbeat.
+// This should be called when monitors are disabled or during cleanup.
+func (ke *KubernetesExporter) ClearManagedConditions() []string {
+	if !ke.isReady() {
+		log.Printf("[WARN] Cannot clear conditions: exporter is not ready")
+		return nil
+	}
+	return ke.conditionManager.ClearManagedConditions()
+}
+
+// RemoveCondition removes a specific condition from the node.
+func (ke *KubernetesExporter) RemoveCondition(conditionType string) {
+	if !ke.isReady() {
+		log.Printf("[WARN] Cannot remove condition %s: exporter is not ready", conditionType)
+		return
+	}
+	ke.conditionManager.RemoveCondition(conditionType)
+}
+
+// GetManagedConditionTypes returns all condition types currently managed by node-doctor.
+func (ke *KubernetesExporter) GetManagedConditionTypes() []string {
+	if !ke.isReady() {
+		return nil
+	}
+	return ke.conditionManager.GetManagedConditionTypes()
+}

@@ -22,6 +22,35 @@ func init() {
 		Factory:     NewDiskMonitor,
 		Validator:   ValidateDiskConfig,
 		Description: "Monitors disk space, inode usage, readonly filesystems, and I/O health conditions",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "disk-health",
+			Type:           "system-disk",
+			Enabled:        true,
+			IntervalString: "1m",
+			TimeoutString:  "30s",
+			Config: map[string]interface{}{
+				"paths": []interface{}{
+					map[string]interface{}{
+						"path":              "/",
+						"warningThreshold":  85,
+						"criticalThreshold": 95,
+					},
+					map[string]interface{}{
+						"path":              "/var/lib/kubelet",
+						"warningThreshold":  85,
+						"criticalThreshold": 95,
+					},
+					map[string]interface{}{
+						"path":              "/var/lib/containerd",
+						"warningThreshold":  80,
+						"criticalThreshold": 90,
+					},
+				},
+				"inodeWarningThreshold":  85,
+				"inodeCriticalThreshold": 95,
+				"checkReadOnly":          true,
+			},
+		},
 	})
 }
 

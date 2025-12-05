@@ -26,6 +26,23 @@ func init() {
 		Factory:     NewMemoryMonitor,
 		Validator:   ValidateMemoryConfig,
 		Description: "Monitors memory usage, swap usage, and out-of-memory conditions",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "memory-health",
+			Type:           "system-memory",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"warningThreshold":          85.0,
+				"criticalThreshold":         95.0,
+				"swapWarningThreshold":      50.0,
+				"swapCriticalThreshold":     80.0,
+				"sustainedHighMemoryChecks": 3,
+				"checkOOMKills":             true,
+				"checkMemoryUsage":          true,
+				"checkSwapUsage":            true,
+			},
+		},
 	})
 }
 

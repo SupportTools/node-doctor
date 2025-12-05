@@ -304,6 +304,61 @@ func (c *K8sClient) GetNodeUID() string {
 	return c.nodeUID
 }
 
+// RemoveNodeConditions removes specific condition types from the node.
+// It fetches the current node state, filters out the specified conditions,
+// and updates the node with the remaining conditions.
+func (c *K8sClient) RemoveNodeConditions(ctx context.Context, conditionTypesToRemove []string) error {
+	if len(conditionTypesToRemove) == 0 {
+		return nil
+	}
+
+	log.Printf("[DEBUG] Removing %d condition types from node %s: %v", len(conditionTypesToRemove), c.nodeName, conditionTypesToRemove)
+
+	// Create a set of condition types to remove for efficient lookup
+	removeSet := make(map[string]struct{})
+	for _, ct := range conditionTypesToRemove {
+		removeSet[ct] = struct{}{}
+	}
+
+	// Use retry with conflict handling since we're doing a read-modify-write
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		// Get current node
+		node, getErr := c.clientset.CoreV1().Nodes().Get(ctx, c.nodeName, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+
+		// Filter out conditions to remove
+		var filteredConditions []corev1.NodeCondition
+		removedCount := 0
+		for _, condition := range node.Status.Conditions {
+			if _, shouldRemove := removeSet[string(condition.Type)]; shouldRemove {
+				log.Printf("[DEBUG] Removing condition %s from node %s", condition.Type, c.nodeName)
+				removedCount++
+				continue
+			}
+			filteredConditions = append(filteredConditions, condition)
+		}
+
+		if removedCount == 0 {
+			log.Printf("[DEBUG] No conditions to remove from node %s", c.nodeName)
+			return nil
+		}
+
+		// Update the node status with filtered conditions
+		node.Status.Conditions = filteredConditions
+		_, updateErr := c.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+		return updateErr
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to remove conditions from node %s after retries: %w", c.nodeName, err)
+	}
+
+	log.Printf("[DEBUG] Successfully removed conditions from node %s", c.nodeName)
+	return nil
+}
+
 // jsonMarshal is a helper function to marshal data to JSON using the standard library
 func jsonMarshal(v interface{}) ([]byte, error) {
 	return json.Marshal(v)

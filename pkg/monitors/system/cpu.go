@@ -24,6 +24,20 @@ func init() {
 		Factory:     NewCPUMonitor,
 		Validator:   ValidateCPUConfig,
 		Description: "Monitors CPU load average and thermal throttling conditions",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "cpu-health",
+			Type:           "system-cpu",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"warningLoadFactor":       0.8,
+				"criticalLoadFactor":      1.5,
+				"sustainedHighLoadChecks": 3,
+				"checkThermalThrottle":    true,
+				"checkLoadAverage":        true,
+			},
+		},
 	})
 }
 

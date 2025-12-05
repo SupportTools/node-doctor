@@ -127,6 +127,12 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Apply default monitors for any missing monitor types
+	addedDefaults := monitors.ApplyDefaultMonitors(config)
+	if len(addedDefaults) > 0 {
+		log.Printf("[INFO] Added default configurations for monitors: %v", addedDefaults)
+	}
+
 	// Apply command line overrides
 	if *debug {
 		config.Settings.LogLevel = "debug"

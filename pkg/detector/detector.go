@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
 	"github.com/supporttools/node-doctor/pkg/reload"
 	"github.com/supporttools/node-doctor/pkg/types"
 )
@@ -443,7 +444,7 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 	var errors []error
 	var criticalErrors []error
 
-	// Step 1: Stop monitors that were removed
+	// Step 1: Stop monitors that were removed and cleanup their conditions
 	log.Printf("[INFO] Stopping %d removed monitors", len(diff.MonitorsRemoved))
 	for _, removedConfig := range diff.MonitorsRemoved {
 		if err := pd.stopMonitorByName(removedConfig.Name); err != nil {
@@ -451,6 +452,8 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 			errors = append(errors, fmt.Errorf("failed to stop monitor %s: %w", removedConfig.Name, err))
 			// Stopping monitors is not critical - continue
 		}
+		// Clean up conditions associated with this monitor type
+		pd.cleanupMonitorConditions(removedConfig.Type)
 	}
 
 	// Step 2: Restart modified monitors
@@ -705,5 +708,58 @@ func (pd *ProblemDetector) emitReloadEvent(severity types.EventSeverity, reason,
 	default:
 		// Channel full, log warning
 		log.Printf("[WARN] Status channel full, reload event dropped: %s", reason)
+	}
+}
+
+// getKubernetesExporter returns the Kubernetes exporter if present, nil otherwise.
+func (pd *ProblemDetector) getKubernetesExporter() *kubernetes.KubernetesExporter {
+	for _, exporter := range pd.exporters {
+		if ke, ok := exporter.(*kubernetes.KubernetesExporter); ok {
+			return ke
+		}
+	}
+	return nil
+}
+
+// cleanupMonitorConditions clears conditions for a specific monitor type when it's disabled.
+// This maps monitor types to their associated condition types.
+func (pd *ProblemDetector) cleanupMonitorConditions(monitorType string) {
+	ke := pd.getKubernetesExporter()
+	if ke == nil {
+		return // No Kubernetes exporter configured
+	}
+
+	// Map monitor types to their associated condition types
+	// These condition types match what each monitor actually creates
+	conditionMap := map[string][]string{
+		"system-cpu":    {"CPUHealthy", "CPUPressure", "CPUThermalHealthy"},
+		"system-memory": {"MemoryHealthy", "MemoryPressure"},
+		"system-disk":   {"DiskHealthy", "DiskPressure", "InodePressure", "ReadonlyFilesystem"},
+		"network-dns-check": {
+			"ClusterDNSDegraded", "ClusterDNSDown", "ClusterDNSHealthy", "ClusterDNSIntermittent",
+			"CustomDNSDown", "CustomDNSHealthy",
+			"DNSResolutionConsistent", "DNSResolutionDegraded", "DNSResolutionDown",
+			"DNSResolutionInconsistent", "DNSResolutionIntermittent",
+			"ExternalDNSDegraded", "ExternalDNSIntermittent",
+			"NetworkReachable", "NetworkUnreachable",
+		},
+		"network-gateway-check": {"NetworkUnreachable"},
+		"network-cni-check": {
+			"CNIConfigValid", "CNIHealthy", "CNIInterfacesHealthy",
+			"NetworkDegraded", "NetworkPartitioned",
+		},
+	}
+
+	conditions, ok := conditionMap[monitorType]
+	if !ok {
+		log.Printf("[DEBUG] No condition mapping for monitor type: %s", monitorType)
+		return
+	}
+
+	log.Printf("[INFO] Cleaning up %d conditions for disabled monitor type %s: %v", len(conditions), monitorType, conditions)
+	for _, condType := range conditions {
+		// Add the NodeDoctor prefix that the exporter adds when creating conditions
+		prefixedCondType := "NodeDoctor" + condType
+		ke.RemoveCondition(prefixedCondType)
 	}
 }

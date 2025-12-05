@@ -63,6 +63,11 @@ type MonitorInfo struct {
 	// Description provides human-readable documentation for this monitor type.
 	// This is used for help text, documentation, and debugging.
 	Description string
+
+	// DefaultConfig provides a default configuration for this monitor type.
+	// This is used when adding missing monitors to the configuration.
+	// If nil, the monitor will not be auto-added when missing from config.
+	DefaultConfig *types.MonitorConfig
 }
 
 // Registry manages the registration and creation of monitor instances.
@@ -302,6 +307,47 @@ func (r *Registry) CreateMonitorsFromConfigs(ctx context.Context, configs []type
 	return monitors, nil
 }
 
+// ApplyDefaultMonitors adds default monitor configurations for any registered
+// monitor types that are missing from the provided configuration.
+// It returns a list of monitor types that were added with defaults.
+//
+// Monitors are only added if:
+// - The monitor type has a DefaultConfig defined
+// - No monitor with that type already exists in the config
+//
+// This enables auto-enabling monitors when their config section is missing.
+func (r *Registry) ApplyDefaultMonitors(config *types.NodeDoctorConfig) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Build a set of existing monitor types
+	existingTypes := make(map[string]bool)
+	for _, monitor := range config.Monitors {
+		existingTypes[monitor.Type] = true
+	}
+
+	// Find monitors that need defaults
+	var addedTypes []string
+	for monitorType, info := range r.monitors {
+		if existingTypes[monitorType] {
+			continue // Monitor already configured
+		}
+
+		if info.DefaultConfig == nil {
+			continue // No default config available
+		}
+
+		// Create a copy of the default config
+		defaultCopy := *info.DefaultConfig
+		config.Monitors = append(config.Monitors, defaultCopy)
+		addedTypes = append(addedTypes, monitorType)
+	}
+
+	// Sort for deterministic output
+	sort.Strings(addedTypes)
+	return addedTypes
+}
+
 // GetRegistryStats returns statistics about the current state of the registry.
 // This is useful for monitoring, debugging, and health checks.
 func (r *Registry) GetRegistryStats() RegistryStats {
@@ -386,4 +432,10 @@ func CreateMonitorsFromConfigs(ctx context.Context, configs []types.MonitorConfi
 // See Registry.GetRegistryStats for details.
 func GetRegistryStats() RegistryStats {
 	return DefaultRegistry.GetRegistryStats()
+}
+
+// ApplyDefaultMonitors adds default monitors to the config using the default registry.
+// See Registry.ApplyDefaultMonitors for details.
+func ApplyDefaultMonitors(config *types.NodeDoctorConfig) []string {
+	return DefaultRegistry.ApplyDefaultMonitors(config)
 }

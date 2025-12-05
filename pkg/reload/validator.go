@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
@@ -629,12 +630,22 @@ func (v *ConfigValidator) isValidKubernetesName(name string) bool {
 }
 
 func (v *ConfigValidator) isValidMonitorType(monitorType string) bool {
-	validTypes := []string{"kubelet", "capacity", "disk-check", "log-pattern", "script", "prometheus"}
-	for _, validType := range validTypes {
+	// Use the monitor registry to validate types dynamically
+	registeredTypes := monitors.GetRegisteredTypes()
+	for _, validType := range registeredTypes {
 		if monitorType == validType {
 			return true
 		}
 	}
+
+	// Legacy monitor types for backward compatibility
+	legacyTypes := []string{"kubelet", "capacity", "disk-check", "log-pattern", "script", "prometheus"}
+	for _, validType := range legacyTypes {
+		if monitorType == validType {
+			return true
+		}
+	}
+
 	return false
 }
 

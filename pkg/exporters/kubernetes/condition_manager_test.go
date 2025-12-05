@@ -525,3 +525,194 @@ func TestConditionManagerWithFailures(t *testing.T) {
 		t.Error("flushPendingUpdates() should have failed with nonexistent node")
 	}
 }
+
+// TestRemoveCondition tests removing individual conditions
+func TestRemoveCondition(t *testing.T) {
+	manager := createTestConditionManager(time.Second, time.Minute, time.Minute)
+	ctx := context.Background()
+
+	// Initialize
+	manager.initialSync(ctx)
+
+	// Add some conditions
+	manager.UpdateCondition(types.Condition{
+		Type:       "TestCond1",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "Test",
+		Message:    "Test",
+	})
+	manager.UpdateCondition(types.Condition{
+		Type:       "TestCond2",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "Test",
+		Message:    "Test",
+	})
+
+	// Flush to move to conditions map
+	manager.flushPendingUpdates(ctx)
+
+	// Verify conditions exist
+	conditions := manager.GetConditions()
+	if _, exists := conditions["NodeDoctorTestCond1"]; !exists {
+		t.Error("NodeDoctorTestCond1 should exist before removal")
+	}
+	if _, exists := conditions["NodeDoctorTestCond2"]; !exists {
+		t.Error("NodeDoctorTestCond2 should exist before removal")
+	}
+
+	// Remove one condition
+	manager.RemoveCondition("NodeDoctorTestCond1")
+
+	// Verify condition is removed
+	conditions = manager.GetConditions()
+	if _, exists := conditions["NodeDoctorTestCond1"]; exists {
+		t.Error("NodeDoctorTestCond1 should be removed")
+	}
+	if _, exists := conditions["NodeDoctorTestCond2"]; !exists {
+		t.Error("NodeDoctorTestCond2 should still exist")
+	}
+}
+
+// TestClearManagedConditions tests clearing all managed conditions
+func TestClearManagedConditions(t *testing.T) {
+	manager := createTestConditionManager(time.Second, time.Minute, time.Minute)
+	ctx := context.Background()
+
+	// Initialize
+	manager.initialSync(ctx)
+
+	// Add some node-doctor managed conditions
+	manager.UpdateCondition(types.Condition{
+		Type:       "CPUPressure",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "HighCPU",
+		Message:    "CPU is high",
+	})
+	manager.UpdateCondition(types.Condition{
+		Type:       "MemoryPressure",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "HighMemory",
+		Message:    "Memory is high",
+	})
+
+	// Add heartbeat
+	manager.sendHeartbeat()
+
+	// Flush to move to conditions map
+	manager.flushPendingUpdates(ctx)
+
+	// Verify conditions exist
+	conditions := manager.GetConditions()
+	initialCount := len(conditions)
+	if initialCount < 2 {
+		t.Errorf("Expected at least 2 conditions, got %d", initialCount)
+	}
+
+	// Clear managed conditions
+	clearedTypes := manager.ClearManagedConditions()
+
+	// Verify managed conditions are cleared (except heartbeat)
+	conditions = manager.GetConditions()
+
+	// Heartbeat should still exist
+	if _, exists := conditions["NodeDoctorHealthy"]; !exists {
+		t.Error("NodeDoctorHealthy (heartbeat) should NOT be cleared")
+	}
+
+	// CPUPressure and MemoryPressure should be cleared
+	for _, clearedType := range clearedTypes {
+		if _, exists := conditions[clearedType]; exists {
+			t.Errorf("Condition %s should have been cleared", clearedType)
+		}
+	}
+}
+
+// TestGetManagedConditionTypes tests retrieving managed condition types
+func TestGetManagedConditionTypes(t *testing.T) {
+	manager := createTestConditionManager(time.Second, time.Minute, time.Minute)
+	ctx := context.Background()
+
+	// Initialize
+	manager.initialSync(ctx)
+
+	// Add some conditions
+	manager.UpdateCondition(types.Condition{
+		Type:       "TestCond1",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "Test",
+		Message:    "Test",
+	})
+	manager.UpdateCondition(types.Condition{
+		Type:       "TestCond2",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "Test",
+		Message:    "Test",
+	})
+
+	// Flush to move to conditions map
+	manager.flushPendingUpdates(ctx)
+
+	// Get managed types
+	managedTypes := manager.GetManagedConditionTypes()
+
+	if len(managedTypes) < 2 {
+		t.Errorf("Expected at least 2 managed condition types, got %d", len(managedTypes))
+	}
+
+	// Verify our conditions are in the list
+	found1, found2 := false, false
+	for _, condType := range managedTypes {
+		if condType == "NodeDoctorTestCond1" {
+			found1 = true
+		}
+		if condType == "NodeDoctorTestCond2" {
+			found2 = true
+		}
+	}
+
+	if !found1 {
+		t.Error("NodeDoctorTestCond1 should be in managed types")
+	}
+	if !found2 {
+		t.Error("NodeDoctorTestCond2 should be in managed types")
+	}
+}
+
+// TestRemoveConditionWithPending tests that removing also clears pending updates
+func TestRemoveConditionWithPending(t *testing.T) {
+	manager := createTestConditionManager(time.Second, time.Minute, time.Minute)
+	ctx := context.Background()
+
+	// Initialize
+	manager.initialSync(ctx)
+
+	// Add a condition (stays pending)
+	manager.UpdateCondition(types.Condition{
+		Type:       "PendingCond",
+		Status:     types.ConditionTrue,
+		Transition: time.Now(),
+		Reason:     "Test",
+		Message:    "Test",
+	})
+
+	// Verify pending exists
+	pendingUpdates := manager.GetPendingUpdates()
+	if _, exists := pendingUpdates["NodeDoctorPendingCond"]; !exists {
+		t.Error("NodeDoctorPendingCond should be pending before removal")
+	}
+
+	// Remove the condition
+	manager.RemoveCondition("NodeDoctorPendingCond")
+
+	// Verify pending is cleared
+	pendingUpdates = manager.GetPendingUpdates()
+	if _, exists := pendingUpdates["NodeDoctorPendingCond"]; exists {
+		t.Error("NodeDoctorPendingCond should be removed from pending")
+	}
+}

@@ -63,6 +63,20 @@ func init() {
 		Factory:     NewGatewayMonitor,
 		Validator:   ValidateGatewayConfig,
 		Description: "Monitors default gateway reachability and latency using ICMP ping",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "gateway-health",
+			Type:           "network-gateway-check",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"pingCount":             3,
+				"pingTimeout":           "1s",
+				"latencyThreshold":      "100ms",
+				"autoDetectGateway":     true,
+				"failureCountThreshold": 3,
+			},
+		},
 	})
 }
 

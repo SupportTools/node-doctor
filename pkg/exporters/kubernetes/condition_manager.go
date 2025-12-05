@@ -20,6 +20,7 @@ type ConditionManager struct {
 	mu                sync.RWMutex
 	conditions        map[string]corev1.NodeCondition // Current known conditions
 	pendingUpdates    map[string]corev1.NodeCondition // Pending condition updates
+	pendingRemovals   map[string]struct{}             // Pending condition removals
 	updateInterval    time.Duration                   // How often to batch update conditions
 	resyncInterval    time.Duration                   // How often to resync with Kubernetes
 	heartbeatInterval time.Duration                   // How often to send heartbeat updates
@@ -53,6 +54,7 @@ func NewConditionManager(client *K8sClient, config *types.KubernetesExporterConf
 		config:            config,
 		conditions:        make(map[string]corev1.NodeCondition),
 		pendingUpdates:    make(map[string]corev1.NodeCondition),
+		pendingRemovals:   make(map[string]struct{}),
 		updateInterval:    updateInterval,
 		resyncInterval:    resyncInterval,
 		heartbeatInterval: heartbeatInterval,
@@ -291,54 +293,84 @@ func (cm *ConditionManager) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// flushPendingUpdates applies all pending condition updates to Kubernetes
+// flushPendingUpdates applies all pending condition updates and removals to Kubernetes
 func (cm *ConditionManager) flushPendingUpdates(ctx context.Context) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if len(cm.pendingUpdates) == 0 {
+	// Check if there's any work to do
+	if len(cm.pendingUpdates) == 0 && len(cm.pendingRemovals) == 0 {
 		return nil
 	}
 
-	// Prepare the conditions slice for the patch
-	var conditionsToUpdate []corev1.NodeCondition
+	var lastErr error
 
-	// Merge pending updates with existing conditions
-	allConditions := make(map[string]corev1.NodeCondition)
+	// Process removals first if any
+	if len(cm.pendingRemovals) > 0 {
+		// Convert pending removals to a slice
+		var conditionTypesToRemove []string
+		for conditionType := range cm.pendingRemovals {
+			conditionTypesToRemove = append(conditionTypesToRemove, conditionType)
+		}
 
-	// Start with existing conditions
-	for conditionType, condition := range cm.conditions {
-		allConditions[conditionType] = condition
+		log.Printf("[INFO] Removing %d conditions from node: %v", len(conditionTypesToRemove), conditionTypesToRemove)
+
+		if err := cm.client.RemoveNodeConditions(ctx, conditionTypesToRemove); err != nil {
+			log.Printf("[WARN] Failed to remove conditions: %v", err)
+			lastErr = err
+		} else {
+			// Clear pending removals on success
+			cm.pendingRemovals = make(map[string]struct{})
+		}
 	}
 
-	// Apply pending updates
-	for conditionType, condition := range cm.pendingUpdates {
-		allConditions[conditionType] = condition
+	// Process updates if any
+	if len(cm.pendingUpdates) > 0 {
+		// Prepare the conditions slice for the patch
+		var conditionsToUpdate []corev1.NodeCondition
+
+		// Merge pending updates with existing conditions
+		allConditions := make(map[string]corev1.NodeCondition)
+
+		// Start with existing conditions
+		for conditionType, condition := range cm.conditions {
+			allConditions[conditionType] = condition
+		}
+
+		// Apply pending updates
+		for conditionType, condition := range cm.pendingUpdates {
+			allConditions[conditionType] = condition
+		}
+
+		// Convert to slice
+		for _, condition := range allConditions {
+			conditionsToUpdate = append(conditionsToUpdate, condition)
+		}
+
+		log.Printf("[DEBUG] Flushing %d pending condition updates", len(cm.pendingUpdates))
+
+		// Apply the updates
+		if err := cm.client.PatchNodeConditions(ctx, conditionsToUpdate); err != nil {
+			log.Printf("[WARN] Failed to patch node conditions: %v", err)
+			lastErr = err
+		} else {
+			// Update our local state on success
+			for conditionType, condition := range cm.pendingUpdates {
+				cm.conditions[conditionType] = condition
+			}
+
+			// Clear pending updates
+			cm.pendingUpdates = make(map[string]corev1.NodeCondition)
+			log.Printf("[DEBUG] Successfully flushed condition updates")
+		}
 	}
 
-	// Convert to slice
-	for _, condition := range allConditions {
-		conditionsToUpdate = append(conditionsToUpdate, condition)
-	}
-
-	log.Printf("[DEBUG] Flushing %d pending condition updates", len(cm.pendingUpdates))
-
-	// Apply the updates
-	err := cm.client.PatchNodeConditions(ctx, conditionsToUpdate)
-	if err != nil {
-		return fmt.Errorf("failed to patch node conditions: %w", err)
-	}
-
-	// Update our local state on success
-	for conditionType, condition := range cm.pendingUpdates {
-		cm.conditions[conditionType] = condition
-	}
-
-	// Clear pending updates
-	cm.pendingUpdates = make(map[string]corev1.NodeCondition)
 	cm.lastUpdate = time.Now()
 
-	log.Printf("[DEBUG] Successfully flushed condition updates")
+	if lastErr != nil {
+		return fmt.Errorf("failed to flush pending updates: %w", lastErr)
+	}
+
 	return nil
 }
 
@@ -474,4 +506,83 @@ func (cm *ConditionManager) ForceFlush(ctx context.Context) error {
 // ForceResync immediately performs a resync (primarily for testing)
 func (cm *ConditionManager) ForceResync(ctx context.Context) error {
 	return cm.performResync(ctx)
+}
+
+// RemoveCondition removes a condition from the node.
+// The condition will be removed on the next flush cycle.
+func (cm *ConditionManager) RemoveCondition(conditionType string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// Add to pending removals - this will be processed during the next flush
+	cm.pendingRemovals[conditionType] = struct{}{}
+
+	// Also remove from local state and pending updates
+	delete(cm.conditions, conditionType)
+	delete(cm.pendingUpdates, conditionType)
+
+	log.Printf("[INFO] Condition %s marked for removal", conditionType)
+}
+
+// ClearManagedConditions removes all node-doctor managed conditions except the heartbeat.
+// This is useful during configuration reload or shutdown.
+// Returns the list of condition types that were cleared.
+func (cm *ConditionManager) ClearManagedConditions() []string {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	var clearedTypes []string
+
+	// Conditions managed by node-doctor (common patterns)
+	nodeDoctorConditionPrefixes := []string{
+		"NodeDoctor",       // e.g., NodeDoctorHealthy, NodeDoctorCPU
+		"CPUPressure",      // system-cpu monitor
+		"MemoryPressure",   // system-memory monitor (may conflict with k8s built-in)
+		"DiskPressure",     // system-disk monitor (may conflict with k8s built-in)
+		"NetworkUnreachable",
+		"DNSResolutionFailed",
+		"GatewayUnreachable",
+		"CNI",
+		"HighCPULoad",
+		"HighMemory",
+		"HighDiskUsage",
+		"HighInodeUsage",
+		"ReadOnlyFilesystem",
+		"OOMKillsDetected",
+	}
+
+	// Keep NodeDoctorHealthy (heartbeat) running
+	for condType := range cm.conditions {
+		if condType == "NodeDoctorHealthy" {
+			continue // Keep the heartbeat condition
+		}
+
+		// Check if this is a node-doctor managed condition
+		for _, prefix := range nodeDoctorConditionPrefixes {
+			if len(condType) >= len(prefix) && condType[:len(prefix)] == prefix {
+				delete(cm.conditions, condType)
+				delete(cm.pendingUpdates, condType)
+				clearedTypes = append(clearedTypes, condType)
+				break
+			}
+		}
+	}
+
+	if len(clearedTypes) > 0 {
+		log.Printf("[INFO] Cleared %d managed conditions: %v", len(clearedTypes), clearedTypes)
+	}
+
+	return clearedTypes
+}
+
+// GetManagedConditionTypes returns all condition types currently managed by node-doctor.
+func (cm *ConditionManager) GetManagedConditionTypes() []string {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	types := make([]string, 0, len(cm.conditions))
+	for condType := range cm.conditions {
+		types = append(types, condType)
+	}
+	return types
 }

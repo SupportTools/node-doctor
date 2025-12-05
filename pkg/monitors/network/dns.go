@@ -246,6 +246,21 @@ func init() {
 		Factory:     NewDNSMonitor,
 		Validator:   ValidateDNSConfig,
 		Description: "Monitors DNS resolution for cluster and external domains",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "dns-health",
+			Type:           "network-dns-check",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"clusterDomains":         []interface{}{"kubernetes.default.svc.cluster.local"},
+				"externalDomains":        []interface{}{"google.com", "cloudflare.com"},
+				"latencyThreshold":       "1s",
+				"checkNameservers":       true,
+				"failureCountThreshold":  3,
+				"enableNameserverChecks": true,
+			},
+		},
 	})
 }
 
