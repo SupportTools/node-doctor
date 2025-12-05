@@ -449,12 +449,12 @@
           "mappings": [
             {
               "options": {
-                "False": {
+                "Healthy": {
                   "color": "green",
                   "index": 0,
                   "text": "Healthy"
                 },
-                "True": {
+                "PARTITIONED": {
                   "color": "red",
                   "index": 1,
                   "text": "PARTITIONED"
@@ -485,6 +485,21 @@
                 "value": 150
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
           }
         ]
       },
@@ -512,44 +527,40 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(100, node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=\"NetworkPartitioned\"}) by (node, status)",
+          "expr": "label_replace(increase(node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=\"NetworkPartitioned\", status=\"False\"}[5m]) > 0, \"partition_status\", \"Healthy\", \"\", \"\") or label_replace(increase(node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=\"NetworkPartitioned\", status=\"True\"}[5m]) > 0, \"partition_status\", \"PARTITIONED\", \"\", \"\")",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{node}} - {{status}}",
+          "legendFormat": "__auto",
           "refId": "A"
         }
       ],
       "title": "Network Partition Status by Node",
       "transformations": [
         {
-          "id": "groupBy",
-          "options": {
-            "fields": {
-              "Value": {
-                "aggregations": ["lastNotNull"],
-                "operation": "aggregate"
-              },
-              "node": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "status": {
-                "aggregations": [],
-                "operation": "groupby"
-              }
-            }
-          }
-        },
-        {
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Value (lastNotNull)": true
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "cluster": true,
+              "condition_type": true,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "namespace": true,
+              "pod": true,
+              "service": true,
+              "status": true
             },
-            "indexByName": {},
+            "indexByName": {
+              "node": 0,
+              "partition_status": 1
+            },
             "renameByName": {
               "node": "Node",
-              "status": "Partitioned"
+              "partition_status": "Status"
             }
           }
         }
@@ -576,12 +587,12 @@
           "mappings": [
             {
               "options": {
-                "False": {
+                "UNHEALTHY": {
                   "color": "red",
                   "index": 1,
                   "text": "UNHEALTHY"
                 },
-                "True": {
+                "Healthy": {
                   "color": "green",
                   "index": 0,
                   "text": "Healthy"
@@ -600,7 +611,35 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Node"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CNI Status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -626,44 +665,40 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(100, node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=\"CNIHealthy\"}) by (node, status)",
+          "expr": "label_replace(increase(node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=\"CNIHealthy\", status=\"True\"}[5m]) > 0, \"health_status\", \"Healthy\", \"\", \"\") or label_replace(increase(node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=\"CNIHealthy\", status=\"False\"}[5m]) > 0, \"health_status\", \"UNHEALTHY\", \"\", \"\")",
           "format": "table",
           "instant": true,
-          "legendFormat": "{{node}} - {{status}}",
+          "legendFormat": "__auto",
           "refId": "A"
         }
       ],
       "title": "CNI Health Status by Node",
       "transformations": [
         {
-          "id": "groupBy",
-          "options": {
-            "fields": {
-              "Value": {
-                "aggregations": ["lastNotNull"],
-                "operation": "aggregate"
-              },
-              "node": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "status": {
-                "aggregations": [],
-                "operation": "groupby"
-              }
-            }
-          }
-        },
-        {
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Value (lastNotNull)": true
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "cluster": true,
+              "condition_type": true,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "namespace": true,
+              "pod": true,
+              "service": true,
+              "status": true
             },
-            "indexByName": {},
+            "indexByName": {
+              "node": 0,
+              "health_status": 1
+            },
             "renameByName": {
               "node": "Node",
-              "status": "CNI Healthy"
+              "health_status": "CNI Status"
             }
           }
         }
@@ -1003,12 +1038,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(node_doctor_monitor_peers_total{node=~\"$node\"})",
-          "legendFormat": "Total Peers",
+          "expr": "avg(node_doctor_monitor_peers_total{node=~\"$node\"})",
+          "legendFormat": "Avg Peers per Node",
           "refId": "A"
         }
       ],
-      "title": "Total Peers",
+      "title": "Avg Peers per Node",
       "type": "stat"
     },
     {
@@ -1061,12 +1096,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(node_doctor_monitor_peers_reachable_total{node=~\"$node\"})",
-          "legendFormat": "Reachable Peers",
+          "expr": "avg(node_doctor_monitor_peers_reachable_total{node=~\"$node\"})",
+          "legendFormat": "Avg Reachable per Node",
           "refId": "A"
         }
       ],
-      "title": "Reachable Peers",
+      "title": "Avg Reachable per Node",
       "type": "stat"
     },
     {
@@ -2272,12 +2307,21 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (condition_type) (node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=~\"NetworkPartitioned|NetworkDegraded|CNIHealthy|CNIConfigValid|CNIInterfacesHealthy\", status=\"True\"})",
-          "legendFormat": "{{condition_type}}",
+          "expr": "sum by (condition_type) (rate(node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=~\"NetworkPartitioned|NetworkDegraded\", status=\"True\"}[5m])) * 60",
+          "legendFormat": "{{condition_type}} (problems)",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (condition_type) (rate(node_doctor_monitor_conditions_total{node=~\"$node\", condition_type=~\"CNIHealthy|CNIConfigValid|CNIInterfacesHealthy\", status=\"False\"}[5m])) * 60",
+          "legendFormat": "{{condition_type}} (unhealthy)",
+          "refId": "B"
         }
       ],
-      "title": "Network & CNI Conditions (True)",
+      "title": "Network Issue Activity (rate/min)",
       "type": "timeseries"
     },
     {
