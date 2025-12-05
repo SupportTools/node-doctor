@@ -95,7 +95,7 @@ func TestNewCNIHealthChecker(t *testing.T) {
 func TestDetectCNIConfigPath(t *testing.T) {
 	tests := []struct {
 		name     string
-		setup    func(t *testing.T) string // returns base temp dir
+		setup    func(t *testing.T) string // returns base temp dir (simulates /host)
 		wantPath string                    // expected path suffix (not full path)
 	}{
 		{
@@ -194,37 +194,79 @@ func TestDetectCNIConfigPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// This test validates the logic but not actual system paths
-			// The detectCNIConfigPath function checks hardcoded paths
-			// For unit testing, we verify the function logic works as expected
+			// Use detectCNIConfigPathWithRoot with the temp dir as host root
+			// This properly tests the path detection logic
 			base := tt.setup(t)
 			expectedFull := filepath.Join(base, tt.wantPath)
 
-			// Since detectCNIConfigPath uses hardcoded paths, we can't easily test it
-			// without mocking the filesystem. Instead, verify that when the paths exist
-			// on the real system, the function returns a valid path.
-			result := detectCNIConfigPath()
+			// Call the testable function with temp dir as host root
+			result := detectCNIConfigPathWithRoot(base)
 
-			// Result should be one of the known paths
-			validPaths := []string{
-				rke2CNIConfigPath,
-				k3sCNIConfigPath,
-				defaultCNIConfigPath,
+			if result != expectedFull {
+				t.Errorf("detectCNIConfigPathWithRoot(%q) = %q, want %q", base, result, expectedFull)
 			}
-			valid := false
-			for _, p := range validPaths {
-				if result == p {
-					valid = true
-					break
+		})
+	}
+}
+
+func TestDetectCNIConfigPathWithRoot_HostRootPrefix(t *testing.T) {
+	// This test simulates the containerized deployment scenario where
+	// the host filesystem is mounted at /host (or a custom prefix)
+	tests := []struct {
+		name      string
+		hostRoot  string
+		setup     func(t *testing.T, hostRoot string)
+		wantPath  string
+	}{
+		{
+			name:     "finds RKE2 config under host root",
+			hostRoot: "/host",
+			setup: func(t *testing.T, hostRoot string) {
+				base := t.TempDir()
+				// Create simulated /host/var/lib/rancher/rke2/... structure
+				rke2Path := filepath.Join(base, "var/lib/rancher/rke2/agent/etc/cni/net.d")
+				if err := os.MkdirAll(rke2Path, 0755); err != nil {
+					t.Fatalf("failed to create path: %v", err)
 				}
-			}
-			if !valid {
-				t.Errorf("detectCNIConfigPath() = %s, want one of %v", result, validPaths)
+				if err := os.WriteFile(filepath.Join(rke2Path, "10-calico.conflist"), []byte(`{"test":"config"}`), 0644); err != nil {
+					t.Fatalf("failed to create config file: %v", err)
+				}
+				// Override hostRoot to use temp dir
+				t.Setenv("TEST_HOST_ROOT", base)
+			},
+			wantPath: "var/lib/rancher/rke2/agent/etc/cni/net.d",
+		},
+		{
+			name:     "empty host root falls back to direct paths",
+			hostRoot: "",
+			setup: func(t *testing.T, hostRoot string) {
+				// With empty host root, it should check direct paths
+				// This simulates running directly on host (not in container)
+			},
+			wantPath: "/etc/cni/net.d", // Falls back to default
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t, tt.hostRoot)
 			}
 
-			// Verify the setup created the expected structure
-			if _, err := os.Stat(expectedFull); os.IsNotExist(err) {
-				t.Errorf("test setup failed: expected path %s does not exist", expectedFull)
+			if tt.name == "finds RKE2 config under host root" {
+				// Use the temp dir set in setup
+				base := os.Getenv("TEST_HOST_ROOT")
+				result := detectCNIConfigPathWithRoot(base)
+				expectedFull := filepath.Join(base, tt.wantPath)
+				if result != expectedFull {
+					t.Errorf("detectCNIConfigPathWithRoot(%q) = %q, want %q", base, result, expectedFull)
+				}
+			} else {
+				// Test with empty host root
+				result := detectCNIConfigPathWithRoot("")
+				if result != tt.wantPath {
+					t.Errorf("detectCNIConfigPathWithRoot(\"\") = %q, want %q", result, tt.wantPath)
+				}
 			}
 		})
 	}

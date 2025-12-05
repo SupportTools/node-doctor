@@ -1,0 +1,242 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "node-doctor.fullname" . }}
+  {{- if .Values.prometheusRule.namespace }}
+  namespace: {{ .Values.prometheusRule.namespace }}
+  {{- else }}
+  namespace: {{ .Release.Namespace }}
+  {{- end }}
+  labels:
+    {{- include "node-doctor.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- if .Values.prometheusRule.critical.enabled }}
+    # Critical alerts - require immediate attention
+    - name: {{ include "node-doctor.fullname" . }}-critical
+      rules:
+        - alert: NodeDoctorCNIConfigInvalid
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="CNIConfigValid", status="False"} > 0
+          for: {{ .Values.prometheusRule.critical.cniConfigInvalid.for }}
+          labels:
+            severity: critical
+            component: cni
+            {{- with .Values.prometheusRule.critical.cniConfigInvalid.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "CNI configuration invalid on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} has invalid CNI configuration. CNI health checks are failing."
+            {{- with .Values.prometheusRule.critical.cniConfigInvalid.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        - alert: NodeDoctorCNIUnhealthy
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="CNIHealthy", status="False"} > 0
+          for: {{ .Values.prometheusRule.critical.cniUnhealthy.for }}
+          labels:
+            severity: critical
+            component: cni
+            {{- with .Values.prometheusRule.critical.cniUnhealthy.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "CNI unhealthy on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} CNI is unhealthy. Pod networking may be impaired."
+            {{- with .Values.prometheusRule.critical.cniUnhealthy.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        - alert: NodeDoctorNetworkPartitioned
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="NetworkPartitioned", status="True"} > 0
+          for: {{ .Values.prometheusRule.critical.networkPartitioned.for }}
+          labels:
+            severity: critical
+            component: network
+            {{- with .Values.prometheusRule.critical.networkPartitioned.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Network partition detected on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} cannot reach minimum required peers. Node may be network partitioned."
+            {{- with .Values.prometheusRule.critical.networkPartitioned.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        - alert: NodeDoctorKubeletUnhealthy
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="KubeletHealthy", status="False"} > 0
+          for: {{ .Values.prometheusRule.critical.kubeletUnhealthy.for }}
+          labels:
+            severity: critical
+            component: kubernetes
+            {{- with .Values.prometheusRule.critical.kubeletUnhealthy.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Kubelet unhealthy on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} kubelet is unhealthy. Node may not be functioning correctly."
+            {{- with .Values.prometheusRule.critical.kubeletUnhealthy.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+        - alert: NodeDoctorReadOnlyFilesystem
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="ReadOnlyFilesystem", status="True"} > 0
+          for: {{ .Values.prometheusRule.critical.readOnlyFilesystem.for }}
+          labels:
+            severity: critical
+            component: system
+            {{- with .Values.prometheusRule.critical.readOnlyFilesystem.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Read-only filesystem detected on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} has a read-only filesystem. This typically indicates disk failure."
+            {{- with .Values.prometheusRule.critical.readOnlyFilesystem.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+    {{- end }}
+
+    {{- if .Values.prometheusRule.warning.enabled }}
+    # Warning alerts - should be investigated soon
+    - name: {{ include "node-doctor.fullname" . }}-warning
+      rules:
+        - alert: NodeDoctorDNSResolutionFailed
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="DNSResolutionFailed", status="True"} > 0
+          for: {{ .Values.prometheusRule.warning.dnsResolutionFailed.for }}
+          labels:
+            severity: warning
+            component: dns
+          annotations:
+            summary: "DNS resolution failing on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} is experiencing DNS resolution failures."
+
+        - alert: NodeDoctorDNSLatencyHigh
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="DNSLatencyHigh", status="True"} > 0
+          for: {{ .Values.prometheusRule.warning.dnsLatencyHigh.for }}
+          labels:
+            severity: warning
+            component: dns
+          annotations:
+            summary: "High DNS latency on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} is experiencing high DNS resolution latency."
+
+        - alert: NodeDoctorMemoryPressure
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="MemoryPressure", status="True"} > 0
+          for: {{ .Values.prometheusRule.warning.memoryPressure.for }}
+          labels:
+            severity: warning
+            component: system
+          annotations:
+            summary: "Memory pressure on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} is experiencing memory pressure."
+
+        - alert: NodeDoctorDiskPressure
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="DiskPressure", status="True"} > 0
+          for: {{ .Values.prometheusRule.warning.diskPressure.for }}
+          labels:
+            severity: warning
+            component: system
+          annotations:
+            summary: "Disk pressure on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} is experiencing disk pressure."
+
+        - alert: NodeDoctorNetworkDegraded
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="NetworkDegraded", status="True"} > 0
+          for: {{ .Values.prometheusRule.warning.networkDegraded.for }}
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            summary: "Network degraded on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} is experiencing network degradation (high latency or partial connectivity)."
+
+        - alert: NodeDoctorHighPeerLatency
+          expr: |
+            histogram_quantile(0.95, sum(rate(node_doctor_monitor_peer_latency_histogram_seconds_bucket[5m])) by (le, node)) * 1000 > {{ .Values.prometheusRule.warning.highPeerLatency.thresholdMs }}
+          for: {{ .Values.prometheusRule.warning.highPeerLatency.for }}
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            summary: "High peer latency on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} P95 peer latency exceeds {{ .Values.prometheusRule.warning.highPeerLatency.thresholdMs }}ms."
+
+        - alert: NodeDoctorLowPeerConnectivity
+          expr: |
+            (sum by (node) (node_doctor_monitor_peers_reachable_total) / sum by (node) (node_doctor_monitor_peers_total)) * 100 < {{ .Values.prometheusRule.warning.lowPeerConnectivity.thresholdPercent }}
+          for: {{ .Values.prometheusRule.warning.lowPeerConnectivity.for }}
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            summary: "Low peer connectivity on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} can only reach {{`{{ $value | printf \"%.1f\" }}`}}% of peers."
+
+        - alert: NodeDoctorAPIServerLatencyHigh
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="APIServerLatencyHigh", status="True"} > 0
+          for: {{ .Values.prometheusRule.warning.apiServerLatencyHigh.for }}
+          labels:
+            severity: warning
+            component: kubernetes
+          annotations:
+            summary: "High API server latency on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} is experiencing high latency communicating with the API server."
+    {{- end }}
+
+    {{- if .Values.prometheusRule.info.enabled }}
+    # Informational alerts - for awareness
+    - name: {{ include "node-doctor.fullname" . }}-info
+      rules:
+        - alert: NodeDoctorAgentRestarted
+          expr: |
+            changes(node_doctor_monitor_uptime_seconds[5m]) > 0
+          labels:
+            severity: info
+            component: agent
+          annotations:
+            summary: "Node Doctor agent restarted on {{`{{ $labels.node }}`}}"
+            description: "Node Doctor agent on {{`{{ $labels.node }}`}} has restarted."
+
+        - alert: NodeDoctorHighEventRate
+          expr: |
+            rate(node_doctor_monitor_events_total[5m]) > {{ .Values.prometheusRule.info.highEventRate.threshold }}
+          for: {{ .Values.prometheusRule.info.highEventRate.for }}
+          labels:
+            severity: info
+            component: agent
+          annotations:
+            summary: "High event rate from {{`{{ $labels.node }}`}}"
+            description: "Node Doctor on {{`{{ $labels.node }}`}} is generating events at a high rate ({{`{{ $value | printf \"%.1f\" }}`}}/sec)."
+
+        - alert: NodeDoctorNoMetrics
+          expr: |
+            absent(node_doctor_monitor_uptime_seconds)
+          for: {{ .Values.prometheusRule.info.noMetrics.for }}
+          labels:
+            severity: warning
+            component: agent
+          annotations:
+            summary: "No Node Doctor metrics available"
+            description: "No Node Doctor metrics are being received. Check if the DaemonSet is running and ServiceMonitor is configured."
+    {{- end }}
+
+    {{- with .Values.prometheusRule.additionalRules }}
+    # Additional custom rules
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

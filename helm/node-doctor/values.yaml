@@ -133,6 +133,72 @@ serviceMonitor:
   # Relabelings
   relabelings: []
 
+# Prometheus PrometheusRule configuration (for Prometheus Operator alerting)
+prometheusRule:
+  # Enable PrometheusRule creation
+  enabled: false
+  # Namespace where PrometheusRule will be created (defaults to release namespace)
+  namespace: ""
+  # Additional labels for PrometheusRule (e.g., for Prometheus Operator discovery)
+  labels: {}
+  # Additional custom rules to add
+  additionalRules: []
+
+  # Critical alerts - require immediate attention
+  critical:
+    enabled: true
+    cniConfigInvalid:
+      for: 5m
+      labels: {}
+      annotations: {}
+    cniUnhealthy:
+      for: 5m
+      labels: {}
+      annotations: {}
+    networkPartitioned:
+      for: 2m
+      labels: {}
+      annotations: {}
+    kubeletUnhealthy:
+      for: 5m
+      labels: {}
+      annotations: {}
+    readOnlyFilesystem:
+      for: 1m
+      labels: {}
+      annotations: {}
+
+  # Warning alerts - should be investigated soon
+  warning:
+    enabled: true
+    dnsResolutionFailed:
+      for: 5m
+    dnsLatencyHigh:
+      for: 10m
+    memoryPressure:
+      for: 10m
+    diskPressure:
+      for: 10m
+    networkDegraded:
+      for: 10m
+    highPeerLatency:
+      for: 10m
+      thresholdMs: 100
+    lowPeerConnectivity:
+      for: 5m
+      thresholdPercent: 90
+    apiServerLatencyHigh:
+      for: 10m
+
+  # Informational alerts - for awareness
+  info:
+    enabled: true
+    highEventRate:
+      for: 5m
+      threshold: 10
+    noMetrics:
+      for: 10m
+
 # Health probe configuration
 probes:
   liveness:

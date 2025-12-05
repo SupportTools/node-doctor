@@ -1,0 +1,205 @@
+# PrometheusRule for Node Doctor alerting
+# Deploy this to enable critical alerts for node health conditions
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-doctor
+  namespace: node-doctor
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+    # This label is often required for Prometheus Operator to discover the PrometheusRule
+    # Adjust based on your Prometheus Operator configuration
+    release: monitoring
+spec:
+  groups:
+    # Critical alerts - require immediate attention
+    - name: node-doctor-critical
+      rules:
+        - alert: NodeDoctorCNIConfigInvalid
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="CNIConfigValid", status="False"} > 0
+          for: 5m
+          labels:
+            severity: critical
+            component: cni
+          annotations:
+            summary: "CNI configuration invalid on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} has invalid CNI configuration. CNI health checks are failing."
+            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/cni-config-invalid.md"
+
+        - alert: NodeDoctorCNIUnhealthy
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="CNIHealthy", status="False"} > 0
+          for: 5m
+          labels:
+            severity: critical
+            component: cni
+          annotations:
+            summary: "CNI unhealthy on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} CNI is unhealthy. Pod networking may be impaired."
+            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/cni-unhealthy.md"
+
+        - alert: NodeDoctorNetworkPartitioned
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="NetworkPartitioned", status="True"} > 0
+          for: 2m
+          labels:
+            severity: critical
+            component: network
+          annotations:
+            summary: "Network partition detected on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} cannot reach minimum required peers. Node may be network partitioned."
+            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/network-partition.md"
+
+        - alert: NodeDoctorKubeletUnhealthy
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="KubeletHealthy", status="False"} > 0
+          for: 5m
+          labels:
+            severity: critical
+            component: kubernetes
+          annotations:
+            summary: "Kubelet unhealthy on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} kubelet is unhealthy. Node may not be functioning correctly."
+            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/kubelet-unhealthy.md"
+
+        - alert: NodeDoctorReadOnlyFilesystem
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="ReadOnlyFilesystem", status="True"} > 0
+          for: 1m
+          labels:
+            severity: critical
+            component: system
+          annotations:
+            summary: "Read-only filesystem detected on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} has a read-only filesystem. This typically indicates disk failure."
+            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/readonly-filesystem.md"
+
+    # Warning alerts - should be investigated soon
+    - name: node-doctor-warning
+      rules:
+        - alert: NodeDoctorDNSResolutionFailed
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="DNSResolutionFailed", status="True"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: dns
+          annotations:
+            summary: "DNS resolution failing on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} is experiencing DNS resolution failures."
+            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/dns-resolution-failed.md"
+
+        - alert: NodeDoctorDNSLatencyHigh
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="DNSLatencyHigh", status="True"} > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: dns
+          annotations:
+            summary: "High DNS latency on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} is experiencing high DNS resolution latency."
+
+        - alert: NodeDoctorMemoryPressure
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="MemoryPressure", status="True"} > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: system
+          annotations:
+            summary: "Memory pressure on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} is experiencing memory pressure."
+
+        - alert: NodeDoctorDiskPressure
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="DiskPressure", status="True"} > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: system
+          annotations:
+            summary: "Disk pressure on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} is experiencing disk pressure."
+
+        - alert: NodeDoctorNetworkDegraded
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="NetworkDegraded", status="True"} > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            summary: "Network degraded on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} is experiencing network degradation (high latency or partial connectivity)."
+
+        - alert: NodeDoctorHighPeerLatency
+          expr: |
+            histogram_quantile(0.95, sum(rate(node_doctor_monitor_peer_latency_histogram_seconds_bucket[5m])) by (le, node)) * 1000 > 100
+          for: 10m
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            summary: "High peer latency on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} P95 peer latency exceeds 100ms."
+
+        - alert: NodeDoctorLowPeerConnectivity
+          expr: |
+            (sum by (node) (node_doctor_monitor_peers_reachable_total) / sum by (node) (node_doctor_monitor_peers_total)) * 100 < 90
+          for: 5m
+          labels:
+            severity: warning
+            component: network
+          annotations:
+            summary: "Low peer connectivity on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} can only reach {{ $value | printf \"%.1f\" }}% of peers."
+
+        - alert: NodeDoctorAPIServerLatencyHigh
+          expr: |
+            node_doctor_monitor_conditions_total{condition_type="APIServerLatencyHigh", status="True"} > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: kubernetes
+          annotations:
+            summary: "High API server latency on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} is experiencing high latency communicating with the API server."
+
+    # Informational alerts - for awareness
+    - name: node-doctor-info
+      rules:
+        - alert: NodeDoctorAgentRestarted
+          expr: |
+            changes(node_doctor_monitor_uptime_seconds[5m]) > 0
+          labels:
+            severity: info
+            component: agent
+          annotations:
+            summary: "Node Doctor agent restarted on {{ $labels.node }}"
+            description: "Node Doctor agent on {{ $labels.node }} has restarted."
+
+        - alert: NodeDoctorHighEventRate
+          expr: |
+            rate(node_doctor_monitor_events_total[5m]) > 10
+          for: 5m
+          labels:
+            severity: info
+            component: agent
+          annotations:
+            summary: "High event rate from {{ $labels.node }}"
+            description: "Node Doctor on {{ $labels.node }} is generating events at a high rate ({{ $value | printf \"%.1f\" }}/sec)."
+
+        - alert: NodeDoctorNoMetrics
+          expr: |
+            absent(node_doctor_monitor_uptime_seconds)
+          for: 10m
+          labels:
+            severity: warning
+            component: agent
+          annotations:
+            summary: "No Node Doctor metrics available"
+            description: "No Node Doctor metrics are being received. Check if the DaemonSet is running and ServiceMonitor is configured."

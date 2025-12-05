@@ -69,6 +69,8 @@ providers:
 
 These dashboards require the following Prometheus metrics exported by Node Doctor:
 
+### Core Metrics
+
 | Metric | Type | Description |
 |--------|------|-------------|
 | `node_doctor_monitor_info` | Gauge | Node information (version, go_version, build_time) |
@@ -77,6 +79,19 @@ These dashboards require the following Prometheus metrics exported by Node Docto
 | `node_doctor_monitor_events_total` | Counter | Events by source and severity |
 | `node_doctor_monitor_status_updates_total` | Counter | Status update count by source |
 | `node_doctor_monitor_uptime_seconds` | Gauge | Monitor uptime per node |
+
+### Network Latency Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `node_doctor_monitor_peer_latency_seconds` | Gauge | node, peer_node, peer_ip | Current latency to each peer in seconds |
+| `node_doctor_monitor_peer_latency_avg_seconds` | Gauge | node | Average latency across all peers |
+| `node_doctor_monitor_peer_reachable` | Gauge | node, peer_node, peer_ip | Peer reachability (1=reachable, 0=unreachable) |
+| `node_doctor_monitor_peers_total` | Gauge | node | Total number of discovered peers |
+| `node_doctor_monitor_peers_reachable_total` | Gauge | node | Number of reachable peers |
+| `node_doctor_monitor_peer_latency_histogram_seconds` | Histogram | node | Histogram of peer latency for percentile calculations |
+| `node_doctor_monitor_gateway_latency_seconds` | Gauge | node | Latency to default gateway |
+| `node_doctor_monitor_gateway_latency_histogram_seconds` | Histogram | node | Histogram of gateway latency |
 
 ## Dashboard Variables
 
@@ -233,7 +248,7 @@ Monitoring of Kubelet health, API Server connectivity, and Node Doctor agent sta
 
 **UID:** `node-doctor-cni`
 
-Network partition detection, CNI health, DNS resolution, and peer connectivity monitoring.
+Network partition detection, CNI health, DNS resolution, peer connectivity, and network latency monitoring.
 
 ### Panels
 
@@ -249,22 +264,35 @@ Network partition detection, CNI health, DNS resolution, and peer connectivity m
    - Network Partition Status by Node (table)
    - CNI Health Status by Node (table)
 
-3. **DNS Health Row**
+3. **Peer Latency Overview Row** *(New in v1.5.4)*
+   - Avg Cluster Latency (stat) - Average latency across all peers in ms
+   - Max Latency (stat) - Maximum latency to any peer in ms
+   - P95 Latency (stat) - 95th percentile latency from histogram
+   - Peer Connectivity % (stat) - Percentage of reachable peers
+   - Total Peers (stat) - Total discovered peer count
+   - Reachable Peers (stat) - Currently reachable peer count
+
+4. **Peer Latency Details Row** *(New in v1.5.4)*
+   - Average Latency by Node (time series) - Per-node average latency over time
+   - Latency Percentiles Over Time (time series) - P50, P90, P95, P99 trends
+   - Node-to-Peer Latency Matrix (table) - Detailed breakdown of latency from each node to each peer with reachability status
+
+5. **DNS Health Row**
    - DNS Healthy Nodes (stat)
    - DNS Resolution Failed (stat)
    - DNS Latency High (stat)
    - DNS Conditions by Node (table)
 
-4. **Events & Trends**
+6. **Events & Trends**
    - CNI Events Rate (time series)
    - DNS Events Rate (time series)
    - CNI Status Updates (time series)
 
-5. **All Conditions**
+7. **All Conditions**
    - Network Conditions by Type (stacked bar chart)
    - DNS Conditions by Type (stacked bar chart)
 
-6. **Problems & Alerts**
+8. **Problems & Alerts**
    - Active Network Problems (table)
 
 ### Key Condition Types
@@ -319,6 +347,12 @@ node_doctor_monitor_conditions_total{condition_type="DNSResolutionFailed", statu
 
 # API server latency high
 node_doctor_monitor_conditions_total{condition_type="APIServerLatencyHigh", status="True"} > 0
+
+# High peer latency (P95 > 100ms)
+histogram_quantile(0.95, sum(rate(node_doctor_monitor_peer_latency_histogram_seconds_bucket[5m])) by (le, node)) * 1000 > 100
+
+# Low peer connectivity (< 90%)
+(sum by (node) (node_doctor_monitor_peers_reachable_total) / sum by (node) (node_doctor_monitor_peers_total)) * 100 < 90
 ```
 
 ### Informational

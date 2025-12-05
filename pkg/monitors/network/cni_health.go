@@ -20,6 +20,10 @@ const (
 	rke2CNIConfigPath = "/var/lib/rancher/rke2/agent/etc/cni/net.d"
 	k3sCNIConfigPath  = "/var/lib/rancher/k3s/agent/etc/cni/net.d"
 
+	// Host root prefix for containerized deployments where host filesystem
+	// is mounted at a different path (e.g., /host)
+	defaultHostRootPrefix = "/host"
+
 	// Common CNI interface prefixes
 	calicoInterfacePrefix  = "cali"
 	flannelInterfacePrefix = "flannel"
@@ -91,14 +95,33 @@ type cniHealthChecker struct {
 // detectCNIConfigPath auto-detects the CNI configuration path based on the
 // Kubernetes distribution. It checks distribution-specific paths first (RKE2/K3s)
 // before falling back to the standard /etc/cni/net.d path.
+// It also checks paths with the host root prefix (/host) for containerized deployments.
 func detectCNIConfigPath() string {
-	// Check paths in order of specificity
+	return detectCNIConfigPathWithRoot(defaultHostRootPrefix)
+}
+
+// detectCNIConfigPathWithRoot is a testable version of detectCNIConfigPath that
+// accepts a custom host root prefix. This allows tests to use temp directories.
+func detectCNIConfigPathWithRoot(hostRoot string) string {
+	// Base paths to check in order of specificity
 	// RKE2 and K3s use distribution-specific paths
-	pathsToCheck := []string{
+	basePaths := []string{
 		rke2CNIConfigPath,    // RKE2: /var/lib/rancher/rke2/agent/etc/cni/net.d
 		k3sCNIConfigPath,     // K3s: /var/lib/rancher/k3s/agent/etc/cni/net.d
 		defaultCNIConfigPath, // Standard: /etc/cni/net.d
 	}
+
+	// Build full list of paths to check, including host-prefixed versions
+	// Check host-prefixed paths first since we're typically running in a container
+	var pathsToCheck []string
+	if hostRoot != "" {
+		for _, basePath := range basePaths {
+			// Add host-prefixed path first (for containerized deployments)
+			pathsToCheck = append(pathsToCheck, filepath.Join(hostRoot, basePath))
+		}
+	}
+	// Then add non-prefixed paths (for direct host deployments or testing)
+	pathsToCheck = append(pathsToCheck, basePaths...)
 
 	for _, path := range pathsToCheck {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
@@ -115,7 +138,13 @@ func detectCNIConfigPath() string {
 		}
 	}
 
-	// Default fallback
+	// Default fallback - try host-prefixed path first
+	if hostRoot != "" {
+		hostPrefixedDefault := filepath.Join(hostRoot, defaultCNIConfigPath)
+		if _, err := os.Stat(hostPrefixedDefault); err == nil {
+			return hostPrefixedDefault
+		}
+	}
 	return defaultCNIConfigPath
 }
 

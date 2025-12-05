@@ -10,26 +10,43 @@ Deploy Node Doctor to your cluster:
 kubectl apply -f deployment/daemonset.yaml
 ```
 
+## Pre-Deployment Checklist
+
+Before deploying Node Doctor to production, ensure you have planned for:
+
+- [ ] **RBAC resources** - Deploy rbac.yaml before daemonset.yaml
+- [ ] **ServiceMonitor** - Required if using Prometheus Operator for metrics scraping
+- [ ] **PrometheusRule** - Recommended for alerting on critical conditions
+- [ ] **Grafana Dashboards** - Deploy dashboards for visualization (see `/dashboards`)
+- [ ] **Post-deployment verification** - Run smoke tests after deployment
+
 ## Deployment Order
 
 ⚠️ **IMPORTANT**: RBAC resources must be deployed before the DaemonSet.
 
-### Recommended Deployment
+### Full Production Deployment
 
 ```bash
-# Apply RBAC resources first
+# 1. Create namespace (if not using kube-system)
+kubectl create namespace node-doctor
+
+# 2. Apply RBAC resources first
 kubectl apply -f deployment/rbac.yaml
 
-# Verify RBAC resources
-kubectl get serviceaccount -n kube-system node-doctor
-kubectl get clusterrole node-doctor
-kubectl get clusterrolebinding node-doctor
-
-# Deploy Node Doctor DaemonSet
+# 3. Deploy Node Doctor DaemonSet
 kubectl apply -f deployment/daemonset.yaml
+
+# 4. Deploy ServiceMonitor for Prometheus scraping (REQUIRED for metrics)
+kubectl apply -f deployment/servicemonitor.yaml -n monitoring
+
+# 5. Deploy PrometheusRule for alerting (RECOMMENDED)
+kubectl apply -f deployment/prometheusrule.yaml -n monitoring
+
+# 6. Run smoke tests to verify deployment
+./deployment/smoke-test.sh node-doctor monitoring
 ```
 
-### Quick Deployment (Both Files)
+### Quick Deployment (Minimal)
 
 ```bash
 # Apply both in correct order
@@ -54,6 +71,20 @@ kubectl apply -f deployment/
 1. **DaemonSet** - Main Node Doctor deployment
 2. **ConfigMap** - Node Doctor configuration
 3. **Service** - Headless service for metrics scraping
+
+### deployment/servicemonitor.yaml
+- **ServiceMonitor** - Prometheus Operator resource for automatic metrics scraping
+- Deploy to your Prometheus namespace (typically `monitoring`)
+
+### deployment/prometheusrule.yaml
+- **PrometheusRule** - Alert definitions for critical node conditions
+- Includes Critical, Warning, and Informational alerts
+- Deploy to your Prometheus namespace (typically `monitoring`)
+
+### deployment/smoke-test.sh
+- **Smoke Test Script** - Post-deployment verification
+- Validates DaemonSet, pods, metrics, ServiceMonitor, and Prometheus scraping
+- Usage: `./smoke-test.sh [namespace] [prometheus-namespace]`
 
 **Note**: RBAC resources are in a separate file following Kubernetes best practices.
 
@@ -151,26 +182,47 @@ The ConfigMap includes monitoring for:
 
 ## Verification
 
-Check deployment status:
+### Automated Smoke Test (Recommended)
+
+Run the comprehensive smoke test after deployment:
+
+```bash
+# Run smoke tests
+./deployment/smoke-test.sh node-doctor monitoring
+
+# The smoke test verifies:
+# - DaemonSet is running on all nodes
+# - Pods are healthy and not crash-looping
+# - Metrics endpoint is accessible
+# - ServiceMonitor is configured
+# - PrometheusRule is deployed
+# - Prometheus is scraping metrics
+# - Node conditions are being set
+```
+
+### Manual Verification
 
 ```bash
 # Check DaemonSet status
-kubectl get daemonset -n kube-system node-doctor
+kubectl get daemonset -n node-doctor node-doctor
 
 # Check pods on all nodes
-kubectl get pods -n kube-system -l app=node-doctor -o wide
+kubectl get pods -n node-doctor -l app=node-doctor -o wide
 
 # Check node conditions
-kubectl describe nodes | grep -A 5 "Conditions:"
+kubectl describe nodes | grep -A 5 "NodeDoctor"
 
 # Check logs
-kubectl logs -n kube-system -l app=node-doctor --tail=100
+kubectl logs -n node-doctor -l app=node-doctor --tail=100
 
 # Test health endpoint
-kubectl exec -n kube-system $(kubectl get pods -n kube-system -l app=node-doctor -o jsonpath='{.items[0].metadata.name}') -- curl -s localhost:8080/healthz
+kubectl exec -n node-doctor $(kubectl get pods -n node-doctor -l app=node-doctor -o jsonpath='{.items[0].metadata.name}') -- curl -s localhost:8080/healthz
 
 # Check metrics
-kubectl exec -n kube-system $(kubectl get pods -n kube-system -l app=node-doctor -o jsonpath='{.items[0].metadata.name}') -- curl -s localhost:9100/metrics | head -20
+kubectl exec -n node-doctor $(kubectl get pods -n node-doctor -l app=node-doctor -o jsonpath='{.items[0].metadata.name}') -- curl -s localhost:9101/metrics | head -20
+
+# Verify critical conditions (should show True for healthy)
+kubectl exec -n node-doctor $(kubectl get pods -n node-doctor -l app=node-doctor -o jsonpath='{.items[0].metadata.name}') -- curl -s localhost:9101/metrics | grep -E "CNIConfigValid|CNIHealthy"
 ```
 
 ## Monitoring Integration

@@ -1,0 +1,36 @@
+# ServiceMonitor for Prometheus Operator to scrape Node Doctor metrics
+# This enables Prometheus to automatically discover and scrape all Node Doctor pods
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: node-doctor
+  namespace: node-doctor
+  labels:
+    app: node-doctor
+    component: monitoring
+    tier: system
+    # This label is often required for Prometheus Operator to discover the ServiceMonitor
+    # Adjust based on your Prometheus Operator configuration
+    release: monitoring
+spec:
+  # Match the node-doctor-metrics service
+  selector:
+    matchLabels:
+      app: node-doctor
+      component: monitoring
+
+  # Look for services in the node-doctor namespace
+  namespaceSelector:
+    matchNames:
+      - node-doctor
+
+  # Scrape configuration
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+      scheme: http
+      # Optional: Add relabeling if needed
+      # relabelings:
+      #   - sourceLabels: [__meta_kubernetes_pod_node_name]
+      #     targetLabel: node
