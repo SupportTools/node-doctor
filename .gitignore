@@ -7,6 +7,9 @@
 bin/
 *.out
 
+
+.claude
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -135,3 +138,4 @@ _site/
 
 # Log Bundles
 logs
+

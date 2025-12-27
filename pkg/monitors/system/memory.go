@@ -89,6 +89,79 @@ type MemoryMonitorConfig struct {
 	KmsgPath string `json:"kmsgPath,omitempty"`
 }
 
+// KmsgReader interface abstracts kernel message reading for testability.
+// This interface properly handles /dev/kmsg as a character device that never returns EOF.
+type KmsgReader interface {
+	ReadKmsg(ctx context.Context, path string) ([]byte, error)
+}
+
+// maxKmsgBufferSize limits memory consumption when reading from /dev/kmsg
+const maxKmsgBufferSize = 1 * 1024 * 1024 // 1MB
+
+// defaultKmsgReader implements KmsgReader using non-blocking syscall operations.
+// This properly handles /dev/kmsg as a character device that never returns EOF.
+type defaultKmsgReader struct{}
+
+func (r *defaultKmsgReader) ReadKmsg(ctx context.Context, path string) ([]byte, error) {
+	// Open with O_NONBLOCK to prevent blocking on the character device
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+
+	// Seek to end to only read new messages (skip existing ring buffer).
+	// This prevents reading stale messages on every check.
+	// Note: We intentionally skip historical OOM events on startup; the monitor
+	// will detect new OOM kills going forward. Errors are ignored as seek may
+	// not be supported on all platforms.
+	_, _ = syscall.Seek(fd, 0, 2) // SEEK_END = 2
+
+	// Read messages with non-blocking I/O
+	var allData []byte
+	buf := make([]byte, 8192)
+	totalRead := 0
+
+	for {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			return allData, ctx.Err()
+		default:
+		}
+
+		n, err := syscall.Read(fd, buf)
+		if err != nil {
+			// EINTR means interrupted by signal - retry
+			if err == syscall.EINTR {
+				continue
+			}
+			// EAGAIN/EWOULDBLOCK means no more data available (expected with O_NONBLOCK)
+			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+				break
+			}
+			// EPIPE can occur if we've read past end of ring buffer
+			if err == syscall.EPIPE {
+				break
+			}
+			return allData, err
+		}
+
+		if n == 0 {
+			break
+		}
+
+		totalRead += n
+		if totalRead > maxKmsgBufferSize {
+			break
+		}
+
+		allData = append(allData, buf[:n]...)
+	}
+
+	return allData, nil
+}
+
 // MemoryMonitor monitors memory health conditions including usage and OOM kills.
 // It tracks sustained high memory conditions and generates appropriate events and conditions.
 type MemoryMonitor struct {
@@ -105,6 +178,7 @@ type MemoryMonitor struct {
 
 	// System interfaces (for testing)
 	fileReader FileReader
+	kmsgReader KmsgReader
 }
 
 // MemoryInfo represents parsed memory data from /proc/meminfo.
@@ -145,6 +219,7 @@ func NewMemoryMonitor(ctx context.Context, config types.MonitorConfig) (types.Mo
 		baseMonitor: baseMonitor,
 		config:      memoryConfig,
 		fileReader:  &defaultFileReader{},
+		kmsgReader:  &defaultKmsgReader{},
 	}
 
 	// Set the check function
@@ -378,41 +453,66 @@ func (m *MemoryMonitor) checkSwapUsage(ctx context.Context, status *types.Status
 
 // checkOOMKills monitors for out-of-memory kills and generates appropriate events.
 func (m *MemoryMonitor) checkOOMKills(ctx context.Context, status *types.Status) error {
-	// Try to read kernel messages for OOM kills
-	data, err := m.fileReader.ReadFile(m.config.KmsgPath)
+	// Try to read kernel messages for OOM kills using non-blocking I/O
+	// This properly handles /dev/kmsg as a character device that never returns EOF
+	data, err := m.kmsgReader.ReadKmsg(ctx, m.config.KmsgPath)
 	if err != nil {
+		// Handle context cancellation
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil // Gracefully handle timeout/cancellation
+		}
+
 		// Handle permission denied gracefully (log warning once, continue)
-		if os.IsPermission(err) {
+		if os.IsPermission(err) || errors.Is(err, syscall.EACCES) {
 			m.mu.Lock()
-			if !m.oomPermissionWarned {
+			shouldWarn := !m.oomPermissionWarned
+			if shouldWarn {
 				m.oomPermissionWarned = true
-				m.mu.Unlock()
+			}
+			m.mu.Unlock()
+			if shouldWarn {
 				status.AddEvent(types.NewEvent(
 					types.EventWarning,
 					"OOMCheckPermissionDenied",
 					fmt.Sprintf("Cannot access %s for OOM detection: %v", m.config.KmsgPath, err),
 				))
-			} else {
-				m.mu.Unlock()
 			}
 			return nil
 		}
 
 		// Handle EINVAL errors gracefully (occurs on ARM64 platforms when reading /dev/kmsg)
 		// This is a platform-specific limitation, not a critical failure
-		var pathErr *os.PathError
-		if errors.As(err, &pathErr) && errors.Is(pathErr.Err, syscall.EINVAL) {
+		if errors.Is(err, syscall.EINVAL) {
 			m.mu.Lock()
-			if !m.oomReadErrorWarned {
+			shouldWarn := !m.oomReadErrorWarned
+			if shouldWarn {
 				m.oomReadErrorWarned = true
-				m.mu.Unlock()
+			}
+			m.mu.Unlock()
+			if shouldWarn {
 				status.AddEvent(types.NewEvent(
 					types.EventWarning,
 					"OOMCheckNotSupported",
 					fmt.Sprintf("OOM detection via %s not supported on this platform (ARM64): %v. Memory monitoring will continue without OOM detection.", m.config.KmsgPath, err),
 				))
-			} else {
-				m.mu.Unlock()
+			}
+			return nil
+		}
+
+		// Handle file not found gracefully (kmsg may not exist in some environments)
+		if errors.Is(err, syscall.ENOENT) || os.IsNotExist(err) {
+			m.mu.Lock()
+			shouldWarn := !m.oomReadErrorWarned
+			if shouldWarn {
+				m.oomReadErrorWarned = true
+			}
+			m.mu.Unlock()
+			if shouldWarn {
+				status.AddEvent(types.NewEvent(
+					types.EventWarning,
+					"OOMCheckNotAvailable",
+					fmt.Sprintf("Kernel message file %s not available: %v. Memory monitoring will continue without OOM detection.", m.config.KmsgPath, err),
+				))
 			}
 			return nil
 		}

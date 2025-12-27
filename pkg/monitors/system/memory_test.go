@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -960,16 +961,14 @@ func TestOOMKillDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock file reader
+			// Create mock file reader and kmsg reader
 			mock := newMockFileReader()
+			kmsgMock := newMockKmsgReader()
+
 			if tt.kmsgError != nil {
-				// Don't set the file to simulate error
-				if tt.kmsgError != os.ErrPermission {
-					// For non-permission errors, we expect the error to be returned
-					// so we'll handle this in the test
-				}
+				kmsgMock.setError(tt.kmsgError)
 			} else {
-				mock.setFile("/dev/kmsg", tt.kmsgContent)
+				kmsgMock.setData(tt.kmsgContent)
 			}
 
 			// Create memory monitor
@@ -982,27 +981,18 @@ func TestOOMKillDetection(t *testing.T) {
 					CheckOOMKills:    true,
 				},
 				fileReader: mock,
-			}
-
-			// For permission denied, we need to create a custom mock that returns the error
-			if tt.kmsgError == os.ErrPermission {
-				permissionMock := &mockFileReaderWithError{
-					files: map[string]string{},
-					errors: map[string]error{
-						"/dev/kmsg": os.ErrPermission,
-					},
-				}
-				monitor.fileReader = permissionMock
+				kmsgReader: kmsgMock,
 			}
 
 			ctx := context.Background()
 			status := types.NewStatus("test")
 			err := monitor.checkOOMKills(ctx, status)
 
-			// Handle expected errors
-			if tt.kmsgError != nil && tt.kmsgError != os.ErrPermission {
-				if err == nil {
-					t.Errorf("expected error %v but got none", tt.kmsgError)
+			// Handle expected errors - file not found is now handled gracefully
+			if tt.kmsgError == os.ErrNotExist {
+				// Should NOT return an error - handled gracefully
+				if err != nil {
+					t.Errorf("expected no error for file not found (handled gracefully), got: %v", err)
 				}
 				return
 			}
@@ -1067,12 +1057,46 @@ func (m *mockFileReaderWithError) ReadDir(path string) ([]os.DirEntry, error) {
 	return nil, os.ErrNotExist
 }
 
+// mockKmsgReader allows testing kmsg reading scenarios
+type mockKmsgReader struct {
+	data  []byte
+	err   error
+	calls int
+}
+
+func newMockKmsgReader() *mockKmsgReader {
+	return &mockKmsgReader{}
+}
+
+func (m *mockKmsgReader) ReadKmsg(ctx context.Context, path string) ([]byte, error) {
+	m.calls++
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.data, nil
+}
+
+func (m *mockKmsgReader) setData(data string) {
+	m.data = []byte(data)
+}
+
+func (m *mockKmsgReader) setError(err error) {
+	m.err = err
+}
+
 func TestOOMKillDuplicateDetection(t *testing.T) {
-	// Create mock file reader
+	// Create mock file reader and kmsg reader
 	mock := newMockFileReader()
+	kmsgMock := newMockKmsgReader()
 	kmsgContent := `[12345.678901] Out of memory: Kill process 1234 (test-process)
 [12346.789012] Killed process 1234 (test-process)`
-	mock.setFile("/dev/kmsg", kmsgContent)
+	kmsgMock.setData(kmsgContent)
 
 	// Create memory monitor
 	monitor := &MemoryMonitor{
@@ -1084,6 +1108,7 @@ func TestOOMKillDuplicateDetection(t *testing.T) {
 			CheckOOMKills:    true,
 		},
 		fileReader: mock,
+		kmsgReader: kmsgMock,
 	}
 
 	ctx := context.Background()
@@ -1248,6 +1273,7 @@ func TestMemoryMonitorIntegration(t *testing.T) {
 
 	memMonitor := monitor.(*MemoryMonitor)
 	memMonitor.fileReader = mock
+	memMonitor.kmsgReader = newMockKmsgReader() // Use mock to avoid real /dev/kmsg access
 
 	// Start monitoring
 	statusCh, err := monitor.Start()
@@ -1302,6 +1328,7 @@ func TestMemoryCheckErrors(t *testing.T) {
 		name:       "test-memory",
 		config:     config,
 		fileReader: &defaultFileReader{},
+		kmsgReader: &defaultKmsgReader{},
 	}
 
 	ctx := context.Background()
@@ -1322,8 +1349,11 @@ func TestMemoryCheckErrors(t *testing.T) {
 		return
 	}
 
-	// Check that error events were generated
-	errorReasons := []string{"MemoryCheckFailed", "SwapCheckFailed", "OOMCheckFailed"}
+	// Check that error events were generated for memory and swap checks
+	// Note: OOM check now generates a warning (OOMCheckNotAvailable) instead of error
+	// because missing /dev/kmsg is not a critical failure
+	errorReasons := []string{"MemoryCheckFailed", "SwapCheckFailed"}
+	warningReasons := []string{"OOMCheckNotAvailable"}
 	foundReasons := make(map[string]bool)
 
 	for _, event := range status.Events {
@@ -1335,11 +1365,20 @@ func TestMemoryCheckErrors(t *testing.T) {
 				}
 			}
 		}
+		for _, reason := range warningReasons {
+			if event.Reason == reason {
+				foundReasons[reason] = true
+				if event.Severity != types.EventWarning {
+					t.Errorf("expected warning severity for %s, got %s", reason, event.Severity)
+				}
+			}
+		}
 	}
 
-	for _, reason := range errorReasons {
+	allReasons := append(errorReasons, warningReasons...)
+	for _, reason := range allReasons {
 		if !foundReasons[reason] {
-			t.Errorf("expected error event %s", reason)
+			t.Errorf("expected event %s", reason)
 		}
 	}
 }
@@ -1413,9 +1452,10 @@ func BenchmarkMemoryUsageCheck(b *testing.B) {
 
 func BenchmarkMemoryMonitorFullCheck(b *testing.B) {
 	mock := newMockFileReader()
+	kmsgMock := newMockKmsgReader()
 	memContent := "MemTotal:       8192000 kB\nMemFree:        2048000 kB\nMemAvailable:   4096000 kB\nSwapTotal:      4096000 kB\nSwapFree:       3584000 kB\n"
 	mock.setFile("/proc/meminfo", memContent)
-	mock.setFile("/dev/kmsg", "no OOM kills")
+	kmsgMock.setData("no OOM kills")
 
 	monitor := &MemoryMonitor{
 		name: "bench-memory",
@@ -1432,6 +1472,7 @@ func BenchmarkMemoryMonitorFullCheck(b *testing.B) {
 			SustainedHighMemoryChecks: 3,
 		},
 		fileReader: mock,
+		kmsgReader: kmsgMock,
 	}
 
 	ctx := context.Background()
@@ -1442,5 +1483,118 @@ func BenchmarkMemoryMonitorFullCheck(b *testing.B) {
 		if err != nil {
 			b.Fatalf("checkMemory failed: %v", err)
 		}
+	}
+}
+
+// TestKmsgReaderContextCancellation tests that kmsg reading respects context cancellation
+func TestKmsgReaderContextCancellation(t *testing.T) {
+	kmsgMock := newMockKmsgReader()
+	kmsgMock.setData("some kmsg data")
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Create memory monitor
+	monitor := &MemoryMonitor{
+		name: "test-memory",
+		config: &MemoryMonitorConfig{
+			KmsgPath:         "/dev/kmsg",
+			CheckMemoryUsage: false,
+			CheckSwapUsage:   false,
+			CheckOOMKills:    true,
+		},
+		fileReader: newMockFileReader(),
+		kmsgReader: kmsgMock,
+	}
+
+	status := types.NewStatus("test")
+	err := monitor.checkOOMKills(ctx, status)
+
+	// Should not return an error - context cancellation is handled gracefully
+	if err != nil {
+		t.Errorf("expected nil error for cancelled context, got: %v", err)
+	}
+
+	// Should have no events (graceful handling)
+	if len(status.Events) != 0 {
+		t.Errorf("expected no events for cancelled context, got %d events", len(status.Events))
+	}
+}
+
+// TestKmsgReaderFileNotFound tests graceful handling of missing kmsg file
+func TestKmsgReaderFileNotFound(t *testing.T) {
+	kmsgMock := newMockKmsgReader()
+	kmsgMock.setError(syscall.ENOENT)
+
+	// Create memory monitor
+	monitor := &MemoryMonitor{
+		name: "test-memory",
+		config: &MemoryMonitorConfig{
+			KmsgPath:         "/dev/kmsg",
+			CheckMemoryUsage: false,
+			CheckSwapUsage:   false,
+			CheckOOMKills:    true,
+		},
+		fileReader: newMockFileReader(),
+		kmsgReader: kmsgMock,
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test")
+
+	// First call - should generate warning event
+	err := monitor.checkOOMKills(ctx, status)
+	if err != nil {
+		t.Errorf("expected nil error for file not found (graceful), got: %v", err)
+	}
+
+	// Should have warning event about kmsg not available
+	if len(status.Events) != 1 {
+		t.Errorf("expected 1 warning event, got %d events", len(status.Events))
+	} else if status.Events[0].Reason != "OOMCheckNotAvailable" {
+		t.Errorf("expected OOMCheckNotAvailable event, got %q", status.Events[0].Reason)
+	}
+
+	// Second call - should not generate duplicate warning
+	status2 := types.NewStatus("test")
+	err = monitor.checkOOMKills(ctx, status2)
+	if err != nil {
+		t.Errorf("expected nil error on second call, got: %v", err)
+	}
+	if len(status2.Events) != 0 {
+		t.Errorf("expected no events on second call (warning already shown), got %d", len(status2.Events))
+	}
+}
+
+// TestKmsgReaderEmptyData tests handling of empty kmsg data
+func TestKmsgReaderEmptyData(t *testing.T) {
+	kmsgMock := newMockKmsgReader()
+	kmsgMock.setData("") // Empty data (no new messages)
+
+	// Create memory monitor
+	monitor := &MemoryMonitor{
+		name: "test-memory",
+		config: &MemoryMonitorConfig{
+			KmsgPath:         "/dev/kmsg",
+			CheckMemoryUsage: false,
+			CheckSwapUsage:   false,
+			CheckOOMKills:    true,
+		},
+		fileReader: newMockFileReader(),
+		kmsgReader: kmsgMock,
+	}
+
+	ctx := context.Background()
+	status := types.NewStatus("test")
+	err := monitor.checkOOMKills(ctx, status)
+
+	if err != nil {
+		t.Errorf("expected nil error for empty kmsg data, got: %v", err)
+	}
+
+	// Should have no events (no OOM kills found)
+	if len(status.Events) != 0 {
+		t.Errorf("expected no events for empty kmsg data, got %d events", len(status.Events))
 	}
 }
