@@ -27,6 +27,7 @@ Kubernetes node health monitoring and auto-remediation system. Node Doctor runs 
 - [Comparison with Node Problem Detector](#comparison-with-node-problem-detector)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
+- [Security](#security)
 - [License](#license)
 - [Support](#support)
 
@@ -580,6 +581,10 @@ Node Doctor is based on Node Problem Detector but adds significant enhancements:
 ## Contributing
 
 Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for our security policy, vulnerability reporting process, and documentation of Node Doctor's security model including privilege requirements.
 
 ## License
 
