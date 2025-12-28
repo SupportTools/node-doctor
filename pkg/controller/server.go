@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +22,9 @@ type Server struct {
 
 	// Metrics
 	metrics *ControllerMetrics
+
+	// Correlator for pattern detection
+	correlator *Correlator
 
 	// State
 	mu        sync.RWMutex
@@ -45,6 +49,11 @@ func NewServer(config *ControllerConfig) (*Server, error) {
 		leases:      make(map[string]*Lease),
 		startTime:   time.Now(),
 		metrics:     NewControllerMetrics(),
+	}
+
+	// Initialize correlator if enabled
+	if config.Correlation.Enabled {
+		s.correlator = NewCorrelator(&config.Correlation, nil, s.metrics, nil)
 	}
 
 	// Initialize HTTP routes
@@ -103,6 +112,13 @@ func (s *Server) Start(ctx context.Context) error {
 	// Give server a moment to start
 	time.Sleep(100 * time.Millisecond)
 
+	// Start correlator if available
+	if s.correlator != nil {
+		if err := s.correlator.Start(ctx); err != nil {
+			log.Printf("[WARN] Failed to start correlator: %v", err)
+		}
+	}
+
 	s.started = true
 	s.ready = true
 	s.startTime = time.Now()
@@ -121,6 +137,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	log.Printf("[INFO] Stopping controller server...")
+
+	// Stop correlator first
+	if s.correlator != nil {
+		if err := s.correlator.Stop(); err != nil {
+			log.Printf("[WARN] Failed to stop correlator: %v", err)
+		}
+	}
 
 	// Create shutdown context with timeout if not provided
 	shutdownCtx := ctx
@@ -240,6 +263,7 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.nodeReports[report.NodeName] = &report
 	storage := s.storage
+	correlator := s.correlator
 	s.mu.Unlock()
 
 	// Persist to storage if available
@@ -247,6 +271,11 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		if err := storage.SaveNodeReport(context.Background(), &report); err != nil {
 			log.Printf("[WARN] Failed to persist report to storage: %v", err)
 		}
+	}
+
+	// Update correlator with new report
+	if correlator != nil {
+		correlator.UpdateNodeReport(&report)
 	}
 
 	log.Printf("[DEBUG] Received report from node %s (health: %s, problems: %d)",
@@ -480,8 +509,18 @@ func (s *Server) handleCorrelations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Placeholder - will be implemented with correlator
-	s.writeSuccess(w, http.StatusOK, []Correlation{})
+	s.mu.RLock()
+	correlator := s.correlator
+	s.mu.RUnlock()
+
+	if correlator == nil {
+		// Correlator not enabled, return empty list
+		s.writeSuccess(w, http.StatusOK, []Correlation{})
+		return
+	}
+
+	correlations := correlator.GetActiveCorrelations()
+	s.writeSuccess(w, http.StatusOK, correlations)
 }
 
 func (s *Server) handleCorrelationDetail(w http.ResponseWriter, r *http.Request) {
@@ -490,8 +529,35 @@ func (s *Server) handleCorrelationDetail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Placeholder - will be implemented with correlator
-	s.writeError(w, http.StatusNotFound, "NOT_FOUND", "Correlation not found")
+	// Extract correlation ID from path: /api/v1/correlations/{id}
+	path := r.URL.Path
+	prefix := "/api/v1/correlations/"
+	if !strings.HasPrefix(path, prefix) {
+		s.writeError(w, http.StatusBadRequest, "INVALID_PATH", "Invalid correlation path")
+		return
+	}
+	correlationID := strings.TrimPrefix(path, prefix)
+	if correlationID == "" {
+		s.writeError(w, http.StatusBadRequest, "MISSING_ID", "Correlation ID is required")
+		return
+	}
+
+	s.mu.RLock()
+	correlator := s.correlator
+	s.mu.RUnlock()
+
+	if correlator == nil {
+		s.writeError(w, http.StatusNotFound, "NOT_FOUND", "Correlator not enabled")
+		return
+	}
+
+	correlation, err := correlator.GetCorrelation(correlationID)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, "NOT_FOUND", "Correlation not found")
+		return
+	}
+
+	s.writeSuccess(w, http.StatusOK, correlation)
 }
 
 // =====================
