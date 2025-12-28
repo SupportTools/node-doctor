@@ -29,17 +29,17 @@ type LeaseClient struct {
 
 // LeaseClientStats tracks statistics for the lease client.
 type LeaseClientStats struct {
-	mu                sync.RWMutex
-	LeaseRequests     int64
-	LeasesGranted     int64
-	LeasesDenied      int64
-	LeaseReleases     int64
-	ControllerErrors  int64
-	LastRequestTime   time.Time
-	LastSuccessTime   time.Time
-	LastError         string
-	LastErrorTime     time.Time
-	FallbacksUsed     int64
+	mu               sync.RWMutex
+	LeaseRequests    int64
+	LeasesGranted    int64
+	LeasesDenied     int64
+	LeaseReleases    int64
+	ControllerErrors int64
+	LastRequestTime  time.Time
+	LastSuccessTime  time.Time
+	LastError        string
+	LastErrorTime    time.Time
+	FallbacksUsed    int64
 }
 
 // NewLeaseClient creates a new lease client for the given node.

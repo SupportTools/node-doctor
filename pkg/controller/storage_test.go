@@ -406,7 +406,7 @@ func TestSQLiteStorage_Correlations(t *testing.T) {
 			Severity:      "critical", // Updated severity
 			Status:        "active",
 			Message:       "Multiple nodes experiencing DNS issues",
-			Confidence:    0.95, // Updated confidence
+			Confidence:    0.95,                                             // Updated confidence
 			AffectedNodes: []string{"node-1", "node-2", "node-3", "node-4"}, // Added node
 			DetectedAt:    time.Now(),
 			UpdatedAt:     time.Now(),

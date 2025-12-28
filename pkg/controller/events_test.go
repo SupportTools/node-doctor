@@ -11,10 +11,10 @@ import (
 
 func TestNewEventRecorder(t *testing.T) {
 	tests := []struct {
-		name      string
-		config    *EventRecorderConfig
-		wantErr   bool
-		wantNil   bool
+		name        string
+		config      *EventRecorderConfig
+		wantErr     bool
+		wantNil     bool
 		wantEnabled bool
 	}{
 		{
@@ -159,19 +159,19 @@ func TestEventRecorder_RecordClusterHealthChange(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name            string
-		status          *ClusterStatus
-		previousHealth  HealthStatus
-		expectEvent     bool
-		expectedReason  string
+		name           string
+		status         *ClusterStatus
+		previousHealth HealthStatus
+		expectEvent    bool
+		expectedReason string
 	}{
 		{
 			name: "critical cluster creates event",
 			status: &ClusterStatus{
-				OverallHealth:  HealthStatusCritical,
-				TotalNodes:     10,
-				CriticalNodes:  3,
-				DegradedNodes:  2,
+				OverallHealth: HealthStatusCritical,
+				TotalNodes:    10,
+				CriticalNodes: 3,
+				DegradedNodes: 2,
 			},
 			previousHealth: HealthStatusDegraded,
 			expectEvent:    true,
@@ -180,10 +180,10 @@ func TestEventRecorder_RecordClusterHealthChange(t *testing.T) {
 		{
 			name: "degraded cluster creates event",
 			status: &ClusterStatus{
-				OverallHealth:  HealthStatusDegraded,
-				TotalNodes:     10,
-				DegradedNodes:  3,
-				HealthyNodes:   7,
+				OverallHealth: HealthStatusDegraded,
+				TotalNodes:    10,
+				DegradedNodes: 3,
+				HealthyNodes:  7,
 			},
 			previousHealth: HealthStatusHealthy,
 			expectEvent:    true,
@@ -192,9 +192,9 @@ func TestEventRecorder_RecordClusterHealthChange(t *testing.T) {
 		{
 			name: "recovery creates event",
 			status: &ClusterStatus{
-				OverallHealth:  HealthStatusHealthy,
-				TotalNodes:     10,
-				HealthyNodes:   10,
+				OverallHealth: HealthStatusHealthy,
+				TotalNodes:    10,
+				HealthyNodes:  10,
 			},
 			previousHealth: HealthStatusCritical,
 			expectEvent:    true,
@@ -203,9 +203,9 @@ func TestEventRecorder_RecordClusterHealthChange(t *testing.T) {
 		{
 			name: "healthy to healthy no event",
 			status: &ClusterStatus{
-				OverallHealth:  HealthStatusHealthy,
-				TotalNodes:     10,
-				HealthyNodes:   10,
+				OverallHealth: HealthStatusHealthy,
+				TotalNodes:    10,
+				HealthyNodes:  10,
 			},
 			previousHealth: HealthStatusHealthy,
 			expectEvent:    false,

@@ -535,10 +535,10 @@ func (cm *ConditionManager) ClearManagedConditions() []string {
 
 	// Conditions managed by node-doctor (common patterns)
 	nodeDoctorConditionPrefixes := []string{
-		"NodeDoctor",       // e.g., NodeDoctorHealthy, NodeDoctorCPU
-		"CPUPressure",      // system-cpu monitor
-		"MemoryPressure",   // system-memory monitor (may conflict with k8s built-in)
-		"DiskPressure",     // system-disk monitor (may conflict with k8s built-in)
+		"NodeDoctor",     // e.g., NodeDoctorHealthy, NodeDoctorCPU
+		"CPUPressure",    // system-cpu monitor
+		"MemoryPressure", // system-memory monitor (may conflict with k8s built-in)
+		"DiskPressure",   // system-disk monitor (may conflict with k8s built-in)
 		"NetworkUnreachable",
 		"DNSResolutionFailed",
 		"GatewayUnreachable",

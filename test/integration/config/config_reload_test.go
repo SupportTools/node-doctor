@@ -557,30 +557,9 @@ exporters:
 
 	// Rapidly update config multiple times
 	for i := 0; i < 5; i++ {
-		config := `apiVersion: "node-doctor.io/v1"
-kind: "NodeDoctorConfig"
-metadata:
-  name: "test-config"
-settings:
-  nodeName: "test-node"
-monitors:
-  - name: "monitor-1"
-    type: "kubelet"
-    enabled: true
-    interval: "%ds"
-exporters:
-  kubernetes:
-    enabled: true
-    namespace: "test-ns"
-  prometheus:
-    enabled: true
-    port: 9101
-    path: "/metrics"
-`
-		configContent := []byte(config)
-		// Replace %ds with actual interval
+		// Create config with actual interval
 		interval := (i + 1) * 10
-		configContent = []byte(`apiVersion: "node-doctor.io/v1"
+		configContent := []byte(`apiVersion: "node-doctor.io/v1"
 kind: "NodeDoctorConfig"
 metadata:
   name: "test-config"
@@ -798,8 +777,8 @@ func TestConfigDiff_ComputeChanges(t *testing.T) {
 			},
 			newConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 45 * time.Second}, // modified
-					{Name: "mon3", Type: "kubelet", Interval: 90 * time.Second}, // unchanged
+					{Name: "mon1", Type: "kubelet", Interval: 45 * time.Second},  // modified
+					{Name: "mon3", Type: "kubelet", Interval: 90 * time.Second},  // unchanged
 					{Name: "mon4", Type: "kubelet", Interval: 120 * time.Second}, // added
 				},
 			},

@@ -17,8 +17,9 @@ import (
 // pingSequence is a global counter for ICMP sequence numbers
 var pingSequence uint32
 
-// pingID is a random ID generated at startup to avoid collisions with other processes
-var pingID = uint16(rand.Uint32())
+// pingID is a random ID generated at startup to avoid collisions with other processes.
+// Using math/rand is acceptable here - cryptographic randomness is not required for ICMP ping IDs.
+var pingID = uint16(rand.Uint32()) //nolint:gosec // ping ID doesn't require crypto/rand
 
 // PingResult represents the result of a single ping operation.
 type PingResult struct {

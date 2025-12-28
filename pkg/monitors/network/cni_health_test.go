@@ -213,10 +213,10 @@ func TestDetectCNIConfigPathWithRoot_HostRootPrefix(t *testing.T) {
 	// This test simulates the containerized deployment scenario where
 	// the host filesystem is mounted at /host (or a custom prefix)
 	tests := []struct {
-		name      string
-		hostRoot  string
-		setup     func(t *testing.T, hostRoot string)
-		wantPath  string
+		name     string
+		hostRoot string
+		setup    func(t *testing.T, hostRoot string)
+		wantPath string
 	}{
 		{
 			name:     "finds RKE2 config under host root",

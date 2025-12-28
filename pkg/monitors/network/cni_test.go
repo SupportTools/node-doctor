@@ -653,15 +653,15 @@ func TestPeerListChanged(t *testing.T) {
 func TestCNIMonitor_DeltaBasedEventEmission(t *testing.T) {
 	// Test that events are only emitted when state changes
 	tests := []struct {
-		name                        string
-		previousHighLatency         []string
-		previousUnreachable         []string
-		currentHighLatency          []string
-		currentUnreachable          []string
-		expectHighLatencyEvent      bool
-		expectUnreachableEvent      bool
-		expectHighLatencyRecovery   bool
-		expectUnreachableRecovery   bool
+		name                      string
+		previousHighLatency       []string
+		previousUnreachable       []string
+		currentHighLatency        []string
+		currentUnreachable        []string
+		expectHighLatencyEvent    bool
+		expectUnreachableEvent    bool
+		expectHighLatencyRecovery bool
+		expectUnreachableRecovery bool
 	}{
 		{
 			name:                      "no previous state, no current issues - no events",

@@ -526,9 +526,15 @@ func (s *SQLiteStorage) GetCorrelation(ctx context.Context, id string) (*Correla
 		return nil, fmt.Errorf("failed to get correlation: %w", err)
 	}
 
-	unmarshalJSON(affectedNodes, &correlation.AffectedNodes)
-	unmarshalJSON(problemTypes, &correlation.ProblemTypes)
-	unmarshalJSON(metadata, &correlation.Metadata)
+	if err := unmarshalJSON(affectedNodes, &correlation.AffectedNodes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal affected nodes: %w", err)
+	}
+	if err := unmarshalJSON(problemTypes, &correlation.ProblemTypes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal problem types: %w", err)
+	}
+	if err := unmarshalJSON(metadata, &correlation.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
 
 	return &correlation, nil
 }
@@ -560,9 +566,15 @@ func (s *SQLiteStorage) GetActiveCorrelations(ctx context.Context) ([]*Correlati
 			return nil, fmt.Errorf("failed to scan correlation: %w", err)
 		}
 
-		unmarshalJSON(affectedNodes, &correlation.AffectedNodes)
-		unmarshalJSON(problemTypes, &correlation.ProblemTypes)
-		unmarshalJSON(metadata, &correlation.Metadata)
+		if err := unmarshalJSON(affectedNodes, &correlation.AffectedNodes); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal affected nodes: %w", err)
+		}
+		if err := unmarshalJSON(problemTypes, &correlation.ProblemTypes); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal problem types: %w", err)
+		}
+		if err := unmarshalJSON(metadata, &correlation.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
 
 		correlations = append(correlations, &correlation)
 	}

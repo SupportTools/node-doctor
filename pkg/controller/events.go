@@ -18,27 +18,27 @@ import (
 // Event reasons for different scenarios
 const (
 	// Cluster health events
-	EventReasonClusterDegraded       = "ClusterDegraded"
-	EventReasonClusterCritical       = "ClusterCritical"
-	EventReasonClusterRecovered      = "ClusterRecovered"
-	EventReasonNodeHealthChanged     = "NodeHealthChanged"
+	EventReasonClusterDegraded   = "ClusterDegraded"
+	EventReasonClusterCritical   = "ClusterCritical"
+	EventReasonClusterRecovered  = "ClusterRecovered"
+	EventReasonNodeHealthChanged = "NodeHealthChanged"
 
 	// Problem events
-	EventReasonProblemDetected       = "ProblemDetected"
-	EventReasonProblemResolved       = "ProblemResolved"
-	EventReasonClusterWideProblem    = "ClusterWideProblem"
+	EventReasonProblemDetected    = "ProblemDetected"
+	EventReasonProblemResolved    = "ProblemResolved"
+	EventReasonClusterWideProblem = "ClusterWideProblem"
 
 	// Correlation events
-	EventReasonCorrelationDetected   = "CorrelationDetected"
-	EventReasonCorrelationResolved   = "CorrelationResolved"
+	EventReasonCorrelationDetected = "CorrelationDetected"
+	EventReasonCorrelationResolved = "CorrelationResolved"
 
 	// Remediation events
-	EventReasonLeaseGranted          = "RemediationLeaseGranted"
-	EventReasonLeaseDenied           = "RemediationLeaseDenied"
-	EventReasonLeaseExpired          = "RemediationLeaseExpired"
-	EventReasonRemediationStarted    = "RemediationStarted"
-	EventReasonRemediationCompleted  = "RemediationCompleted"
-	EventReasonRemediationFailed     = "RemediationFailed"
+	EventReasonLeaseGranted         = "RemediationLeaseGranted"
+	EventReasonLeaseDenied          = "RemediationLeaseDenied"
+	EventReasonLeaseExpired         = "RemediationLeaseExpired"
+	EventReasonRemediationStarted   = "RemediationStarted"
+	EventReasonRemediationCompleted = "RemediationCompleted"
+	EventReasonRemediationFailed    = "RemediationFailed"
 )
 
 // Event types
@@ -49,16 +49,16 @@ const (
 
 // EventRecorder creates Kubernetes Events for cluster-level issues
 type EventRecorder struct {
-	client           kubernetes.Interface
-	namespace        string
-	enabled          bool
-	controllerName   string
-	componentName    string
+	client         kubernetes.Interface
+	namespace      string
+	enabled        bool
+	controllerName string
+	componentName  string
 
 	// Rate limiting to prevent event spam
-	mu               sync.RWMutex
-	lastEventTime    map[string]time.Time
-	rateLimitPeriod  time.Duration
+	mu              sync.RWMutex
+	lastEventTime   map[string]time.Time
+	rateLimitPeriod time.Duration
 }
 
 // EventRecorderConfig holds configuration for the EventRecorder

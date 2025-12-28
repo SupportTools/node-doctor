@@ -111,8 +111,8 @@ type CNIMonitor struct {
 	started        bool
 
 	// State tracking for delta-based event emission (issue #8)
-	lastHighLatencyPeers         []string // Previous high latency peer list
-	lastPersistentlyUnreachable  []string // Previous persistently unreachable peer list
+	lastHighLatencyPeers        []string // Previous high latency peer list
+	lastPersistentlyUnreachable []string // Previous persistently unreachable peer list
 
 	*monitors.BaseMonitor
 }

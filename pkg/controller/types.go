@@ -96,38 +96,38 @@ type NodeStats struct {
 
 // ClusterStatus represents the overall cluster health status
 type ClusterStatus struct {
-	Timestamp       time.Time      `json:"timestamp"`
-	OverallHealth   HealthStatus   `json:"overallHealth"`
-	TotalNodes      int            `json:"totalNodes"`
-	HealthyNodes    int            `json:"healthyNodes"`
-	DegradedNodes   int            `json:"degradedNodes"`
-	CriticalNodes   int            `json:"criticalNodes"`
-	UnknownNodes    int            `json:"unknownNodes"`
-	ActiveProblems  int            `json:"activeProblems"`
-	Correlations    int            `json:"activeCorrelations"`
-	NodeSummaries   []NodeSummary  `json:"nodeSummaries,omitempty"`
-	RecentProblems  []ClusterProblem `json:"recentProblems,omitempty"`
+	Timestamp      time.Time        `json:"timestamp"`
+	OverallHealth  HealthStatus     `json:"overallHealth"`
+	TotalNodes     int              `json:"totalNodes"`
+	HealthyNodes   int              `json:"healthyNodes"`
+	DegradedNodes  int              `json:"degradedNodes"`
+	CriticalNodes  int              `json:"criticalNodes"`
+	UnknownNodes   int              `json:"unknownNodes"`
+	ActiveProblems int              `json:"activeProblems"`
+	Correlations   int              `json:"activeCorrelations"`
+	NodeSummaries  []NodeSummary    `json:"nodeSummaries,omitempty"`
+	RecentProblems []ClusterProblem `json:"recentProblems,omitempty"`
 }
 
 // NodeSummary provides a brief overview of a node's status
 type NodeSummary struct {
-	NodeName      string       `json:"nodeName"`
-	Health        HealthStatus `json:"health"`
-	LastReportAt  time.Time    `json:"lastReportAt"`
-	ProblemCount  int          `json:"problemCount"`
-	ConditionCount int         `json:"conditionCount"`
+	NodeName       string       `json:"nodeName"`
+	Health         HealthStatus `json:"health"`
+	LastReportAt   time.Time    `json:"lastReportAt"`
+	ProblemCount   int          `json:"problemCount"`
+	ConditionCount int          `json:"conditionCount"`
 }
 
 // ClusterProblem represents a problem affecting the cluster
 type ClusterProblem struct {
-	ID            string       `json:"id"`
-	Type          string       `json:"type"`
-	Severity      string       `json:"severity"`
-	AffectedNodes []string     `json:"affectedNodes"`
-	Message       string       `json:"message"`
-	DetectedAt    time.Time    `json:"detectedAt"`
-	IsCorrelated  bool         `json:"isCorrelated"`
-	CorrelationID string       `json:"correlationId,omitempty"`
+	ID            string    `json:"id"`
+	Type          string    `json:"type"`
+	Severity      string    `json:"severity"`
+	AffectedNodes []string  `json:"affectedNodes"`
+	Message       string    `json:"message"`
+	DetectedAt    time.Time `json:"detectedAt"`
+	IsCorrelated  bool      `json:"isCorrelated"`
+	CorrelationID string    `json:"correlationId,omitempty"`
 }
 
 // =====================
@@ -162,16 +162,16 @@ type ReportSummary struct {
 
 // Correlation represents a detected pattern across multiple nodes
 type Correlation struct {
-	ID            string       `json:"id"`
-	Type          string       `json:"type"` // infrastructure, common-cause, cascade
-	Severity      string       `json:"severity"`
-	AffectedNodes []string     `json:"affectedNodes"`
-	ProblemTypes  []string     `json:"problemTypes"`
-	Message       string       `json:"message"`
-	DetectedAt    time.Time    `json:"detectedAt"`
-	UpdatedAt     time.Time    `json:"updatedAt"`
-	Status        string       `json:"status"` // active, resolved, investigating
-	Confidence    float64      `json:"confidence"`
+	ID            string                 `json:"id"`
+	Type          string                 `json:"type"` // infrastructure, common-cause, cascade
+	Severity      string                 `json:"severity"`
+	AffectedNodes []string               `json:"affectedNodes"`
+	ProblemTypes  []string               `json:"problemTypes"`
+	Message       string                 `json:"message"`
+	DetectedAt    time.Time              `json:"detectedAt"`
+	UpdatedAt     time.Time              `json:"updatedAt"`
+	Status        string                 `json:"status"` // active, resolved, investigating
+	Confidence    float64                `json:"confidence"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -194,7 +194,7 @@ type LeaseResponse struct {
 	Approved  bool      `json:"approved"`
 	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 	Message   string    `json:"message,omitempty"`
-	RetryAt   time.Time `json:"retryAt,omitempty"` // when to retry if denied
+	RetryAt   time.Time `json:"retryAt,omitempty"`  // when to retry if denied
 	Position  int       `json:"position,omitempty"` // queue position if waiting
 }
 
@@ -279,34 +279,34 @@ type StorageConfig struct {
 
 // CorrelationConfig contains correlation engine settings
 type CorrelationConfig struct {
-	Enabled                 bool          `json:"enabled" yaml:"enabled"`
-	ClusterWideThreshold    float64       `json:"clusterWideThreshold" yaml:"clusterWideThreshold"`
-	EvaluationInterval      time.Duration `json:"evaluationInterval" yaml:"evaluationInterval"`
-	MinNodesForCorrelation  int           `json:"minNodesForCorrelation" yaml:"minNodesForCorrelation"`
+	Enabled                bool          `json:"enabled" yaml:"enabled"`
+	ClusterWideThreshold   float64       `json:"clusterWideThreshold" yaml:"clusterWideThreshold"`
+	EvaluationInterval     time.Duration `json:"evaluationInterval" yaml:"evaluationInterval"`
+	MinNodesForCorrelation int           `json:"minNodesForCorrelation" yaml:"minNodesForCorrelation"`
 }
 
 // CoordinationConfig contains remediation coordination settings
 type CoordinationConfig struct {
-	Enabled                    bool          `json:"enabled" yaml:"enabled"`
-	MaxConcurrentRemediations  int           `json:"maxConcurrentRemediations" yaml:"maxConcurrentRemediations"`
-	DefaultLeaseDuration       time.Duration `json:"defaultLeaseDuration" yaml:"defaultLeaseDuration"`
-	CooldownPeriod             time.Duration `json:"cooldownPeriod" yaml:"cooldownPeriod"`
+	Enabled                   bool          `json:"enabled" yaml:"enabled"`
+	MaxConcurrentRemediations int           `json:"maxConcurrentRemediations" yaml:"maxConcurrentRemediations"`
+	DefaultLeaseDuration      time.Duration `json:"defaultLeaseDuration" yaml:"defaultLeaseDuration"`
+	CooldownPeriod            time.Duration `json:"cooldownPeriod" yaml:"cooldownPeriod"`
 }
 
 // PrometheusConfig contains Prometheus metrics configuration
 type PrometheusConfig struct {
-	Enabled bool `json:"enabled" yaml:"enabled"`
-	Port    int  `json:"port" yaml:"port"`
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	Port    int    `json:"port" yaml:"port"`
 	Path    string `json:"path" yaml:"path"`
 }
 
 // KubernetesConfig contains Kubernetes integration settings
 type KubernetesConfig struct {
-	Enabled     bool   `json:"enabled" yaml:"enabled"`
-	Kubeconfig  string `json:"kubeconfig" yaml:"kubeconfig"`
-	InCluster   bool   `json:"inCluster" yaml:"inCluster"`
-	Namespace   string `json:"namespace" yaml:"namespace"`
-	CreateEvents bool  `json:"createEvents" yaml:"createEvents"`
+	Enabled      bool   `json:"enabled" yaml:"enabled"`
+	Kubeconfig   string `json:"kubeconfig" yaml:"kubeconfig"`
+	InCluster    bool   `json:"inCluster" yaml:"inCluster"`
+	Namespace    string `json:"namespace" yaml:"namespace"`
+	CreateEvents bool   `json:"createEvents" yaml:"createEvents"`
 }
 
 // DefaultControllerConfig returns a configuration with sensible defaults
@@ -324,10 +324,10 @@ func DefaultControllerConfig() *ControllerConfig {
 			Retention: 30 * 24 * time.Hour, // 30 days
 		},
 		Correlation: CorrelationConfig{
-			Enabled:                 true,
-			ClusterWideThreshold:    0.3, // 30% of nodes
-			EvaluationInterval:      30 * time.Second,
-			MinNodesForCorrelation:  2,
+			Enabled:                true,
+			ClusterWideThreshold:   0.3, // 30% of nodes
+			EvaluationInterval:     30 * time.Second,
+			MinNodesForCorrelation: 2,
 		},
 		Coordination: CoordinationConfig{
 			Enabled:                   true,

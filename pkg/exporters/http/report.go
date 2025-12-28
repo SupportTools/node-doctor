@@ -240,7 +240,7 @@ func (rb *ReportBuilder) convertMonitorStatus(status *types.Status) *controller.
 // convertCondition converts a types.Condition to a controller.NodeCondition.
 func (rb *ReportBuilder) convertCondition(cond types.Condition) *controller.NodeCondition {
 	// Convert condition status to string
-	statusStr := "Unknown"
+	var statusStr string
 	switch cond.Status {
 	case types.ConditionTrue:
 		statusStr = "True"
