@@ -363,3 +363,13 @@ func (c *K8sClient) RemoveNodeConditions(ctx context.Context, conditionTypesToRe
 func jsonMarshal(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
 }
+
+// NewClientForTesting creates a K8sClient with a provided clientset for testing.
+// This should only be used in tests - production code should use NewClient.
+func NewClientForTesting(clientset kubernetes.Interface, nodeName, nodeUID string) *K8sClient {
+	return &K8sClient{
+		clientset: clientset,
+		nodeName:  nodeName,
+		nodeUID:   nodeUID,
+	}
+}
