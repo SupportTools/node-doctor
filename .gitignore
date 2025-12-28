@@ -135,6 +135,7 @@ _site/
 *.tfstate.*
 .terraform/
 /node-doctor
+/node-doctor-controller
 
 # Log Bundles
 logs
