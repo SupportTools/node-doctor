@@ -205,6 +205,7 @@ type Lease struct {
 	RemediationType string    `json:"remediationType"`
 	GrantedAt       time.Time `json:"grantedAt"`
 	ExpiresAt       time.Time `json:"expiresAt"`
+	CompletedAt     time.Time `json:"completedAt,omitempty"`
 	Status          string    `json:"status"` // active, completed, expired, cancelled
 	Reason          string    `json:"reason,omitempty"`
 }

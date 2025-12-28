@@ -442,3 +442,271 @@ func TestDefaultControllerConfig(t *testing.T) {
 		t.Errorf("expected 30%% threshold, got %v", config.Correlation.ClusterWideThreshold)
 	}
 }
+
+func TestServer_LeaseExpiration_AutoCleanup(t *testing.T) {
+	config := DefaultControllerConfig()
+	server, _ := NewServer(config)
+
+	// Add an expired lease directly to the in-memory map
+	expiredTime := time.Now().Add(-1 * time.Hour)
+	server.mu.Lock()
+	server.leases["expired-lease-1"] = &Lease{
+		ID:              "expired-lease-1",
+		NodeName:        "test-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       expiredTime.Add(-5 * time.Minute),
+		ExpiresAt:       expiredTime,
+		Status:          "active",
+	}
+	server.leases["active-lease-1"] = &Lease{
+		ID:              "active-lease-1",
+		NodeName:        "other-node",
+		RemediationType: "flush-dns",
+		GrantedAt:       time.Now(),
+		ExpiresAt:       time.Now().Add(5 * time.Minute),
+		Status:          "active",
+	}
+	server.mu.Unlock()
+
+	// Manually trigger cleanup
+	server.cleanupExpiredLeases(context.Background())
+
+	// Verify expired lease was marked as expired
+	server.mu.RLock()
+	expiredLease := server.leases["expired-lease-1"]
+	activeLease := server.leases["active-lease-1"]
+	server.mu.RUnlock()
+
+	if expiredLease.Status != "expired" {
+		t.Errorf("expected expired lease status to be 'expired', got %q", expiredLease.Status)
+	}
+	if expiredLease.CompletedAt.IsZero() {
+		t.Error("expected CompletedAt to be set on expired lease")
+	}
+	if activeLease.Status != "active" {
+		t.Errorf("expected active lease status to remain 'active', got %q", activeLease.Status)
+	}
+}
+
+func TestServer_CooldownPeriod_Enforced(t *testing.T) {
+	// Create a test storage for cooldown checking
+	storageConfig := &StorageConfig{
+		Path:      ":memory:",
+		Retention: 24 * time.Hour,
+	}
+	storage, err := NewSQLiteStorage(storageConfig)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	if err := storage.Initialize(context.Background()); err != nil {
+		t.Fatalf("Failed to initialize storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Create server with 5-minute cooldown
+	config := DefaultControllerConfig()
+	config.Coordination.CooldownPeriod = 5 * time.Minute
+	server, _ := NewServer(config)
+	server.storage = storage
+
+	// Create a recently completed lease (2 minutes ago - still in cooldown)
+	recentLease := &Lease{
+		ID:              "recent-lease",
+		NodeName:        "cooldown-test-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       time.Now().Add(-7 * time.Minute),
+		ExpiresAt:       time.Now().Add(-2 * time.Minute),
+		Status:          "active",
+	}
+	storage.SaveLease(context.Background(), recentLease)
+	storage.UpdateLeaseStatus(context.Background(), "recent-lease", "completed")
+
+	// Request a new lease - should be denied due to cooldown
+	leaseReq := LeaseRequest{
+		NodeName:        "cooldown-test-node",
+		RemediationType: "flush-dns",
+	}
+	body, _ := json.Marshal(leaseReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leases", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleLeases(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected status 429 (cooldown active), got %d", w.Code)
+	}
+
+	var response APIResponse
+	json.NewDecoder(w.Body).Decode(&response)
+	data := response.Data.(map[string]interface{})
+	if data["approved"] != false {
+		t.Error("expected lease to be denied due to cooldown")
+	}
+	if data["message"] == nil || !contains(data["message"].(string), "Cooldown") {
+		t.Errorf("expected cooldown message, got %v", data["message"])
+	}
+}
+
+func TestServer_CooldownPeriod_Expired(t *testing.T) {
+	// Create a test storage for cooldown checking
+	storageConfig := &StorageConfig{
+		Path:      ":memory:",
+		Retention: 24 * time.Hour,
+	}
+	storage, err := NewSQLiteStorage(storageConfig)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	if err := storage.Initialize(context.Background()); err != nil {
+		t.Fatalf("Failed to initialize storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Create server with 5-minute cooldown
+	config := DefaultControllerConfig()
+	config.Coordination.CooldownPeriod = 5 * time.Minute
+	server, _ := NewServer(config)
+	server.storage = storage
+
+	// Insert a completed lease with an old completed_at directly in the database
+	// This is necessary because UpdateLeaseStatus sets completed_at to time.Now()
+	oldCompletedAt := time.Now().Add(-10 * time.Minute)
+	_, err = storage.db.ExecContext(context.Background(), `
+		INSERT INTO leases (id, node_name, remediation_type, status, granted_at, expires_at, completed_at)
+		VALUES (?, ?, ?, 'completed', ?, ?, ?)`,
+		"old-lease", "cooldown-expired-node", "restart-kubelet",
+		time.Now().Add(-15*time.Minute), time.Now().Add(-12*time.Minute), oldCompletedAt)
+	if err != nil {
+		t.Fatalf("Failed to insert old lease: %v", err)
+	}
+
+	// Request a new lease - should be granted (cooldown expired)
+	leaseReq := LeaseRequest{
+		NodeName:        "cooldown-expired-node",
+		RemediationType: "flush-dns",
+	}
+	body, _ := json.Marshal(leaseReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leases", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleLeases(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 (cooldown expired), got %d", w.Code)
+	}
+
+	var response APIResponse
+	json.NewDecoder(w.Body).Decode(&response)
+	data := response.Data.(map[string]interface{})
+	if data["approved"] != true {
+		t.Error("expected lease to be approved after cooldown expired")
+	}
+}
+
+func TestServer_CooldownPeriod_Disabled(t *testing.T) {
+	// Create a test storage
+	storageConfig := &StorageConfig{
+		Path:      ":memory:",
+		Retention: 24 * time.Hour,
+	}
+	storage, err := NewSQLiteStorage(storageConfig)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	if err := storage.Initialize(context.Background()); err != nil {
+		t.Fatalf("Failed to initialize storage: %v", err)
+	}
+	defer storage.Close()
+
+	// Create server with cooldown disabled (0)
+	config := DefaultControllerConfig()
+	config.Coordination.CooldownPeriod = 0
+	server, _ := NewServer(config)
+	server.storage = storage
+
+	// Create a recently completed lease (1 second ago)
+	recentLease := &Lease{
+		ID:              "recent-lease",
+		NodeName:        "cooldown-disabled-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       time.Now().Add(-5 * time.Second),
+		ExpiresAt:       time.Now().Add(-1 * time.Second),
+		Status:          "active",
+	}
+	storage.SaveLease(context.Background(), recentLease)
+	storage.UpdateLeaseStatus(context.Background(), "recent-lease", "completed")
+
+	// Request a new lease - should be granted (cooldown disabled)
+	leaseReq := LeaseRequest{
+		NodeName:        "cooldown-disabled-node",
+		RemediationType: "flush-dns",
+	}
+	body, _ := json.Marshal(leaseReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leases", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleLeases(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 (cooldown disabled), got %d", w.Code)
+	}
+
+	var response APIResponse
+	json.NewDecoder(w.Body).Decode(&response)
+	data := response.Data.(map[string]interface{})
+	if data["approved"] != true {
+		t.Error("expected lease to be approved when cooldown is disabled")
+	}
+}
+
+func TestServer_CooldownPeriod_NoStorage(t *testing.T) {
+	// Create server with cooldown but no storage (should skip cooldown check)
+	config := DefaultControllerConfig()
+	config.Coordination.CooldownPeriod = 5 * time.Minute
+	server, _ := NewServer(config)
+	// storage is nil by default
+
+	// Request a new lease - should be granted (no storage to check)
+	leaseReq := LeaseRequest{
+		NodeName:        "no-storage-node",
+		RemediationType: "flush-dns",
+	}
+	body, _ := json.Marshal(leaseReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/leases", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleLeases(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 (no storage), got %d", w.Code)
+	}
+
+	var response APIResponse
+	json.NewDecoder(w.Body).Decode(&response)
+	data := response.Data.(map[string]interface{})
+	if data["approved"] != true {
+		t.Error("expected lease to be approved when storage is nil")
+	}
+}
+
+// contains is a helper to check if a string contains a substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

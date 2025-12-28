@@ -331,6 +331,135 @@ func TestSQLiteStorage_Leases(t *testing.T) {
 	})
 }
 
+func TestSQLiteStorage_GetLastCompletedLease(t *testing.T) {
+	storage := newTestStorage(t)
+	ctx := context.Background()
+
+	t.Run("returns nil when no completed leases exist", func(t *testing.T) {
+		lease, err := storage.GetLastCompletedLease(ctx, "nonexistent-node")
+		if err != nil {
+			t.Fatalf("GetLastCompletedLease() error = %v", err)
+		}
+		if lease != nil {
+			t.Error("expected nil for node with no leases")
+		}
+	})
+
+	t.Run("ignores active leases", func(t *testing.T) {
+		// Save an active lease
+		storage.SaveLease(ctx, &Lease{
+			ID:              "active-lease-1",
+			NodeName:        "cooldown-node-1",
+			RemediationType: "restart-kubelet",
+			Status:          "active",
+			GrantedAt:       time.Now(),
+			ExpiresAt:       time.Now().Add(5 * time.Minute),
+		})
+
+		lease, err := storage.GetLastCompletedLease(ctx, "cooldown-node-1")
+		if err != nil {
+			t.Fatalf("GetLastCompletedLease() error = %v", err)
+		}
+		if lease != nil {
+			t.Error("expected nil for node with only active leases")
+		}
+	})
+
+	t.Run("returns completed lease", func(t *testing.T) {
+		// Save and complete a lease
+		storage.SaveLease(ctx, &Lease{
+			ID:              "completed-lease-1",
+			NodeName:        "cooldown-node-2",
+			RemediationType: "restart-kubelet",
+			Status:          "active",
+			GrantedAt:       time.Now().Add(-10 * time.Minute),
+			ExpiresAt:       time.Now().Add(-5 * time.Minute),
+		})
+		storage.UpdateLeaseStatus(ctx, "completed-lease-1", "completed")
+
+		lease, err := storage.GetLastCompletedLease(ctx, "cooldown-node-2")
+		if err != nil {
+			t.Fatalf("GetLastCompletedLease() error = %v", err)
+		}
+		if lease == nil {
+			t.Fatal("expected completed lease, got nil")
+		}
+		if lease.ID != "completed-lease-1" {
+			t.Errorf("expected lease ID 'completed-lease-1', got %q", lease.ID)
+		}
+		if lease.Status != "completed" {
+			t.Errorf("expected status 'completed', got %q", lease.Status)
+		}
+		if lease.CompletedAt.IsZero() {
+			t.Error("expected CompletedAt to be set")
+		}
+	})
+
+	t.Run("returns expired lease", func(t *testing.T) {
+		// Save an expired lease
+		storage.SaveLease(ctx, &Lease{
+			ID:              "expired-lease-1",
+			NodeName:        "cooldown-node-3",
+			RemediationType: "flush-dns",
+			Status:          "active",
+			GrantedAt:       time.Now().Add(-10 * time.Minute),
+			ExpiresAt:       time.Now().Add(-5 * time.Minute),
+		})
+		storage.UpdateLeaseStatus(ctx, "expired-lease-1", "expired")
+
+		lease, err := storage.GetLastCompletedLease(ctx, "cooldown-node-3")
+		if err != nil {
+			t.Fatalf("GetLastCompletedLease() error = %v", err)
+		}
+		if lease == nil {
+			t.Fatal("expected expired lease, got nil")
+		}
+		if lease.Status != "expired" {
+			t.Errorf("expected status 'expired', got %q", lease.Status)
+		}
+	})
+
+	t.Run("returns most recent completed lease", func(t *testing.T) {
+		// Save multiple completed leases with different completed_at times
+		storage.SaveLease(ctx, &Lease{
+			ID:              "old-completed-lease",
+			NodeName:        "cooldown-node-4",
+			RemediationType: "restart-kubelet",
+			Status:          "active",
+			GrantedAt:       time.Now().Add(-30 * time.Minute),
+			ExpiresAt:       time.Now().Add(-25 * time.Minute),
+		})
+		storage.UpdateLeaseStatus(ctx, "old-completed-lease", "completed")
+
+		// Wait a tiny bit to ensure different completed_at timestamps
+		time.Sleep(10 * time.Millisecond)
+
+		storage.SaveLease(ctx, &Lease{
+			ID:              "recent-completed-lease",
+			NodeName:        "cooldown-node-4",
+			RemediationType: "flush-dns",
+			Status:          "active",
+			GrantedAt:       time.Now().Add(-10 * time.Minute),
+			ExpiresAt:       time.Now().Add(-5 * time.Minute),
+		})
+		storage.UpdateLeaseStatus(ctx, "recent-completed-lease", "completed")
+
+		lease, err := storage.GetLastCompletedLease(ctx, "cooldown-node-4")
+		if err != nil {
+			t.Fatalf("GetLastCompletedLease() error = %v", err)
+		}
+		if lease == nil {
+			t.Fatal("expected completed lease, got nil")
+		}
+		if lease.ID != "recent-completed-lease" {
+			t.Errorf("expected most recent lease 'recent-completed-lease', got %q", lease.ID)
+		}
+		if lease.RemediationType != "flush-dns" {
+			t.Errorf("expected remediation type 'flush-dns', got %q", lease.RemediationType)
+		}
+	})
+}
+
 func TestSQLiteStorage_Correlations(t *testing.T) {
 	storage := newTestStorage(t)
 	ctx := context.Background()

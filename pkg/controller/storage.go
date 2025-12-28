@@ -32,6 +32,7 @@ type Storage interface {
 	GetLease(ctx context.Context, leaseID string) (*Lease, error)
 	GetActiveLeases(ctx context.Context) ([]*Lease, error)
 	GetNodeLease(ctx context.Context, nodeName string) (*Lease, error)
+	GetLastCompletedLease(ctx context.Context, nodeName string) (*Lease, error)
 	UpdateLeaseStatus(ctx context.Context, leaseID, status string) error
 	ExpireLeases(ctx context.Context) (int64, error)
 
@@ -474,6 +475,42 @@ func (s *SQLiteStorage) ExpireLeases(ctx context.Context) (int64, error) {
 	}
 
 	return result.RowsAffected()
+}
+
+// GetLastCompletedLease returns the most recent completed/expired lease for a node.
+// This is used for cooldown period enforcement to prevent rapid repeated remediations.
+func (s *SQLiteStorage) GetLastCompletedLease(ctx context.Context, nodeName string) (*Lease, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var lease Lease
+	var reason sql.NullString
+	var completedAt sql.NullTime
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, node_name, remediation_type, status, reason, granted_at, expires_at, completed_at
+		FROM leases
+		WHERE node_name = ? AND status IN ('completed', 'expired')
+		ORDER BY completed_at DESC
+		LIMIT 1`, nodeName).Scan(
+		&lease.ID, &lease.NodeName, &lease.RemediationType, &lease.Status,
+		&reason, &lease.GrantedAt, &lease.ExpiresAt, &completedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last completed lease: %w", err)
+	}
+
+	if reason.Valid {
+		lease.Reason = reason.String
+	}
+	if completedAt.Valid {
+		lease.CompletedAt = completedAt.Time
+	}
+
+	return &lease, nil
 }
 
 // =====================

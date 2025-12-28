@@ -32,6 +32,10 @@ type Server struct {
 	ready     bool
 	startTime time.Time
 
+	// Lease cleanup goroutine control
+	leaseCleanupStopCh chan struct{}
+	leaseCleanupWg     sync.WaitGroup
+
 	// In-memory state (fallback when storage is nil)
 	nodeReports map[string]*NodeReport // nodeName -> latest report
 	leases      map[string]*Lease      // leaseID -> lease
@@ -119,6 +123,10 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// Start lease cleanup background job
+	s.leaseCleanupStopCh = make(chan struct{})
+	s.startLeaseCleanup(ctx)
+
 	s.started = true
 	s.ready = true
 	s.startTime = time.Now()
@@ -138,7 +146,13 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Printf("[INFO] Stopping controller server...")
 
-	// Stop correlator first
+	// Stop lease cleanup goroutine
+	if s.leaseCleanupStopCh != nil {
+		close(s.leaseCleanupStopCh)
+		s.leaseCleanupWg.Wait()
+	}
+
+	// Stop correlator
 	if s.correlator != nil {
 		if err := s.correlator.Stop(); err != nil {
 			log.Printf("[WARN] Failed to stop correlator: %v", err)
@@ -638,6 +652,28 @@ func (s *Server) requestLease(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check cooldown period - prevent rapid repeated remediations
+	if s.config.Coordination.CooldownPeriod > 0 && s.storage != nil {
+		lastLease, err := s.storage.GetLastCompletedLease(context.Background(), req.NodeName)
+		if err != nil {
+			log.Printf("[WARN] Failed to check cooldown for node %s: %v", req.NodeName, err)
+		} else if lastLease != nil {
+			cooldownEnds := lastLease.CompletedAt.Add(s.config.Coordination.CooldownPeriod)
+			if time.Now().Before(cooldownEnds) {
+				remaining := time.Until(cooldownEnds).Round(time.Second)
+				s.metrics.RecordLeaseDenied("cooldown")
+				response := LeaseResponse{
+					Approved: false,
+					Message:  fmt.Sprintf("Cooldown active: wait %s before next remediation (last: %s)", remaining, lastLease.RemediationType),
+					RetryAt:  cooldownEnds,
+				}
+				s.writeSuccess(w, http.StatusTooManyRequests, response)
+				log.Printf("[INFO] Denied lease for node %s: cooldown period active (ends %s)", req.NodeName, cooldownEnds.Format(time.RFC3339))
+				return
+			}
+		}
+	}
+
 	// Grant lease
 	duration := s.config.Coordination.DefaultLeaseDuration
 	if req.RequestedDuration != "" {
@@ -819,6 +855,69 @@ func (s *Server) IsReady() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ready
+}
+
+// =====================
+// Lease Cleanup
+// =====================
+
+// startLeaseCleanup runs a background goroutine that periodically expires stale leases
+// from the in-memory map and syncs with the database.
+func (s *Server) startLeaseCleanup(ctx context.Context) {
+	s.leaseCleanupWg.Add(1)
+	go func() {
+		defer s.leaseCleanupWg.Done()
+
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		log.Printf("[INFO] Lease cleanup goroutine started (interval: 30s)")
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("[INFO] Lease cleanup goroutine stopped (context cancelled)")
+				return
+			case <-s.leaseCleanupStopCh:
+				log.Printf("[INFO] Lease cleanup goroutine stopped")
+				return
+			case <-ticker.C:
+				s.cleanupExpiredLeases(ctx)
+			}
+		}
+	}()
+}
+
+// cleanupExpiredLeases marks expired leases in the in-memory map and updates storage.
+func (s *Server) cleanupExpiredLeases(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	expiredCount := 0
+
+	for id, lease := range s.leases {
+		if lease.Status == "active" && now.After(lease.ExpiresAt) {
+			lease.Status = "expired"
+			lease.CompletedAt = now
+			s.leases[id] = lease
+			expiredCount++
+
+			// Also update storage if available
+			if s.storage != nil {
+				if err := s.storage.UpdateLeaseStatus(ctx, id, "expired"); err != nil {
+					log.Printf("[WARN] Failed to update expired lease %s in storage: %v", id, err)
+				}
+			}
+
+			log.Printf("[INFO] Lease %s auto-expired for node %s (was due: %s)",
+				id, lease.NodeName, lease.ExpiresAt.Format(time.RFC3339))
+		}
+	}
+
+	if expiredCount > 0 {
+		log.Printf("[INFO] Cleaned up %d expired leases from memory", expiredCount)
+	}
 }
 
 // SetReady sets the readiness state
