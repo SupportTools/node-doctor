@@ -144,6 +144,7 @@ type CircuitBreakerConfig struct {
 //   - Rate limiting to prevent remediation storms
 //   - Remediation history for audit and analysis
 //   - Dry-run mode for testing
+//   - Controller coordination via lease system
 //
 // The registry uses a read-write mutex to optimize for concurrent remediation
 // operations while protecting internal state.
@@ -183,6 +184,9 @@ type RemediatorRegistry struct {
 	// Kubernetes Events integration (optional)
 	eventCreator EventCreator
 	nodeName     string
+
+	// Controller coordination (optional)
+	leaseClient *LeaseClient
 }
 
 // DefaultCircuitBreakerConfig provides sensible defaults for the circuit breaker.
@@ -273,6 +277,23 @@ func (r *RemediatorRegistry) SetEventCreator(eventCreator EventCreator, nodeName
 	defer r.mu.Unlock()
 	r.eventCreator = eventCreator
 	r.nodeName = nodeName
+}
+
+// SetLeaseClient sets an optional lease client for controller coordination.
+// When set, the registry will request a lease from the controller before
+// executing any remediation.
+func (r *RemediatorRegistry) SetLeaseClient(leaseClient *LeaseClient) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.leaseClient = leaseClient
+	r.logInfof("Lease client configured for controller coordination")
+}
+
+// GetLeaseClient returns the configured lease client, if any.
+func (r *RemediatorRegistry) GetLeaseClient() *LeaseClient {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.leaseClient
 }
 
 // SetDryRun enables or disables dry-run mode.
@@ -465,6 +486,39 @@ func (r *RemediatorRegistry) Remediate(ctx context.Context, remediatorType strin
 		return err
 	}
 	r.mu.Unlock()
+
+	// Phase 2.5: Controller lease check (if coordination enabled)
+	var leaseID string
+	r.mu.RLock()
+	leaseClient := r.leaseClient
+	r.mu.RUnlock()
+
+	if leaseClient != nil {
+		leaseResp, err := leaseClient.RequestLease(ctx, remediatorType, problem.Message)
+		if err != nil {
+			remediationErr = fmt.Errorf("failed to request remediation lease: %w", err)
+			r.recordCircuitBreakerFailure()
+			return remediationErr
+		}
+
+		if !leaseResp.Approved {
+			remediationErr = fmt.Errorf("remediation lease denied: %s", leaseResp.Message)
+			r.logInfof("Remediation blocked by controller: %s", leaseResp.Message)
+			return remediationErr
+		}
+
+		leaseID = leaseResp.LeaseID
+		r.logInfof("Remediation lease granted: id=%s expires=%v", leaseID, leaseResp.ExpiresAt)
+
+		// Ensure lease is released when we're done
+		defer func() {
+			if leaseID != "" {
+				if err := leaseClient.ReleaseLease(context.Background(), leaseID); err != nil {
+					r.logInfof("Warning: failed to release lease %s: %v", leaseID, err)
+				}
+			}
+		}()
+	}
 
 	// Phase 3: Get or create remediator instance (handles its own locking)
 	remediator, err := r.getOrCreateRemediator(remediatorType)

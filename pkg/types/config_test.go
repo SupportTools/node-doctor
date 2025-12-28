@@ -670,7 +670,7 @@ func TestHTTPExporterConfigValidation(t *testing.T) {
 				Timeout:   30 * time.Second,
 			},
 			wantErr: true,
-			errMsg:  "at least one webhook must be configured",
+			errMsg:  "at least one webhook or controller must be configured",
 		},
 		{
 			name: "invalid workers count",

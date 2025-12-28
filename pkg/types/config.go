@@ -299,6 +299,35 @@ type HTTPExporterConfig struct {
 	// Default retry configuration for all webhooks (can be overridden per webhook)
 	Retry   RetryConfig       `json:"retry,omitempty" yaml:"retry,omitempty"`
 	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+
+	// Controller webhook for sending aggregated reports to the controller
+	Controller *ControllerWebhookConfig `json:"controller,omitempty" yaml:"controller,omitempty"`
+}
+
+// ControllerWebhookConfig configures the webhook for sending reports to the node-doctor controller.
+type ControllerWebhookConfig struct {
+	// Enabled indicates whether to send reports to the controller
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// URL is the controller's report ingestion endpoint
+	URL string `json:"url" yaml:"url"`
+
+	// IntervalString is the interval between reports (stored as string)
+	IntervalString string        `json:"interval,omitempty" yaml:"interval,omitempty"`
+	Interval       time.Duration `json:"-" yaml:"-"`
+
+	// TimeoutString is the request timeout (stored as string)
+	TimeoutString string        `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Timeout       time.Duration `json:"-" yaml:"-"`
+
+	// Auth configuration for authenticating with the controller
+	Auth AuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+
+	// Headers are custom headers to include in requests
+	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+
+	// Retry configuration for failed requests
+	Retry *RetryConfig `json:"retry,omitempty" yaml:"retry,omitempty"`
 }
 
 // WebhookEndpoint defines a webhook destination for HTTP exports.
@@ -378,6 +407,37 @@ type RemediationConfig struct {
 
 	// Problem-specific overrides
 	Overrides []RemediationOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
+
+	// Coordination with controller for cluster-wide remediation safety
+	Coordination *RemediationCoordinationConfig `json:"coordination,omitempty" yaml:"coordination,omitempty"`
+}
+
+// RemediationCoordinationConfig configures coordination with the controller for remediation leases.
+type RemediationCoordinationConfig struct {
+	// Enabled indicates whether to coordinate remediations with the controller
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// ControllerURL is the URL of the node-doctor controller
+	ControllerURL string `json:"controllerURL" yaml:"controllerURL"`
+
+	// LeaseTimeoutString is the requested duration for remediation leases (stored as string)
+	LeaseTimeoutString string        `json:"leaseTimeout,omitempty" yaml:"leaseTimeout,omitempty"`
+	LeaseTimeout       time.Duration `json:"-" yaml:"-"`
+
+	// RequestTimeoutString is the timeout for lease requests to the controller (stored as string)
+	RequestTimeoutString string        `json:"requestTimeout,omitempty" yaml:"requestTimeout,omitempty"`
+	RequestTimeout       time.Duration `json:"-" yaml:"-"`
+
+	// FallbackOnUnreachable determines behavior when controller is unreachable
+	// If true, proceed with remediation; if false, block and wait for controller
+	FallbackOnUnreachable bool `json:"fallbackOnUnreachable,omitempty" yaml:"fallbackOnUnreachable,omitempty"`
+
+	// MaxRetries is the maximum number of lease request retries
+	MaxRetries int `json:"maxRetries,omitempty" yaml:"maxRetries,omitempty"`
+
+	// RetryIntervalString is the interval between lease request retries (stored as string)
+	RetryIntervalString string        `json:"retryInterval,omitempty" yaml:"retryInterval,omitempty"`
+	RetryInterval       time.Duration `json:"-" yaml:"-"`
 }
 
 // CircuitBreakerConfig configures circuit breaker behavior.
@@ -717,6 +777,75 @@ func (h *HTTPExporterConfig) ApplyDefaults() error {
 		}
 	}
 
+	// Apply defaults to controller webhook if configured
+	if h.Controller != nil {
+		if err := h.Controller.ApplyDefaults(h); err != nil {
+			return fmt.Errorf("failed to apply defaults to controller webhook: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ApplyDefaults applies default values to ControllerWebhookConfig.
+func (c *ControllerWebhookConfig) ApplyDefaults(parent *HTTPExporterConfig) error {
+	// Set default interval (30s)
+	if c.IntervalString == "" {
+		c.IntervalString = "30s"
+	}
+	var err error
+	c.Interval, err = time.ParseDuration(c.IntervalString)
+	if err != nil {
+		return fmt.Errorf("invalid interval %q: %w", c.IntervalString, err)
+	}
+
+	// Set default timeout (10s)
+	if c.TimeoutString == "" {
+		c.TimeoutString = "10s"
+	}
+	c.Timeout, err = time.ParseDuration(c.TimeoutString)
+	if err != nil {
+		return fmt.Errorf("invalid timeout %q: %w", c.TimeoutString, err)
+	}
+
+	// Default auth type
+	if c.Auth.Type == "" {
+		c.Auth.Type = "none"
+	}
+
+	// Set retry defaults if not specified
+	if c.Retry == nil {
+		c.Retry = &RetryConfig{
+			MaxAttempts:     3,
+			BaseDelayString: "1s",
+			BaseDelay:       1 * time.Second,
+			MaxDelayString:  "10s",
+			MaxDelay:        10 * time.Second,
+		}
+	} else {
+		if c.Retry.MaxAttempts == 0 {
+			c.Retry.MaxAttempts = 3
+		}
+		if c.Retry.BaseDelayString == "" {
+			c.Retry.BaseDelayString = "1s"
+			c.Retry.BaseDelay = 1 * time.Second
+		} else {
+			c.Retry.BaseDelay, err = time.ParseDuration(c.Retry.BaseDelayString)
+			if err != nil {
+				return fmt.Errorf("invalid retry baseDelay %q: %w", c.Retry.BaseDelayString, err)
+			}
+		}
+		if c.Retry.MaxDelayString == "" {
+			c.Retry.MaxDelayString = "10s"
+			c.Retry.MaxDelay = 10 * time.Second
+		} else {
+			c.Retry.MaxDelay, err = time.ParseDuration(c.Retry.MaxDelayString)
+			if err != nil {
+				return fmt.Errorf("invalid retry maxDelay %q: %w", c.Retry.MaxDelayString, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -848,6 +977,51 @@ func (r *RemediationConfig) ApplyDefaults() error {
 				return fmt.Errorf("invalid cooldown in override for %s: %w", r.Overrides[i].Problem, err)
 			}
 		}
+	}
+
+	// Apply defaults to coordination config
+	if r.Coordination != nil {
+		if err := r.Coordination.ApplyDefaults(); err != nil {
+			return fmt.Errorf("failed to apply defaults to coordination: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ApplyDefaults applies default values to RemediationCoordinationConfig.
+func (c *RemediationCoordinationConfig) ApplyDefaults() error {
+	// Set default lease timeout (5m)
+	if c.LeaseTimeoutString == "" {
+		c.LeaseTimeoutString = "5m"
+	}
+	var err error
+	c.LeaseTimeout, err = time.ParseDuration(c.LeaseTimeoutString)
+	if err != nil {
+		return fmt.Errorf("invalid leaseTimeout %q: %w", c.LeaseTimeoutString, err)
+	}
+
+	// Set default request timeout (10s)
+	if c.RequestTimeoutString == "" {
+		c.RequestTimeoutString = "10s"
+	}
+	c.RequestTimeout, err = time.ParseDuration(c.RequestTimeoutString)
+	if err != nil {
+		return fmt.Errorf("invalid requestTimeout %q: %w", c.RequestTimeoutString, err)
+	}
+
+	// Set default max retries
+	if c.MaxRetries == 0 {
+		c.MaxRetries = 3
+	}
+
+	// Set default retry interval (5s)
+	if c.RetryIntervalString == "" {
+		c.RetryIntervalString = "5s"
+	}
+	c.RetryInterval, err = time.ParseDuration(c.RetryIntervalString)
+	if err != nil {
+		return fmt.Errorf("invalid retryInterval %q: %w", c.RetryIntervalString, err)
 	}
 
 	return nil
@@ -1169,9 +1343,10 @@ func (h *HTTPExporterConfig) Validate() error {
 		return fmt.Errorf("retry configuration validation failed: %w", err)
 	}
 
-	// Validate webhooks
-	if len(h.Webhooks) == 0 {
-		return fmt.Errorf("at least one webhook must be configured when HTTP exporter is enabled")
+	// Must have at least one webhook or controller configured
+	hasController := h.Controller != nil && h.Controller.Enabled
+	if len(h.Webhooks) == 0 && !hasController {
+		return fmt.Errorf("at least one webhook or controller must be configured when HTTP exporter is enabled")
 	}
 
 	webhookNames := make(map[string]bool)
@@ -1186,6 +1361,54 @@ func (h *HTTPExporterConfig) Validate() error {
 				return fmt.Errorf("duplicate webhook name %q found", webhook.Name)
 			}
 			webhookNames[webhook.Name] = true
+		}
+	}
+
+	// Validate controller webhook if configured
+	if h.Controller != nil {
+		if err := h.Controller.Validate(); err != nil {
+			return fmt.Errorf("controller webhook validation failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate validates the ControllerWebhookConfig configuration.
+func (c *ControllerWebhookConfig) Validate() error {
+	if !c.Enabled {
+		return nil // No validation needed if disabled
+	}
+
+	// Validate URL is required
+	if c.URL == "" {
+		return fmt.Errorf("url is required for controller webhook")
+	}
+
+	// Basic URL format validation
+	if !strings.HasPrefix(c.URL, "http://") && !strings.HasPrefix(c.URL, "https://") {
+		return fmt.Errorf("url must start with http:// or https://, got %q", c.URL)
+	}
+
+	// Validate interval
+	if c.Interval <= 0 {
+		return fmt.Errorf("interval must be positive, got %v", c.Interval)
+	}
+
+	// Validate timeout
+	if c.Timeout <= 0 {
+		return fmt.Errorf("timeout must be positive, got %v", c.Timeout)
+	}
+
+	// Validate authentication
+	if err := c.Auth.Validate(); err != nil {
+		return fmt.Errorf("auth configuration validation failed: %w", err)
+	}
+
+	// Validate retry configuration if specified
+	if c.Retry != nil {
+		if err := c.Retry.Validate(); err != nil {
+			return fmt.Errorf("retry configuration validation failed: %w", err)
 		}
 	}
 
@@ -1355,6 +1578,52 @@ func (r *RemediationConfig) Validate() error {
 		if override.CircuitBreakerThreshold < 0 {
 			return fmt.Errorf("override %q: circuitBreakerThreshold must be non-negative, got %d", override.Problem, override.CircuitBreakerThreshold)
 		}
+	}
+
+	// Validate coordination config
+	if r.Coordination != nil {
+		if err := r.Coordination.Validate(); err != nil {
+			return fmt.Errorf("coordination validation failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate validates the RemediationCoordinationConfig configuration.
+func (c *RemediationCoordinationConfig) Validate() error {
+	if !c.Enabled {
+		return nil // No validation needed if disabled
+	}
+
+	// Validate controller URL is required
+	if c.ControllerURL == "" {
+		return fmt.Errorf("controllerURL is required when coordination is enabled")
+	}
+
+	// Basic URL format validation
+	if !strings.HasPrefix(c.ControllerURL, "http://") && !strings.HasPrefix(c.ControllerURL, "https://") {
+		return fmt.Errorf("controllerURL must start with http:// or https://, got %q", c.ControllerURL)
+	}
+
+	// Validate lease timeout
+	if c.LeaseTimeout <= 0 {
+		return fmt.Errorf("leaseTimeout must be positive, got %v", c.LeaseTimeout)
+	}
+
+	// Validate request timeout
+	if c.RequestTimeout <= 0 {
+		return fmt.Errorf("requestTimeout must be positive, got %v", c.RequestTimeout)
+	}
+
+	// Validate max retries
+	if c.MaxRetries < 0 {
+		return fmt.Errorf("maxRetries must be non-negative, got %d", c.MaxRetries)
+	}
+
+	// Validate retry interval
+	if c.RetryInterval <= 0 {
+		return fmt.Errorf("retryInterval must be positive, got %v", c.RetryInterval)
 	}
 
 	return nil
