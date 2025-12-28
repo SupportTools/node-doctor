@@ -481,10 +481,12 @@ subjects:
 ```
 node-doctor/
 ├── cmd/
-│   └── node-doctor/              # Main entry point
-│       ├── main.go               # Application bootstrap
-│       └── options/              # CLI flag definitions
-│           └── options.go
+│   ├── node-doctor/              # DaemonSet entry point
+│   │   ├── main.go               # Application bootstrap
+│   │   └── options/              # CLI flag definitions
+│   │       └── options.go
+│   └── node-doctor-controller/   # Controller entry point
+│       └── main.go               # Controller bootstrap
 │
 ├── pkg/
 │   ├── types/                    # Core type definitions
@@ -544,6 +546,13 @@ node-doctor/
 │   │       ├── exporter.go
 │   │       └── metrics.go
 │   │
+│   ├── controller/               # Controller component
+│   │   ├── server.go             # HTTP server and routes
+│   │   ├── storage.go            # SQLite storage layer
+│   │   ├── correlator.go         # Pattern correlation engine
+│   │   ├── metrics.go            # Prometheus metrics
+│   │   └── types.go              # API types
+│   │
 │   └── util/                     # Utility functions
 │       ├── config.go             # Configuration loading
 │       ├── kube.go               # Kubernetes client helpers
@@ -557,11 +566,19 @@ node-doctor/
 │       ├── full-featured.yaml
 │       └── custom-plugins.yaml
 │
-├── deployment/                   # Kubernetes manifests
+├── deployment/                   # DaemonSet manifests
 │   ├── daemonset.yaml
 │   ├── rbac.yaml
 │   ├── configmap.yaml
 │   └── service.yaml
+│
+├── deploy/controller/            # Controller manifests
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── pvc.yaml
+│   ├── rbac.yaml
+│   ├── configmap.yaml
+│   └── kustomization.yaml
 │
 ├── test/                         # Tests
 │   ├── e2e/                      # End-to-end tests
@@ -572,7 +589,10 @@ node-doctor/
     ├── architecture.md           # This document
     ├── monitors.md               # Monitor implementation guide
     ├── remediation.md            # Remediation guide
-    └── configuration.md          # Configuration reference
+    ├── configuration.md          # Configuration reference
+    ├── controller-deployment.md  # Controller deployment guide
+    ├── testing-guide.md          # Developer testing guide
+    └── testing.md                # Operational testing guide
 ```
 
 ## Threading Model
@@ -753,6 +773,182 @@ Structured JSON logging with fields:
 - Inject rapid problem flapping
 - Resource exhaustion scenarios
 
+## Controller Component
+
+The Node Doctor Controller is an optional central component that provides cluster-wide aggregation, pattern correlation, and remediation coordination.
+
+### Controller Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Node 1 (DaemonSet)          Node 2              Node N         │
+│  ┌──────────────────┐   ┌──────────────┐   ┌──────────────┐    │
+│  │ Monitors         │   │ Monitors     │   │ Monitors     │    │
+│  │ ↓                │   │ ↓            │   │ ↓            │    │
+│  │ HTTP Exporter    │   │ HTTP Export  │   │ HTTP Export  │    │
+│  │ (webhook push)   │   │ (webhook)    │   │ (webhook)    │    │
+│  └────────┬─────────┘   └──────┬───────┘   └──────┬───────┘    │
+│           │                    │                   │            │
+│           │    POST /api/v1/reports (every 30s)   │            │
+│           └────────────────────┼──────────────────┘            │
+│                                ↓                               │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │           Node Doctor Controller (Deployment)           │   │
+│  │                                                         │   │
+│  │  ┌─────────────┐   ┌─────────────┐   ┌───────────────┐ │   │
+│  │  │ Aggregator  │ → │ Correlator  │ → │ Lease Manager │ │   │
+│  │  │ (receive)   │   │ (patterns)  │   │ (coordination)│ │   │
+│  │  └─────────────┘   └─────────────┘   └───────────────┘ │   │
+│  │         ↓                 ↓                  ↓          │   │
+│  │  ┌─────────────────────────────────────────────────┐   │   │
+│  │  │           SQLite Storage (PVC)                  │   │   │
+│  │  │  - Node reports (30 day retention)              │   │   │
+│  │  │  - Correlation events                           │   │   │
+│  │  │  - Active leases                                │   │   │
+│  │  └─────────────────────────────────────────────────┘   │   │
+│  │         ↓                 ↓                  ↓          │   │
+│  │  ┌───────────┐   ┌───────────┐   ┌─────────────────┐   │   │
+│  │  │ REST API  │   │ Prometheus│   │ K8s Events      │   │   │
+│  │  │ /api/v1/* │   │ /metrics  │   │ (cluster-level) │   │   │
+│  │  └───────────┘   └───────────┘   └─────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Controller Components
+
+#### 1. Aggregator
+
+Receives health reports from all node-doctor agents:
+
+- **Report Ingestion**: `POST /api/v1/reports` endpoint receives node reports
+- **Storage**: SQLite database with configurable retention (default 30 days)
+- **Deduplication**: Handles repeated reports from the same node
+- **State Tracking**: Maintains current state of all nodes
+
+#### 2. Correlation Engine
+
+Detects patterns across multiple nodes:
+
+**Infrastructure Correlation**:
+- Triggers when ≥30% of nodes report the same problem type
+- Indicates cluster-wide infrastructure issues (DNS, network, storage)
+
+**Common-Cause Correlation**:
+- Detects related problems occurring together (e.g., memory + disk pressure)
+- Identifies root cause vs symptoms
+
+**Cascade Correlation**:
+- Detects sequential problem chains (e.g., kubelet → pods → node)
+- Identifies failure propagation patterns
+
+```go
+// Correlation detection thresholds
+type CorrelationConfig struct {
+    ClusterWideThreshold     float64       // Fraction of nodes (default: 0.3)
+    MinNodesForCorrelation   int           // Minimum nodes (default: 2)
+    EvaluationInterval       time.Duration // How often to evaluate (default: 30s)
+}
+```
+
+#### 3. Lease Manager
+
+Coordinates remediation across the cluster:
+
+**Lease Flow**:
+```
+Node requests remediation:
+  1. POST /api/v1/leases {node, remediationType, reason}
+  2. Controller checks:
+     - Active leases < maxConcurrent?
+     - Node doesn't have active lease?
+     - Cooldown period passed?
+  3. Response: 200 OK (approved) or 429 (denied)
+  4. Node proceeds with remediation
+  5. DELETE /api/v1/leases/{id} (release)
+```
+
+**Safety Features**:
+- **Max Concurrent**: Limits simultaneous remediations cluster-wide
+- **Cooldown Period**: Prevents repeated remediations on same node
+- **Lease Expiration**: Auto-releases leases after timeout
+- **Fallback Mode**: Configurable behavior when controller unreachable
+
+### Controller API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/healthz` | GET | Liveness probe |
+| `/readyz` | GET | Readiness probe |
+| `/api/v1/reports` | POST | Receive node health report |
+| `/api/v1/cluster/status` | GET | Cluster health summary |
+| `/api/v1/cluster/problems` | GET | Active cluster problems |
+| `/api/v1/nodes` | GET | List all nodes |
+| `/api/v1/nodes/{name}` | GET | Node details |
+| `/api/v1/nodes/{name}/history` | GET | Node report history |
+| `/api/v1/correlations` | GET | Active correlations |
+| `/api/v1/leases` | POST/GET | Request/list leases |
+| `/api/v1/leases/{id}` | DELETE | Release lease |
+| `/metrics` | GET | Prometheus metrics |
+
+### Controller Metrics
+
+```prometheus
+# Cluster health
+node_doctor_cluster_nodes_total
+node_doctor_cluster_nodes_healthy
+node_doctor_cluster_nodes_unhealthy
+node_doctor_cluster_nodes_unknown
+
+# Problem aggregation
+node_doctor_cluster_problem_nodes{problem_type, severity}
+node_doctor_cluster_problem_active{problem_type}
+
+# Correlations
+node_doctor_correlation_active_total
+node_doctor_correlation_detected_total{type}
+
+# Remediation coordination
+node_doctor_leases_active_total
+node_doctor_leases_granted_total
+node_doctor_leases_denied_total{reason}
+```
+
+### Node-to-Controller Communication
+
+Nodes communicate with the controller via HTTP webhooks:
+
+```yaml
+# Node DaemonSet configuration
+exporters:
+  http:
+    webhooks:
+      - name: controller
+        url: "http://node-doctor-controller.node-doctor:8080/api/v1/reports"
+        interval: 30s
+        timeout: 10s
+
+remediation:
+  coordination:
+    enabled: true
+    controllerURL: "http://node-doctor-controller.node-doctor:8080"
+    leaseTimeout: 5m
+    fallbackOnUnreachable: false  # Block if controller unreachable
+```
+
+### Controller Deployment
+
+The controller runs as a single-replica Deployment with PVC storage:
+
+- **Deployment**: Single replica (SQLite requires single writer)
+- **Storage**: PersistentVolumeClaim for SQLite database
+- **Service**: ClusterIP for node-to-controller communication
+- **RBAC**: ClusterRole for node read, event creation
+
+See [Controller Deployment Guide](controller-deployment.md) for detailed setup.
+
+---
+
 ## Future Enhancements
 
 ### Planned Features
@@ -760,11 +956,11 @@ Structured JSON logging with fields:
 1. **Dynamic Configuration Reload**: Watch ConfigMap, reload without restart
 2. **Custom Metrics**: Allow monitors to export custom metrics
 3. **Notification Webhooks**: Alert external systems on problems
-4. **Multi-Cluster Support**: Aggregate status across clusters
+4. **Multi-Cluster Controller**: Aggregate status across clusters
 5. **ML-Based Anomaly Detection**: Learn normal patterns, detect deviations
 6. **Advanced Remediation**: Node drain, cordon, reboot
 7. **Health Check Profiles**: Pre-defined configurations for common use cases
-8. **Web UI**: Dashboard for node health visualization
+8. **Web UI**: Dashboard for cluster health visualization
 
 ### Extension Points
 

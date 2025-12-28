@@ -841,3 +841,9 @@ func (s *Server) GetStorage() Storage {
 	defer s.mu.RUnlock()
 	return s.storage
 }
+
+// Handler returns the HTTP handler for testing purposes.
+// This allows tests to use httptest.NewServer(server.Handler()).
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
