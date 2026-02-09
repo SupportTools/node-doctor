@@ -80,11 +80,12 @@ CHART_VERSION := v$(shell git rev-list --count HEAD)
 # Component Configuration
 # ================================================================================================
 
-# Node Doctor is a single binary
-COMPONENTS := node-doctor
+# Node Doctor binaries
+COMPONENTS := node-doctor overlay-test-server
 
-# Docker image for node-doctor
+# Docker images
 DOCKER_IMAGE_node-doctor := $(REGISTRY)/$(PROJECT_NAME)
+DOCKER_IMAGE_overlay-test-server := $(REGISTRY)/$(PROJECT_NAME)-overlay-test
 
 # ================================================================================================
 # Color Output Functions
@@ -170,6 +171,13 @@ build-node-doctor-local:
 	@mkdir -p bin
 	@cd cmd/node-doctor && go build -ldflags="-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)" -o ../../bin/node-doctor
 	@$(call print_success,"node-doctor built: bin/node-doctor")
+
+# Build overlay-test-server binary
+build-overlay-test-server-local:
+	@$(call print_status,"Building overlay-test-server locally...")
+	@mkdir -p bin
+	@cd cmd/overlay-test-server && go build -o ../../bin/overlay-test-server
+	@$(call print_success,"overlay-test-server built: bin/overlay-test-server")
 
 build-local: build-all-local
 
@@ -323,9 +331,16 @@ build-node-doctor-image: check-docker
 	@docker tag $(DOCKER_IMAGE_node-doctor):$(VERSION) $(DOCKER_IMAGE_node-doctor):latest
 	@$(call print_success,"node-doctor image built: $(DOCKER_IMAGE_node-doctor):$(VERSION)")
 
-# Build all images (just node-doctor)
-build-all-images: build-node-doctor-image
-	@$(call print_success,"Docker image built successfully")
+# Build Docker image for overlay-test-server
+build-overlay-test-server-image: check-docker
+	@$(call print_status,"Building overlay-test-server Docker image...")
+	@docker build -f Dockerfile.overlay-test -t $(DOCKER_IMAGE_overlay-test-server):$(VERSION) .
+	@docker tag $(DOCKER_IMAGE_overlay-test-server):$(VERSION) $(DOCKER_IMAGE_overlay-test-server):latest
+	@$(call print_success,"overlay-test-server image built: $(DOCKER_IMAGE_overlay-test-server):$(VERSION)")
+
+# Build all images
+build-all-images: build-node-doctor-image build-overlay-test-server-image
+	@$(call print_success,"Docker images built successfully")
 
 # Push node-doctor image to registry
 push-node-doctor-image:
@@ -334,8 +349,15 @@ push-node-doctor-image:
 	@docker push $(DOCKER_IMAGE_node-doctor):latest
 	@$(call print_success,"node-doctor image pushed")
 
-push-all-images: push-node-doctor-image
-	@$(call print_success,"Image pushed to registry")
+# Push overlay-test-server image to registry
+push-overlay-test-server-image:
+	@$(call print_status,"Pushing overlay-test-server image to registry...")
+	@docker push $(DOCKER_IMAGE_overlay-test-server):$(VERSION)
+	@docker push $(DOCKER_IMAGE_overlay-test-server):latest
+	@$(call print_success,"overlay-test-server image pushed")
+
+push-all-images: push-node-doctor-image push-overlay-test-server-image
+	@$(call print_success,"Images pushed to registry")
 
 # ================================================================================================
 # Helm Chart Targets

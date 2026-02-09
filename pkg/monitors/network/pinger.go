@@ -31,11 +31,11 @@ type PingResult struct {
 	Error error
 }
 
-// Pinger is an interface for ICMP ping operations.
-// This interface allows for mocking ping operations in tests.
+// Pinger is an interface for connectivity probe operations (ICMP or HTTP).
+// This interface allows for mocking probe operations in tests.
 type Pinger interface {
-	// Ping sends ICMP echo requests to the target IP address.
-	// It returns a slice of results, one for each ping attempt.
+	// Ping sends connectivity probes to the target IP address.
+	// It returns a slice of results, one for each probe attempt.
 	Ping(ctx context.Context, target string, count int, timeout time.Duration) ([]PingResult, error)
 }
 

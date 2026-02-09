@@ -27,7 +27,7 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: overlay-test
       annotations:
-        description: "Node Doctor overlay network test pod - used for CNI connectivity testing"
+        description: "Node Doctor overlay network test pod - HTTP health server for CNI connectivity testing"
     spec:
       # NO hostNetwork - this pod uses the overlay network
       hostNetwork: false
@@ -40,6 +40,11 @@ spec:
 
       serviceAccountName: {{ include "node-doctor.serviceAccountName" . }}
 
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
       # Tolerate all taints to run on every node
       tolerations:
         - operator: Exists
@@ -51,12 +56,11 @@ spec:
 
       containers:
       - name: overlay-test
-        image: "{{ .Values.overlayTest.image.repository }}:{{ .Values.overlayTest.image.tag }}"
+        image: "{{ .Values.overlayTest.image.repository }}:{{ .Values.overlayTest.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.overlayTest.image.pullPolicy }}
 
-        # Just sleep forever - we only need the pod to exist and be pingable
-        command: ["/bin/sh"]
-        args: ["-c", "echo 'Overlay test pod ready'; while true; do sleep 3600; done"]
+        command: ["/overlay-test-server"]
+        args: ["--port={{ .Values.overlayTest.port | default 8023 }}"]
 
         env:
         - name: NODE_NAME
@@ -67,6 +71,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+
+        ports:
+        - name: health
+          containerPort: {{ .Values.overlayTest.port | default 8023 }}
+          protocol: TCP
 
         # Minimal security context
         securityContext:
@@ -83,32 +92,28 @@ spec:
         resources:
           requests:
             cpu: {{ .Values.overlayTest.resources.requests.cpu | default "1m" }}
-            memory: {{ .Values.overlayTest.resources.requests.memory | default "4Mi" }}
+            memory: {{ .Values.overlayTest.resources.requests.memory | default "8Mi" }}
           limits:
             cpu: {{ .Values.overlayTest.resources.limits.cpu | default "10m" }}
             memory: {{ .Values.overlayTest.resources.limits.memory | default "16Mi" }}
 
-        # Simple liveness check
+        # HTTP liveness probe on /healthz
         livenessProbe:
-          exec:
-            command:
-              - /bin/sh
-              - -c
-              - "true"
+          httpGet:
+            path: /healthz
+            port: health
           initialDelaySeconds: 5
-          periodSeconds: 60
-          timeoutSeconds: 1
+          periodSeconds: 30
+          timeoutSeconds: 3
           failureThreshold: 3
 
-        # Readiness - always ready once running
+        # HTTP readiness probe on /healthz
         readinessProbe:
-          exec:
-            command:
-              - /bin/sh
-              - -c
-              - "true"
+          httpGet:
+            path: /healthz
+            port: health
           initialDelaySeconds: 2
           periodSeconds: 10
-          timeoutSeconds: 1
+          timeoutSeconds: 3
           failureThreshold: 1
 {{- end }}

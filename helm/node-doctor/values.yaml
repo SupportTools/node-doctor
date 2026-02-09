@@ -382,22 +382,26 @@ features:
   enableTracing: false
 
 # Overlay Test Configuration
-# Deploys lightweight test pods WITHOUT hostNetwork for accurate CNI/overlay testing
+# Deploys lightweight Go HTTP health server pods WITHOUT hostNetwork
+# for accurate CNI/overlay testing via HTTP probes (fixes Cilium ICMP issue)
 overlayTest:
   # Enable overlay test pods - required for accurate CNI connectivity testing
   enabled: true
 
-  # Image for overlay test pods (minimal image, just needs to exist and be pingable)
+  # Image for overlay test pods (Go HTTP health server, scratch-based ~6MB)
   image:
-    repository: busybox
-    tag: "1.36"
+    repository: supporttools/node-doctor-overlay-test
+    tag: ""  # defaults to Chart appVersion
     pullPolicy: IfNotPresent
 
-  # Resource limits for overlay test pods (minimal - just needs to sleep)
+  # HTTP health probe port
+  port: 8023
+
+  # Resource limits for overlay test pods
   resources:
     requests:
       cpu: 1m
-      memory: 4Mi
+      memory: 8Mi
     limits:
       cpu: 10m
       memory: 16Mi

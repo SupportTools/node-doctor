@@ -25,6 +25,8 @@ const (
 	defaultCNILabelSelector         = "app=node-doctor"
 	defaultOverlayTestLabelSelector = "app=node-doctor-overlay-test"
 	defaultOverlayTestEnabled       = true
+	defaultProbePort                = 8023
+	defaultProbePath                = "/healthz"
 )
 
 // CNIMonitorConfig holds the configuration for the CNI connectivity monitor.
@@ -73,6 +75,13 @@ type ConnectivityConfig struct {
 	FailureThreshold int
 	// MinReachablePeers is the percentage of peers that must be reachable.
 	MinReachablePeers int
+	// ProbeMethod is the connectivity probe method: "http" or "icmp".
+	// Empty string means auto-detect based on OverlayTestEnabled.
+	ProbeMethod string
+	// ProbePort is the HTTP probe port (default 8023).
+	ProbePort int
+	// ProbePath is the HTTP probe path (default "/healthz").
+	ProbePath string
 }
 
 // CNIHealthConfig holds CNI health check configuration.
@@ -182,12 +191,32 @@ func NewCNIMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 		cniHealthCheck = NewCNIHealthChecker(cniConfig.CNIHealth)
 	}
 
+	// Select pinger based on probe method configuration
+	var pinger Pinger
+	probeMethod := cniConfig.Connectivity.ProbeMethod
+	if probeMethod == "" {
+		// Auto-detect: use HTTP when overlay-test pods are enabled (fixes Cilium ICMP issue)
+		if cniConfig.Discovery.OverlayTestEnabled {
+			probeMethod = "http"
+		} else {
+			probeMethod = "icmp"
+		}
+	}
+	switch probeMethod {
+	case "http":
+		pinger = newHTTPPinger(cniConfig.Connectivity.ProbePort, cniConfig.Connectivity.ProbePath)
+	case "icmp":
+		pinger = newDefaultPinger()
+	default:
+		return nil, fmt.Errorf("invalid probe method: %s", probeMethod)
+	}
+
 	// Create CNI monitor
 	monitor := &CNIMonitor{
 		name:           config.Name,
 		config:         cniConfig,
 		peerDiscovery:  peerDiscovery,
-		pinger:         newDefaultPinger(),
+		pinger:         pinger,
 		cniHealthCheck: cniHealthCheck,
 		peerStatuses:   make(map[string]*PeerStatus),
 		BaseMonitor:    baseMonitor,
@@ -340,6 +369,20 @@ func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error)
 			case float64:
 				config.Connectivity.MinReachablePeers = int(v)
 			}
+		}
+		if probeMethod, ok := connMap["probeMethod"].(string); ok {
+			config.Connectivity.ProbeMethod = probeMethod
+		}
+		if probePort, ok := connMap["probePort"]; ok {
+			switch v := probePort.(type) {
+			case int:
+				config.Connectivity.ProbePort = v
+			case float64:
+				config.Connectivity.ProbePort = int(v)
+			}
+		}
+		if probePath, ok := connMap["probePath"].(string); ok {
+			config.Connectivity.ProbePath = probePath
 		}
 	}
 

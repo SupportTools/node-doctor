@@ -162,6 +162,12 @@ jobs:
             -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME}" \
             -o ../../bin/node-doctor
 
+      - name: Build overlay-test-server binary
+        run: |
+          mkdir -p bin
+          cd cmd/overlay-test-server
+          go build -o ../../bin/overlay-test-server
+
       - name: Test binary
         run: ./bin/node-doctor --version
 

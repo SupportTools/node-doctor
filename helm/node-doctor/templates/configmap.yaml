@@ -96,6 +96,9 @@ data:
             overlayTestEnabled: true
             overlayTestLabelSelector: app={{ include "node-doctor.name" . }}-overlay-test
           connectivity:
+            probeMethod: http
+            probePort: {{ .Values.overlayTest.port | default 8023 }}
+            probePath: /healthz
             pingCount: 3
             pingTimeout: 5s
             warningLatency: 50ms

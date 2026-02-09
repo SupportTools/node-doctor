@@ -12,7 +12,7 @@ import (
 func TestParseCNIConfig(t *testing.T) {
 	tests := []struct {
 		name    string
-		config  map[string]interface{}
+		config  map[string]any
 		wantErr bool
 		check   func(*testing.T, *CNIMonitorConfig)
 	}{
@@ -34,7 +34,7 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name:    "empty config - use defaults",
-			config:  map[string]interface{}{},
+			config:  map[string]any{},
 			wantErr: false,
 			check: func(t *testing.T, c *CNIMonitorConfig) {
 				if c.Connectivity.MinReachablePeers != defaultCNIMinReachablePeers {
@@ -44,13 +44,13 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name: "custom discovery config",
-			config: map[string]interface{}{
-				"discovery": map[string]interface{}{
+			config: map[string]any{
+				"discovery": map[string]any{
 					"method":          "static",
 					"namespace":       "custom-ns",
 					"labelSelector":   "app=custom",
 					"refreshInterval": "10m",
-					"staticPeers":     []interface{}{"10.0.0.1", "10.0.0.2"},
+					"staticPeers":     []any{"10.0.0.1", "10.0.0.2"},
 				},
 			},
 			wantErr: false,
@@ -68,8 +68,8 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name: "custom connectivity config",
-			config: map[string]interface{}{
-				"connectivity": map[string]interface{}{
+			config: map[string]any{
+				"connectivity": map[string]any{
 					"pingCount":         5,
 					"pingTimeout":       "10s",
 					"warningLatency":    "100ms",
@@ -96,12 +96,12 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name: "custom CNI health config",
-			config: map[string]interface{}{
-				"cniHealth": map[string]interface{}{
+			config: map[string]any{
+				"cniHealth": map[string]any{
 					"enabled":            false,
 					"configPath":         "/custom/cni/path",
 					"checkInterfaces":    true,
-					"expectedInterfaces": []interface{}{"eth0", "cni0"},
+					"expectedInterfaces": []any{"eth0", "cni0"},
 				},
 			},
 			wantErr: false,
@@ -122,8 +122,8 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name: "invalid refresh interval",
-			config: map[string]interface{}{
-				"discovery": map[string]interface{}{
+			config: map[string]any{
+				"discovery": map[string]any{
 					"refreshInterval": "invalid",
 				},
 			},
@@ -131,8 +131,8 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name: "invalid ping timeout",
-			config: map[string]interface{}{
-				"connectivity": map[string]interface{}{
+			config: map[string]any{
+				"connectivity": map[string]any{
 					"pingTimeout": "invalid",
 				},
 			},
@@ -140,8 +140,8 @@ func TestParseCNIConfig(t *testing.T) {
 		},
 		{
 			name: "float64 values converted correctly",
-			config: map[string]interface{}{
-				"connectivity": map[string]interface{}{
+			config: map[string]any{
+				"connectivity": map[string]any{
 					"pingCount":         3.0,
 					"failureThreshold":  5.0,
 					"minReachablePeers": 75.0,
@@ -157,6 +157,64 @@ func TestParseCNIConfig(t *testing.T) {
 				}
 				if c.Connectivity.MinReachablePeers != 75 {
 					t.Errorf("MinReachablePeers = %d, want 75", c.Connectivity.MinReachablePeers)
+				}
+			},
+		},
+		{
+			name: "probe method config - http",
+			config: map[string]any{
+				"connectivity": map[string]any{
+					"probeMethod": "http",
+					"probePort":   8023,
+					"probePath":   "/healthz",
+				},
+			},
+			wantErr: false,
+			check: func(t *testing.T, c *CNIMonitorConfig) {
+				if c.Connectivity.ProbeMethod != "http" {
+					t.Errorf("ProbeMethod = %q, want http", c.Connectivity.ProbeMethod)
+				}
+				if c.Connectivity.ProbePort != 8023 {
+					t.Errorf("ProbePort = %d, want 8023", c.Connectivity.ProbePort)
+				}
+				if c.Connectivity.ProbePath != "/healthz" {
+					t.Errorf("ProbePath = %q, want /healthz", c.Connectivity.ProbePath)
+				}
+			},
+		},
+		{
+			name: "probe method config - float64 port",
+			config: map[string]any{
+				"connectivity": map[string]any{
+					"probeMethod": "icmp",
+					"probePort":   8023.0,
+				},
+			},
+			wantErr: false,
+			check: func(t *testing.T, c *CNIMonitorConfig) {
+				if c.Connectivity.ProbeMethod != "icmp" {
+					t.Errorf("ProbeMethod = %q, want icmp", c.Connectivity.ProbeMethod)
+				}
+				if c.Connectivity.ProbePort != 8023 {
+					t.Errorf("ProbePort = %d, want 8023", c.Connectivity.ProbePort)
+				}
+			},
+		},
+		{
+			name: "probe method defaults to empty",
+			config: map[string]any{
+				"connectivity": map[string]any{},
+			},
+			wantErr: false,
+			check: func(t *testing.T, c *CNIMonitorConfig) {
+				if c.Connectivity.ProbeMethod != "" {
+					t.Errorf("ProbeMethod = %q, want empty (auto-detect)", c.Connectivity.ProbeMethod)
+				}
+				if c.Connectivity.ProbePort != 0 {
+					t.Errorf("ProbePort = %d, want 0 (use default)", c.Connectivity.ProbePort)
+				}
+				if c.Connectivity.ProbePath != "" {
+					t.Errorf("ProbePath = %q, want empty (use default)", c.Connectivity.ProbePath)
 				}
 			},
 		},
@@ -181,18 +239,18 @@ func TestParseCNIConfig(t *testing.T) {
 func TestValidateCNIConfig(t *testing.T) {
 	tests := []struct {
 		name    string
-		config  map[string]interface{}
+		config  map[string]any
 		wantErr bool
 	}{
 		{
 			name:    "valid config",
-			config:  map[string]interface{}{"connectivity": map[string]interface{}{"pingCount": 3}},
+			config:  map[string]any{"connectivity": map[string]any{"pingCount": 3}},
 			wantErr: false,
 		},
 		{
 			name: "invalid config",
-			config: map[string]interface{}{
-				"connectivity": map[string]interface{}{
+			config: map[string]any{
+				"connectivity": map[string]any{
 					"pingTimeout": "invalid",
 				},
 			},
@@ -770,6 +828,97 @@ func TestCNIMonitor_DeltaBasedEventEmission(t *testing.T) {
 
 			// The helper function tests (TestFormatPeerListMessage, TestPeerListChanged)
 			// comprehensively cover the delta detection logic
+		})
+	}
+}
+
+func TestCNIMonitor_ProbeMethodSelection(t *testing.T) {
+	tests := []struct {
+		name               string
+		probeMethod        string
+		overlayTestEnabled bool
+		wantHTTP           bool
+		wantErr            bool
+	}{
+		{
+			name:               "auto-detect with overlay enabled defaults to HTTP",
+			probeMethod:        "",
+			overlayTestEnabled: true,
+			wantHTTP:           true,
+		},
+		{
+			name:               "auto-detect with overlay disabled defaults to ICMP",
+			probeMethod:        "",
+			overlayTestEnabled: false,
+			wantHTTP:           false,
+		},
+		{
+			name:               "explicit http override",
+			probeMethod:        "http",
+			overlayTestEnabled: false,
+			wantHTTP:           true,
+		},
+		{
+			name:               "explicit icmp override",
+			probeMethod:        "icmp",
+			overlayTestEnabled: true,
+			wantHTTP:           false,
+		},
+		{
+			name:               "invalid probe method",
+			probeMethod:        "invalid",
+			overlayTestEnabled: true,
+			wantErr:            true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configMap := map[string]any{
+				"discovery": map[string]any{
+					"method":             "static",
+					"overlayTestEnabled": tt.overlayTestEnabled,
+					"staticPeers":        []any{"10.0.0.1"},
+				},
+			}
+			if tt.probeMethod != "" {
+				configMap["connectivity"] = map[string]any{
+					"probeMethod": tt.probeMethod,
+				}
+			}
+
+			monitorConfig := types.MonitorConfig{
+				Name:     "test-cni",
+				Type:     "network-cni-check",
+				Interval: 30 * time.Second,
+				Timeout:  15 * time.Second,
+				Config:   configMap,
+			}
+
+			ctx := context.Background()
+			monitor, err := NewCNIMonitor(ctx, monitorConfig)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("NewCNIMonitor() expected error for invalid probe method")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("NewCNIMonitor() unexpected error: %v", err)
+			}
+
+			cniMonitor := monitor.(*CNIMonitor)
+			_, isHTTP := cniMonitor.pinger.(*httpPinger)
+
+			if isHTTP != tt.wantHTTP {
+				if tt.wantHTTP {
+					t.Error("expected HTTP pinger, got ICMP pinger")
+				} else {
+					t.Error("expected ICMP pinger, got HTTP pinger")
+				}
+			}
 		})
 	}
 }
