@@ -922,3 +922,196 @@ func TestCNIMonitor_ProbeMethodSelection(t *testing.T) {
 		})
 	}
 }
+
+// slowMockPinger introduces artificial delay per target to simulate timeouts.
+type slowMockPinger struct {
+	delays  map[string]time.Duration
+	results map[string][]PingResult
+}
+
+func (m *slowMockPinger) Ping(ctx context.Context, target string, count int, timeout time.Duration) ([]PingResult, error) {
+	if delay, ok := m.delays[target]; ok {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	if results, ok := m.results[target]; ok {
+		return results, nil
+	}
+	result := make([]PingResult, count)
+	for i := range result {
+		result[i] = PingResult{Success: false}
+	}
+	return result, nil
+}
+
+func TestCNIMonitor_ConcurrentPeerChecks(t *testing.T) {
+	// This test verifies that peer checks run concurrently, not sequentially.
+	// With 5 peers, 3 of which take 2s each, sequential execution would take
+	// at least 6s. Concurrent execution completes in ~2s (the max single delay).
+	fastResult := []PingResult{
+		{Success: true, RTT: 5 * time.Millisecond},
+		{Success: true, RTT: 5 * time.Millisecond},
+		{Success: true, RTT: 5 * time.Millisecond},
+	}
+	slowResult := []PingResult{
+		{Success: false},
+		{Success: false},
+		{Success: false},
+	}
+
+	pinger := &slowMockPinger{
+		delays: map[string]time.Duration{
+			"10.0.0.3": 2 * time.Second, // slow peer
+			"10.0.0.4": 2 * time.Second, // slow peer
+			"10.0.0.5": 2 * time.Second, // slow peer
+		},
+		results: map[string][]PingResult{
+			"10.0.0.1": fastResult,
+			"10.0.0.2": fastResult,
+			"10.0.0.3": slowResult,
+			"10.0.0.4": slowResult,
+			"10.0.0.5": slowResult,
+		},
+	}
+
+	peers := []Peer{
+		{Name: "peer-1", NodeName: "node-1", NodeIP: "10.0.0.1"},
+		{Name: "peer-2", NodeName: "node-2", NodeIP: "10.0.0.2"},
+		{Name: "peer-3", NodeName: "node-3", NodeIP: "10.0.0.3"},
+		{Name: "peer-4", NodeName: "node-4", NodeIP: "10.0.0.4"},
+		{Name: "peer-5", NodeName: "node-5", NodeIP: "10.0.0.5"},
+	}
+
+	monitor := &CNIMonitor{
+		name: "test-concurrent",
+		config: &CNIMonitorConfig{
+			Connectivity: ConnectivityConfig{
+				PingCount:         3,
+				PingTimeout:       5 * time.Second,
+				WarningLatency:    50 * time.Millisecond,
+				CriticalLatency:   200 * time.Millisecond,
+				FailureThreshold:  3,
+				MinReachablePeers: 80,
+			},
+		},
+		peerDiscovery: NewStaticPeerDiscovery(peers),
+		pinger:        pinger,
+		peerStatuses:  make(map[string]*PeerStatus),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	status, err := monitor.checkCNI(ctx)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("checkCNI() error: %v", err)
+	}
+	if status == nil {
+		t.Fatal("checkCNI() returned nil status")
+	}
+
+	// With concurrent execution, all checks run in parallel so total time
+	// should be ~2s (the max single peer delay), NOT 6s (sum of 3 slow peers).
+	if elapsed > 4*time.Second {
+		t.Errorf("checkCNI() took %v; concurrent checks should complete in ~2s, not sequential 6s+", elapsed)
+	}
+
+	// Verify that the 2 fast peers were correctly identified as reachable
+	// despite 3 slow peers timing out simultaneously.
+	reachableCount := 0
+	for _, cond := range status.Conditions {
+		if cond.Type == "NetworkPartitioned" {
+			// With 2/5 = 40% reachable (below 80% threshold), should be partitioned
+			if cond.Status != types.ConditionTrue {
+				t.Error("expected NetworkPartitioned=True with only 2/5 peers reachable")
+			}
+		}
+	}
+	for _, ps := range monitor.peerStatuses {
+		if ps.Reachable {
+			reachableCount++
+		}
+	}
+	if reachableCount != 2 {
+		t.Errorf("expected 2 reachable peers, got %d", reachableCount)
+	}
+}
+
+func TestCNIMonitor_ConcurrentPeerChecks_ContextCancellation(t *testing.T) {
+	// Verifies that checkCNI returns promptly when context is cancelled,
+	// and still returns partial results from peers that completed before cancellation.
+	fastResult := []PingResult{
+		{Success: true, RTT: 5 * time.Millisecond},
+		{Success: true, RTT: 5 * time.Millisecond},
+		{Success: true, RTT: 5 * time.Millisecond},
+	}
+
+	pinger := &slowMockPinger{
+		delays: map[string]time.Duration{
+			// These peers take much longer than the context deadline
+			"10.0.0.3": 30 * time.Second,
+			"10.0.0.4": 30 * time.Second,
+			"10.0.0.5": 30 * time.Second,
+		},
+		results: map[string][]PingResult{
+			"10.0.0.1": fastResult,
+			"10.0.0.2": fastResult,
+		},
+	}
+
+	peers := []Peer{
+		{Name: "peer-1", NodeName: "node-1", NodeIP: "10.0.0.1"},
+		{Name: "peer-2", NodeName: "node-2", NodeIP: "10.0.0.2"},
+		{Name: "peer-3", NodeName: "node-3", NodeIP: "10.0.0.3"},
+		{Name: "peer-4", NodeName: "node-4", NodeIP: "10.0.0.4"},
+		{Name: "peer-5", NodeName: "node-5", NodeIP: "10.0.0.5"},
+	}
+
+	monitor := &CNIMonitor{
+		name: "test-ctx-cancel",
+		config: &CNIMonitorConfig{
+			Connectivity: ConnectivityConfig{
+				PingCount:         3,
+				PingTimeout:       5 * time.Second,
+				WarningLatency:    50 * time.Millisecond,
+				CriticalLatency:   200 * time.Millisecond,
+				FailureThreshold:  3,
+				MinReachablePeers: 80,
+			},
+		},
+		peerDiscovery: NewStaticPeerDiscovery(peers),
+		pinger:        pinger,
+		peerStatuses:  make(map[string]*PeerStatus),
+	}
+
+	// Context with short timeout — should cancel while slow peers are still running
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	status, err := monitor.checkCNI(ctx)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("checkCNI() error: %v", err)
+	}
+	if status == nil {
+		t.Fatal("checkCNI() returned nil status")
+	}
+
+	// Should complete close to the 2s context deadline, NOT 30s from slow peers
+	if elapsed > 5*time.Second {
+		t.Errorf("checkCNI() took %v; should complete near context deadline (2s), not 30s", elapsed)
+	}
+
+	// Should have results for all 5 peers (2 fast succeeded, 3 slow cancelled)
+	if len(monitor.peerStatuses) != 5 {
+		t.Errorf("expected 5 peer statuses, got %d", len(monitor.peerStatuses))
+	}
+}

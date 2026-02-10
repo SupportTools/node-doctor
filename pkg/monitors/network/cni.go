@@ -438,18 +438,43 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 		return status, nil
 	}
 
-	// Check connectivity to each peer
+	// Check connectivity to each peer concurrently.
+	// Sequential checks cause timeout cascades: if one peer's probes time out
+	// (e.g. 3×5s = 15s), the monitor's context expires before other peers can
+	// be checked, causing false-positive NetworkPartitioned alerts.
+	type peerResult struct {
+		peer   Peer
+		status *PeerStatus
+	}
+
+	resultsCh := make(chan peerResult, len(peers))
+	var wg sync.WaitGroup
+
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(p Peer) {
+			defer wg.Done()
+			ps := m.checkPeerConnectivity(ctx, p)
+			resultsCh <- peerResult{peer: p, status: ps}
+		}(peer)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
 	reachableCount := 0
 	unreachablePeers := make([]string, 0)
 	highLatencyPeers := make([]string, 0)
 	persistentlyUnreachablePeers := make([]string, 0) // Peers exceeding failure threshold
 	var totalLatency time.Duration
 
-	for _, peer := range peers {
-		peerStatus := m.checkPeerConnectivity(ctx, peer)
+	for result := range resultsCh {
+		peerStatus := result.status
 
 		m.mu.Lock()
-		m.peerStatuses[peer.NodeName] = peerStatus
+		m.peerStatuses[result.peer.NodeName] = peerStatus
 		m.mu.Unlock()
 
 		if peerStatus.Reachable {
@@ -458,17 +483,17 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 
 			// Check for high latency (collect but don't emit individual events)
 			if peerStatus.AvgLatency > m.config.Connectivity.CriticalLatency {
-				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
+				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", result.peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
 			} else if peerStatus.AvgLatency > m.config.Connectivity.WarningLatency {
-				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
+				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", result.peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
 			}
 		} else {
-			unreachablePeers = append(unreachablePeers, peer.NodeName)
+			unreachablePeers = append(unreachablePeers, result.peer.NodeName)
 
 			// Track peers that have exceeded the failure threshold
 			if peerStatus.ConsecutiveFails >= m.config.Connectivity.FailureThreshold {
 				persistentlyUnreachablePeers = append(persistentlyUnreachablePeers,
-					fmt.Sprintf("%s (%d consecutive failures)", peer.NodeName, peerStatus.ConsecutiveFails))
+					fmt.Sprintf("%s (%d consecutive failures)", result.peer.NodeName, peerStatus.ConsecutiveFails))
 			}
 		}
 	}
