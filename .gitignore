@@ -136,6 +136,7 @@ _site/
 .terraform/
 /node-doctor
 /node-doctor-controller
+/overlay-test-server
 
 # Log Bundles
 logs
