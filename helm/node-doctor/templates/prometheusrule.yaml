@@ -21,7 +21,7 @@ spec:
       rules:
         - alert: NodeDoctorCNIConfigInvalid
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="CNIConfigValid", status="False"} > 0
+            node_doctor_monitor_condition_status{condition_type="CNIConfigValid"} == 0
           for: {{ .Values.prometheusRule.critical.cniConfigInvalid.for }}
           labels:
             severity: critical
@@ -38,7 +38,7 @@ spec:
 
         - alert: NodeDoctorCNIUnhealthy
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="CNIHealthy", status="False"} > 0
+            node_doctor_monitor_condition_status{condition_type="CNIHealthy"} == 0
           for: {{ .Values.prometheusRule.critical.cniUnhealthy.for }}
           labels:
             severity: critical
@@ -55,7 +55,7 @@ spec:
 
         - alert: NodeDoctorNetworkPartitioned
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="NetworkPartitioned", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="NetworkPartitioned"} == 1
           for: {{ .Values.prometheusRule.critical.networkPartitioned.for }}
           labels:
             severity: critical
@@ -72,7 +72,7 @@ spec:
 
         - alert: NodeDoctorKubeletUnhealthy
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="KubeletHealthy", status="False"} > 0
+            node_doctor_monitor_condition_status{condition_type="KubeletHealthy"} == 0
           for: {{ .Values.prometheusRule.critical.kubeletUnhealthy.for }}
           labels:
             severity: critical
@@ -89,7 +89,7 @@ spec:
 
         - alert: NodeDoctorReadOnlyFilesystem
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="ReadOnlyFilesystem", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="ReadOnlyFilesystem"} == 1
           for: {{ .Values.prometheusRule.critical.readOnlyFilesystem.for }}
           labels:
             severity: critical
@@ -111,7 +111,7 @@ spec:
       rules:
         - alert: NodeDoctorDNSResolutionFailed
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="DNSResolutionFailed", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="DNSResolutionFailed"} == 1
           for: {{ .Values.prometheusRule.warning.dnsResolutionFailed.for }}
           labels:
             severity: warning
@@ -122,7 +122,7 @@ spec:
 
         - alert: NodeDoctorDNSLatencyHigh
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="DNSLatencyHigh", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="DNSLatencyHigh"} == 1
           for: {{ .Values.prometheusRule.warning.dnsLatencyHigh.for }}
           labels:
             severity: warning
@@ -133,7 +133,7 @@ spec:
 
         - alert: NodeDoctorMemoryPressure
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="MemoryPressure", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="MemoryPressure"} == 1
           for: {{ .Values.prometheusRule.warning.memoryPressure.for }}
           labels:
             severity: warning
@@ -144,7 +144,7 @@ spec:
 
         - alert: NodeDoctorDiskPressure
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="DiskPressure", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="DiskPressure"} == 1
           for: {{ .Values.prometheusRule.warning.diskPressure.for }}
           labels:
             severity: warning
@@ -155,7 +155,7 @@ spec:
 
         - alert: NodeDoctorNetworkDegraded
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="NetworkDegraded", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="NetworkDegraded"} == 1
           for: {{ .Values.prometheusRule.warning.networkDegraded.for }}
           labels:
             severity: warning
@@ -188,7 +188,7 @@ spec:
 
         - alert: NodeDoctorAPIServerLatencyHigh
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="APIServerLatencyHigh", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="APIServerLatencyHigh"} == 1
           for: {{ .Values.prometheusRule.warning.apiServerLatencyHigh.for }}
           labels:
             severity: warning

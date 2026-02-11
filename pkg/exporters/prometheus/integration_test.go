@@ -245,6 +245,7 @@ func TestPrometheusFormat(t *testing.T) {
 	expectedCustomMetrics := []string{
 		"test_problems_total",
 		"test_status_updates_total",
+		"test_condition_status",
 		"test_info",
 	}
 
@@ -253,6 +254,109 @@ func TestPrometheusFormat(t *testing.T) {
 			t.Errorf("expected custom metric '%s' not found in output", metric)
 		}
 	}
+}
+
+func TestConditionStatusGauge(t *testing.T) {
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      9112,
+		Path:      "/metrics",
+		Namespace: "test",
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("failed to create exporter: %v", err)
+	}
+
+	ctx := context.Background()
+	err = exporter.Start(ctx)
+	if err != nil {
+		t.Fatalf("failed to start exporter: %v", err)
+	}
+	defer exporter.Stop()
+
+	// Export status with condition True
+	status := &types.Status{
+		Source:    "test",
+		Timestamp: time.Now(),
+		Conditions: []types.Condition{
+			{
+				Type:       "NetworkPartitioned",
+				Status:     types.ConditionTrue,
+				Reason:     "PeerUnreachable",
+				Message:    "Cannot reach peers",
+				Transition: time.Now(),
+			},
+		},
+	}
+	exporter.ExportStatus(ctx, status)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Scrape and verify gauge == 1
+	body := scrapeMetrics(t, config.Port, config.Path)
+	if !strings.Contains(body, `test_condition_status{condition_type="NetworkPartitioned"`) {
+		t.Error("condition_status metric not found for NetworkPartitioned")
+	}
+	if !containsMetricWithValue(body, "test_condition_status", "NetworkPartitioned", "1") {
+		t.Error("expected condition_status=1 for NetworkPartitioned=True")
+	}
+
+	// Export status with condition False — gauge should update to 0
+	status2 := &types.Status{
+		Source:    "test",
+		Timestamp: time.Now(),
+		Conditions: []types.Condition{
+			{
+				Type:       "NetworkPartitioned",
+				Status:     types.ConditionFalse,
+				Reason:     "PeersReachable",
+				Message:    "All peers reachable",
+				Transition: time.Now(),
+			},
+		},
+	}
+	exporter.ExportStatus(ctx, status2)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Scrape and verify gauge == 0
+	body = scrapeMetrics(t, config.Port, config.Path)
+	if !containsMetricWithValue(body, "test_condition_status", "NetworkPartitioned", "0") {
+		t.Error("expected condition_status=0 for NetworkPartitioned=False, but gauge did not update")
+	}
+}
+
+// scrapeMetrics fetches the /metrics endpoint and returns the body as a string.
+func scrapeMetrics(t *testing.T, port int, path string) string {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", port, path))
+	if err != nil {
+		t.Fatalf("failed to get metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	return string(body)
+}
+
+// containsMetricWithValue checks if a Prometheus text exposition contains a metric
+// with the given name, condition_type label value, and numeric value.
+func containsMetricWithValue(body, metricName, conditionType, value string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, metricName) &&
+			strings.Contains(line, fmt.Sprintf(`condition_type="%s"`, conditionType)) &&
+			strings.HasSuffix(strings.TrimSpace(line), " "+value) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestConcurrentScrapes(t *testing.T) {

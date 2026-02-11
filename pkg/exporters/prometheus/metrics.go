@@ -19,6 +19,7 @@ type Metrics struct {
 	// Gauge metrics
 	ProblemsActive   *prometheus.GaugeVec
 	MonitorUp        *prometheus.GaugeVec
+	ConditionStatus  *prometheus.GaugeVec
 	Info             *prometheus.GaugeVec
 	StartTimeSeconds *prometheus.GaugeVec
 	UptimeSeconds    *prometheus.GaugeVec
@@ -126,6 +127,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 		),
 
 		// Gauge metrics
+		ConditionStatus: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "condition_status",
+				Help:        "Current status of node conditions (1=active/True, 0=inactive/False)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "condition_type"},
+		),
+
 		ProblemsActive: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace:   namespace,
@@ -358,6 +370,7 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.ExportErrorsTotal,
 		m.ProblemsActive,
 		m.MonitorUp,
+		m.ConditionStatus,
 		m.Info,
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
@@ -398,6 +411,7 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.ExportErrorsTotal,
 		m.ProblemsActive,
 		m.MonitorUp,
+		m.ConditionStatus,
 		m.Info,
 		m.StartTimeSeconds,
 		m.UptimeSeconds,

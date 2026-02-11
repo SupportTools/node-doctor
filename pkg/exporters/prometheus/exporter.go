@@ -179,6 +179,14 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 	for _, condition := range status.Conditions {
 		e.metrics.ConditionsTotal.WithLabelValues(
 			e.nodeName, condition.Type, string(condition.Status)).Inc()
+
+		// Set gauge: 1 when condition is True, 0 when False/Unknown
+		val := 0.0
+		if condition.Status == types.ConditionTrue {
+			val = 1.0
+		}
+		e.metrics.ConditionStatus.WithLabelValues(
+			e.nodeName, condition.Type).Set(val)
 	}
 
 	// Update events

@@ -84,6 +84,9 @@ func TestNewMetrics(t *testing.T) {
 			if metrics.MonitorUp == nil {
 				t.Error("MonitorUp metric not created")
 			}
+			if metrics.ConditionStatus == nil {
+				t.Error("ConditionStatus metric not created")
+			}
 			if metrics.Info == nil {
 				t.Error("Info metric not created")
 			}
@@ -175,6 +178,8 @@ func TestMetricUpdates(t *testing.T) {
 	// Test gauge metrics
 	metrics.ProblemsActive.WithLabelValues("test-node", "DiskPressure", "warning").Set(5)
 	metrics.MonitorUp.WithLabelValues("test-node", "disk-monitor", "disk").Set(1)
+	metrics.ConditionStatus.WithLabelValues("test-node", "NetworkPartitioned").Set(1)
+	metrics.ConditionStatus.WithLabelValues("test-node", "CNIHealthy").Set(0)
 	metrics.Info.WithLabelValues("test-node", "1.0.0", "abc123", "go1.21", "2023-01-01").Set(1)
 	metrics.StartTimeSeconds.WithLabelValues("test-node").Set(1640995200)
 	metrics.UptimeSeconds.WithLabelValues("test-node").Set(3600)
@@ -211,6 +216,7 @@ func TestMetricUpdates(t *testing.T) {
 		"test_export_errors_total",
 		"test_problems_active",
 		"test_monitor_up",
+		"test_condition_status",
 		"test_info",
 		"test_start_time_seconds",
 		"test_uptime_seconds",
