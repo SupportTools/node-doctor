@@ -79,6 +79,20 @@ data:
           ioHealthCheck: {{ .Values.monitors.disk.ioHealthCheck }}
       {{- end }}
 
+      {{- if .Values.monitors.ipForwarding.enabled }}
+      # IP Forwarding Monitor - Detects disabled ip_forward
+      - name: ip-forwarding-check
+        type: network-ip-forwarding
+        enabled: true
+        interval: {{ .Values.monitors.ipForwarding.interval }}
+        timeout: {{ .Values.monitors.ipForwarding.timeout }}
+        config:
+          checkIPv4: {{ .Values.monitors.ipForwarding.checkIPv4 }}
+          checkIPv6: {{ .Values.monitors.ipForwarding.checkIPv6 }}
+          checkPerInterface: {{ .Values.monitors.ipForwarding.checkPerInterface }}
+          procPath: /host/proc
+      {{- end }}
+
       {{- if .Values.overlayTest.enabled }}
       # CNI Connectivity Monitor - Tests overlay network connectivity
       # Uses overlay-test pods for accurate CNI testing

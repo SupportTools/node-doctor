@@ -103,6 +103,23 @@ spec:
             {{- with .Values.prometheusRule.critical.readOnlyFilesystem.annotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+
+        - alert: NodeDoctorIPForwardingDisabled
+          expr: |
+            node_doctor_monitor_condition_status{condition_type="IPForwardingDisabled"} == 1
+          for: {{ .Values.prometheusRule.critical.ipForwardingDisabled.for }}
+          labels:
+            severity: critical
+            component: network
+            {{- with .Values.prometheusRule.critical.ipForwardingDisabled.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "IP forwarding disabled on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} has IP forwarding disabled. Kubernetes pod networking will not function."
+            {{- with .Values.prometheusRule.critical.ipForwardingDisabled.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
     {{- end }}
 
     {{- if .Values.prometheusRule.warning.enabled }}

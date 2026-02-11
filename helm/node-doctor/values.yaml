@@ -167,6 +167,10 @@ prometheusRule:
       for: 1m
       labels: {}
       annotations: {}
+    ipForwardingDisabled:
+      for: 2m
+      labels: {}
+      annotations: {}
 
   # Warning alerts - should be investigated soon
   warning:
@@ -341,6 +345,14 @@ monitors:
       critical: 95
     readOnlyDetection: true
     ioHealthCheck: true
+
+  ipForwarding:
+    enabled: true
+    interval: 30s
+    timeout: 5s
+    checkIPv4: true
+    checkIPv6: true
+    checkPerInterface: false
 
 # Exporters configuration
 exporters:
