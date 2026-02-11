@@ -400,10 +400,10 @@ overlayTest:
   # Resource limits for overlay test pods
   resources:
     requests:
-      cpu: 1m
+      cpu: 5m
       memory: 8Mi
     limits:
-      cpu: 10m
+      cpu: 100m
       memory: 16Mi
 
   # Update strategy

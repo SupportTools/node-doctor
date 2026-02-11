@@ -16,8 +16,8 @@ const (
 	// Default configuration values for CNI monitor
 	defaultCNIPingCount             = 3
 	defaultCNIPingTimeout           = 5 * time.Second
-	defaultCNIWarningLatency        = 50 * time.Millisecond
-	defaultCNICriticalLatency       = 200 * time.Millisecond
+	defaultCNIWarningLatency        = 200 * time.Millisecond
+	defaultCNICriticalLatency       = 500 * time.Millisecond
 	defaultCNIFailureThreshold      = 3
 	defaultCNIMinReachablePeers     = 80 // percentage
 	defaultCNIRefreshInterval       = 5 * time.Minute

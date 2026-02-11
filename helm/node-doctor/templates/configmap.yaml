@@ -101,8 +101,8 @@ data:
             probePath: /healthz
             pingCount: 3
             pingTimeout: 5s
-            warningLatency: 50ms
-            criticalLatency: 200ms
+            warningLatency: 200ms
+            criticalLatency: 500ms
             failureThreshold: 3
             minReachablePeers: 80
           cniHealth:
