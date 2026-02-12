@@ -324,4 +324,3 @@ func readForwardingSetting(path string) (bool, error) {
 	value := strings.TrimSpace(string(data))
 	return value == "1", nil
 }
-
