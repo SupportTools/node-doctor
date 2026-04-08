@@ -664,3 +664,13 @@ func (c *Correlator) ForceResolve(ctx context.Context, correlationID string) err
 
 // Ensure unused import doesn't cause issues
 var _ = strings.TrimSpace
+
+// SetStorage wires a storage backend into the correlator.  It must be called
+// before Start() so that the initial load of active correlations succeeds.
+// Calling SetStorage after Start() is safe but the load-on-start path will
+// already have run with whatever storage was set at that time.
+func (c *Correlator) SetStorage(storage Storage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.storage = storage
+}

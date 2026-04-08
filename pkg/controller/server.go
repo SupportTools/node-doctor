@@ -150,6 +150,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start correlator if available
 	if s.correlator != nil {
+		// Wire storage so the correlator can persist/load correlations.
+		if s.storage != nil {
+			s.correlator.SetStorage(s.storage)
+		}
 		if err := s.correlator.Start(ctx); err != nil {
 			log.Printf("[WARN] Failed to start correlator: %v", err)
 		}
