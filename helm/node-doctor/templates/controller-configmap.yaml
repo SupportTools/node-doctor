@@ -1,0 +1,45 @@
+{{- if .Values.controller.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "node-doctor.controller.name" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-doctor.controller.labels" . | nindent 4 }}
+data:
+  controller.yaml: |
+    server:
+      bindAddress: "0.0.0.0"
+      port: {{ .Values.controller.config.server.port }}
+      readTimeout: {{ .Values.controller.config.server.readTimeout }}
+      writeTimeout: {{ .Values.controller.config.server.writeTimeout }}
+      enableCORS: {{ .Values.controller.config.server.enableCORS }}
+
+    storage:
+      path: {{ .Values.controller.config.storage.path }}
+      retention: {{ .Values.controller.config.storage.retention }}
+
+    correlation:
+      enabled: {{ .Values.controller.config.correlation.enabled }}
+      clusterWideThreshold: {{ .Values.controller.config.correlation.clusterWideThreshold }}
+      evaluationInterval: {{ .Values.controller.config.correlation.evaluationInterval }}
+      minNodesForCorrelation: {{ .Values.controller.config.correlation.minNodesForCorrelation }}
+
+    coordination:
+      enabled: {{ .Values.controller.config.coordination.enabled }}
+      maxConcurrentRemediations: {{ .Values.controller.config.coordination.maxConcurrentRemediations }}
+      defaultLeaseDuration: {{ .Values.controller.config.coordination.defaultLeaseDuration }}
+      cooldownPeriod: {{ .Values.controller.config.coordination.cooldownPeriod }}
+
+    prometheus:
+      enabled: true
+      port: {{ .Values.controller.config.server.port }}
+      path: /metrics
+
+    kubernetes:
+      enabled: true
+      inCluster: true
+      namespace: {{ .Release.Namespace }}
+      createEvents: true
+{{- end }}

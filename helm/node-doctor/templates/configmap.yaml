@@ -144,7 +144,7 @@ data:
           deduplicationWindow: {{ .Values.exporters.kubernetes.deduplicationWindow }}
 
       http:
-        enabled: {{ .Values.exporters.http.enabled }}
+        enabled: {{ or .Values.exporters.http.enabled .Values.controller.enabled }}
         bindAddress: {{ .Values.exporters.http.bindAddress | quote }}
         hostPort: {{ .Values.exporters.http.port }}
         tlsEnabled: {{ .Values.exporters.http.tlsEnabled }}
@@ -158,6 +158,13 @@ data:
           - path: /status
             handler: detailed-status
             description: "Detailed node and monitor status"
+        {{- if .Values.controller.enabled }}
+        webhooks:
+          - name: controller
+            url: {{ printf "%s/api/v1/reports" (include "node-doctor.controller.serviceURL" .) | quote }}
+            interval: 30s
+            timeout: 10s
+        {{- end }}
 
       prometheus:
         enabled: {{ .Values.exporters.prometheus.enabled }}
@@ -175,6 +182,13 @@ data:
       maxRemediationsPerMinute: {{ .Values.remediation.maxRemediationsPerMinute }}
       cooldownPeriod: {{ .Values.remediation.cooldownPeriod }}
       maxAttemptsGlobal: {{ .Values.remediation.maxAttemptsGlobal }}
+      {{- if .Values.controller.enabled }}
+      coordination:
+        enabled: true
+        controllerURL: {{ include "node-doctor.controller.serviceURL" . | quote }}
+        leaseTimeout: {{ .Values.controller.config.coordination.defaultLeaseDuration }}
+        fallbackOnUnreachable: false
+      {{- end }}
 
     features:
       enableMetrics: {{ .Values.features.enableMetrics }}

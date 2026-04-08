@@ -424,3 +424,92 @@ overlayTest:
 
   # Priority class (empty = no priority class)
   priorityClassName: ""
+
+# Controller configuration - optional central aggregation component
+controller:
+  # Enable the node-doctor controller (requires persistent storage)
+  enabled: false
+
+  # Container image for the controller
+  image:
+    repository: supporttools/node-doctor-controller
+    pullPolicy: IfNotPresent
+    # Defaults to chart appVersion when empty
+    tag: ""
+
+  # Service account for the controller
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+
+  # Persistent storage for SQLite database
+  persistence:
+    enabled: true
+    # Storage class - leave empty to use cluster default
+    storageClassName: ""
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+
+  # Resource requests and limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # Controller configuration
+  config:
+    server:
+      port: 8080
+      readTimeout: 30s
+      writeTimeout: 30s
+      enableCORS: false
+    storage:
+      path: /data/node-doctor.db
+      retention: 720h
+    correlation:
+      enabled: true
+      clusterWideThreshold: 0.3
+      evaluationInterval: 30s
+      minNodesForCorrelation: 2
+    coordination:
+      enabled: true
+      maxConcurrentRemediations: 3
+      defaultLeaseDuration: 5m
+      cooldownPeriod: 10m
+
+  # Node affinity - prefer control-plane nodes
+  preferControlPlane: true
+
+  # Additional tolerations (control-plane tolerations always included)
+  tolerations: []
+
+  # Additional pod annotations
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+
+  # SecurityContext for the controller pod (non-root)
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    fsGroup: 65534
+
+  # SecurityContext for the controller container
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL

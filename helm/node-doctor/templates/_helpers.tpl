@@ -79,3 +79,39 @@ Create the name of the service
 {{- define "node-doctor.serviceName" -}}
 {{- printf "%s-metrics" (include "node-doctor.fullname" .) }}
 {{- end }}
+
+{{/*
+Controller name
+*/}}
+{{- define "node-doctor.controller.name" -}}
+{{- printf "%s-controller" (include "node-doctor.fullname" .) }}
+{{- end }}
+
+{{/*
+Controller labels
+*/}}
+{{- define "node-doctor.controller.labels" -}}
+helm.sh/chart: {{ include "node-doctor.chart" . }}
+{{ include "node-doctor.controller.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: controller
+{{- end }}
+
+{{/*
+Controller selector labels
+*/}}
+{{- define "node-doctor.controller.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "node-doctor.controller.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/part-of: {{ include "node-doctor.name" . }}
+{{- end }}
+
+{{/*
+Controller service URL (for use in agent config)
+*/}}
+{{- define "node-doctor.controller.serviceURL" -}}
+{{- printf "http://%s.%s:%d" (include "node-doctor.controller.name" .) .Release.Namespace (.Values.controller.service.port | int) }}
+{{- end }}
