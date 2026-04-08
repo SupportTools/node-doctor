@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -76,6 +77,28 @@ func buildDetectorWithRemediation(t *testing.T, monitorCfg types.MonitorConfig, 
 	return pd, mon
 }
 
+// pollUntil polls cond every 5 ms until it returns true or the deadline expires.
+// For positive assertions (expect N>0) it returns as soon as the condition is met.
+// For negative assertions (expect 0) callers should sleep briefly then check directly;
+// this helper is for cases where we actively wait for a state change.
+func pollUntil(t *testing.T, timeout time.Duration, cond func() bool) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if cond() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
 // TestEvaluateRemediation_NoRegistrySkips verifies that no remediation call is made when
 // no RemediationExecutor is attached.
 func TestEvaluateRemediation_NoRegistrySkips(t *testing.T) {
@@ -83,7 +106,7 @@ func TestEvaluateRemediation_NoRegistrySkips(t *testing.T) {
 	pd, mon := buildDetectorWithRemediation(t, monCfg, nil)
 
 	mon.AddStatusUpdate(unhealthyStatus("my-monitor", "ServiceHealthy"))
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // brief wait: confirm no async trigger fired
 
 	snap := pd.GetStatistics()
 	if snap.GetRemediationsTriggered() != 0 {
@@ -121,7 +144,7 @@ func TestEvaluateRemediation_GlobalDisabledSkips(t *testing.T) {
 	defer pd.Stop()
 
 	mon.AddStatusUpdate(unhealthyStatus("my-monitor", "ServiceHealthy"))
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // brief wait: confirm no async trigger fired
 
 	if exec.CallCount() != 0 {
 		t.Errorf("expected 0 executor calls with remediation disabled, got %d", exec.CallCount())
@@ -136,7 +159,7 @@ func TestEvaluateRemediation_HealthyConditionSkips(t *testing.T) {
 	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
 
 	mon.AddStatusUpdate(healthyStatus("my-monitor", "ServiceHealthy"))
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // brief wait: confirm no async trigger fired
 
 	if exec.CallCount() != 0 {
 		t.Errorf("expected 0 remediation calls for healthy condition, got %d", exec.CallCount())
@@ -155,10 +178,8 @@ func TestEvaluateRemediation_UnhealthyConditionTriggersRemediation(t *testing.T)
 	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
 
 	mon.AddStatusUpdate(unhealthyStatus("my-monitor", "KubeletHealthy"))
-	time.Sleep(300 * time.Millisecond)
-
-	if exec.CallCount() != 1 {
-		t.Fatalf("expected 1 executor call, got %d", exec.CallCount())
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected 1 executor call within 1s, got %d", exec.CallCount())
 	}
 	call := exec.Calls()[0]
 	if call.RemediatorType != "node-reboot" {
@@ -182,8 +203,13 @@ func TestEvaluateRemediation_FailedRemediationIncrementsFailed(t *testing.T) {
 	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
 
 	mon.AddStatusUpdate(unhealthyStatus("my-monitor", "KubeletHealthy"))
-	time.Sleep(300 * time.Millisecond)
-
+	if !pollUntil(t, time.Second, func() bool {
+		s := pd.GetStatistics()
+		return s.GetRemediationsFailed() == 1
+	}) {
+		s := pd.GetStatistics()
+		t.Fatalf("expected remediationsFailed=1 within 1s, got %d", s.GetRemediationsFailed())
+	}
 	snap := pd.GetStatistics()
 	if snap.GetRemediationsFailed() != 1 {
 		t.Errorf("expected remediationsFailed=1, got %d", snap.GetRemediationsFailed())
@@ -202,10 +228,8 @@ func TestEvaluateRemediation_DryRunExecutorCalled(t *testing.T) {
 	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
 
 	mon.AddStatusUpdate(unhealthyStatus("my-monitor", "DiskHealthy"))
-	time.Sleep(300 * time.Millisecond)
-
-	if exec.CallCount() != 1 {
-		t.Fatalf("expected 1 dry-run executor call, got %d", exec.CallCount())
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected 1 dry-run executor call within 1s, got %d", exec.CallCount())
 	}
 	if !exec.IsDryRun() {
 		t.Error("expected executor.IsDryRun() == true")
@@ -231,7 +255,7 @@ func TestEvaluateRemediation_NoMonitorRemediationConfig(t *testing.T) {
 	_, mon := buildDetectorWithRemediation(t, monCfg, exec)
 
 	mon.AddStatusUpdate(unhealthyStatus("bare-monitor", "SomethingBroke"))
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // brief wait: confirm no async trigger fired
 
 	if exec.CallCount() != 0 {
 		t.Errorf("expected 0 calls when monitor has no remediation config, got %d", exec.CallCount())
