@@ -103,6 +103,7 @@ type ProblemDetector struct {
 
 	// Remediation
 	remediatorRegistry RemediationExecutor
+	configIndexMu      sync.RWMutex                  // Protects monitorConfigIndex (separate from pd.mu to avoid deadlock in addMonitor callers)
 	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
 }
 
@@ -408,8 +409,11 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 	pd.mu.RLock()
 	registry := pd.remediatorRegistry
 	cfg := pd.config
-	monitorCfg, hasCfg := pd.monitorConfigIndex[status.Source]
 	pd.mu.RUnlock()
+
+	pd.configIndexMu.RLock()
+	monitorCfg, hasCfg := pd.monitorConfigIndex[status.Source]
+	pd.configIndexMu.RUnlock()
 
 	if registry == nil {
 		return
@@ -679,7 +683,9 @@ func (pd *ProblemDetector) stopMonitorByName(name string) error {
 
 			// Remove from handles list and config index
 			pd.monitorHandles = append(pd.monitorHandles[:i], pd.monitorHandles[i+1:]...)
+			pd.configIndexMu.Lock()
 			delete(pd.monitorConfigIndex, name)
+			pd.configIndexMu.Unlock()
 			log.Printf("[INFO] Stopped and removed monitor: %s", name)
 			return nil
 		}
@@ -722,7 +728,9 @@ func (pd *ProblemDetector) addMonitor(ctx context.Context, monitor types.Monitor
 	pd.monitorHandles = append(pd.monitorHandles, handle)
 
 	// Index by name so evaluateRemediation can look up MonitorConfig from status.Source
+	pd.configIndexMu.Lock()
 	pd.monitorConfigIndex[config.Name] = config
+	pd.configIndexMu.Unlock()
 
 	pd.stats.IncrementMonitorsStarted()
 	return nil
