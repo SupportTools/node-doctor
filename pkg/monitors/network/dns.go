@@ -2008,6 +2008,11 @@ func (m *DNSMonitor) computeNameserverHealthScores(status *types.Status) []types
 // Caller must hold m.mu.
 func (m *DNSMonitor) computePredictiveAlerts(status *types.Status, latencyMetrics *types.LatencyMetrics) {
 	cfg := m.config.PredictiveAlerting
+	// SuccessRateTracking must be non-nil (guaranteed by applyDefaults via NewDNSMonitor),
+	// but guard defensively to prevent a panic if the monitor is constructed directly in tests.
+	if m.config.SuccessRateTracking == nil {
+		return
+	}
 	threshold := m.config.SuccessRateTracking.FailureRateThreshold
 
 	clusterResult := analyzeRingBuffer(m.clusterSuccessTracker, threshold, cfg)

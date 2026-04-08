@@ -61,6 +61,9 @@ func (rb *RingBuffer) getOrdered() []*CheckResult {
 	out := make([]*CheckResult, 0, rb.count)
 	if rb.count < rb.size {
 		// Buffer not yet full: entries are at indices [0, count-1] in insertion order.
+		// This invariant depends on NewRingBuffer initialising writeIndex to 0 (Go zero-value)
+		// and Add() writing to writeIndex before incrementing — do not change Add() or
+		// NewRingBuffer without updating this branch.
 		for i := 0; i < rb.count; i++ {
 			if rb.buffer[i] != nil {
 				out = append(out, rb.buffer[i])
@@ -206,6 +209,12 @@ func buildPredictiveConditionMessage(domainType string, r *predictiveResult) str
 
 // toDNSPredictiveAlert converts an internal predictiveResult to the exported
 // types.DNSPredictiveAlert for Prometheus metric recording.
+//
+// TimeToBreach is set whenever a future breach was computed (r.TimeToBreach > 0),
+// regardless of whether it falls inside PredictionWindow. This ensures the Prometheus
+// confidence gauge always has a matching time-to-breach value for operators who want
+// to observe long-horizon degradation trends. The exporter only writes the
+// DNSPredictedBreachSeconds gauge when WillBreach=true (breach within window).
 func toDNSPredictiveAlert(domainType string, r *predictiveResult) types.DNSPredictiveAlert {
 	alert := types.DNSPredictiveAlert{
 		DomainType:     domainType,
@@ -214,7 +223,9 @@ func toDNSPredictiveAlert(domainType string, r *predictiveResult) types.DNSPredi
 		WillBreach:     r.WillBreach,
 		WithinLeadTime: r.WithinLeadTime,
 	}
-	if r.WillBreach {
+	if r.TimeToBreach > 0 {
+		// Expose the predicted breach time even when it falls outside PredictionWindow,
+		// so operators can observe early-stage degradation trends via confidence + time.
 		alert.TimeToBreach = r.TimeToBreach.Seconds()
 		alert.PredictedBreach = r.PredictedBreach.UTC().Format(time.RFC3339)
 	}

@@ -294,14 +294,22 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 	}
 
 	// Record DNS predictive alerting metrics.
-	// Reset first so that stale label combinations don't persist across scrapes.
+	// Reset first so that stale label combinations (removed nameservers, disabled feature)
+	// don't persist across scrapes.
 	e.metrics.DNSPredictedBreachSeconds.Reset()
 	e.metrics.DNSPredictionConfidence.Reset()
 	for _, pa := range latencyMetrics.DNSPredictiveAlerts {
+		// Always record confidence so dashboards can observe regression quality
+		// even when no breach is predicted within the prediction window.
 		e.metrics.DNSPredictionConfidence.WithLabelValues(
 			e.nodeName, pa.DomainType).Set(pa.Confidence)
-		e.metrics.DNSPredictedBreachSeconds.WithLabelValues(
-			e.nodeName, pa.DomainType).Set(pa.TimeToBreach)
+		// Only set the breach-seconds gauge when a breach is actually predicted
+		// within the prediction window. Omitting the Set (rather than writing -1)
+		// avoids false-positive alert rules that test for small positive values.
+		if pa.WillBreach {
+			e.metrics.DNSPredictedBreachSeconds.WithLabelValues(
+				e.nodeName, pa.DomainType).Set(pa.TimeToBreach)
+		}
 	}
 
 	// Record API server latency metrics

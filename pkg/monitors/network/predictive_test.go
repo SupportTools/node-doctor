@@ -201,22 +201,48 @@ func TestGetOrdered_Full(t *testing.T) {
 	}
 }
 
-func TestToDNSPredictiveAlert_NoWillBreach(t *testing.T) {
+func TestToDNSPredictiveAlert_NoWillBreach_NoPrediction(t *testing.T) {
+	// When TimeToBreach==0 (no future breach on the regression line), TimeToBreach=-1.
 	r := &predictiveResult{
 		HasPrediction: true,
 		Confidence:    0.6,
 		Slope:         -0.001,
 		WillBreach:    false,
+		TimeToBreach:  0, // no future breach computed
 	}
 	alert := toDNSPredictiveAlert("cluster", r)
 	if alert.DomainType != "cluster" {
 		t.Errorf("expected domain_type=cluster, got %s", alert.DomainType)
 	}
 	if alert.TimeToBreach != -1 {
-		t.Errorf("expected TimeToBreach=-1 when WillBreach=false, got %.1f", alert.TimeToBreach)
+		t.Errorf("expected TimeToBreach=-1 when TimeToBreach==0, got %.1f", alert.TimeToBreach)
 	}
 	if alert.PredictedBreach != "" {
-		t.Errorf("expected empty PredictedBreach when WillBreach=false, got %s", alert.PredictedBreach)
+		t.Errorf("expected empty PredictedBreach, got %s", alert.PredictedBreach)
+	}
+}
+
+func TestToDNSPredictiveAlert_NoWillBreach_ButHasPrediction(t *testing.T) {
+	// Breach predicted at 45 minutes — outside a 30-minute PredictionWindow.
+	// TimeToBreach should still be populated so operators can observe long-horizon trends.
+	breach := time.Now().Add(45 * time.Minute)
+	r := &predictiveResult{
+		HasPrediction:   true,
+		Confidence:      0.85,
+		WillBreach:      false, // outside PredictionWindow
+		WithinLeadTime:  false,
+		TimeToBreach:    45 * time.Minute,
+		PredictedBreach: breach,
+	}
+	alert := toDNSPredictiveAlert("cluster", r)
+	if alert.WillBreach {
+		t.Error("expected WillBreach=false")
+	}
+	if alert.TimeToBreach <= 0 {
+		t.Errorf("expected positive TimeToBreach for observable trend, got %.1f", alert.TimeToBreach)
+	}
+	if alert.PredictedBreach == "" {
+		t.Error("expected non-empty PredictedBreach for observable trend")
 	}
 }
 
