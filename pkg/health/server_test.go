@@ -469,18 +469,11 @@ func TestServer_handleRemediationHistory_WithProvider(t *testing.T) {
 }
 
 func TestServer_StartStop(t *testing.T) {
-	// Grab a free port then release it for the server to bind.
-	tmp, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to get free port: %v", err)
-	}
-	freePort := tmp.Addr().(*net.TCPAddr).Port
-	tmp.Close()
-
+	// Port: 0 lets the OS pick a free port atomically — no TOCTOU race.
 	config := &Config{
 		Enabled:     true,
 		BindAddress: "127.0.0.1",
-		Port:        freePort,
+		Port:        0,
 	}
 	server, err := NewServer(config)
 	if err != nil {
@@ -590,17 +583,11 @@ func TestServer_Stop_NoDeadlockWithInFlightHandler(t *testing.T) {
 	releaseBlock := make(chan struct{})
 	var entered sync.Once
 
-	tmp, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to get free port: %v", err)
-	}
-	freePort := tmp.Addr().(*net.TCPAddr).Port
-	tmp.Close()
-
+	// Port: 0 lets the OS pick a free port atomically — no TOCTOU race.
 	config := &Config{
 		Enabled:     true,
 		BindAddress: "127.0.0.1",
-		Port:        freePort,
+		Port:        0,
 	}
 	srv, err := NewServer(config)
 	if err != nil {

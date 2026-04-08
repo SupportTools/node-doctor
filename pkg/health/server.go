@@ -110,9 +110,9 @@ func NewServer(config *Config) (*Server, error) {
 	if config.BindAddress == "" {
 		config.BindAddress = "0.0.0.0"
 	}
-	if config.Port == 0 {
-		config.Port = 8080
-	}
+	// Port 0 is intentionally allowed — net.Listen("tcp", "host:0") lets the OS
+	// pick a free port atomically. Tests use Port: 0 to avoid TOCTOU port-grab races.
+	// Production deployments should set an explicit port in their Config.
 	if config.ReadTimeout == 0 {
 		config.ReadTimeout = 5 * time.Second
 	}
