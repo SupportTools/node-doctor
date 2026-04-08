@@ -270,14 +270,26 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 			e.nodeName, dns.DomainType).Observe(latencySeconds)
 	}
 
-	// Record per-nameserver composite health scores.
+	// Record per-nameserver composite and component health scores.
 	// Reset clears all previously-recorded nameserver label combinations so that
 	// gauges for removed nameservers do not persist across scrape cycles.
 	e.metrics.DNSNameserverHealthScore.Reset()
+	e.metrics.DNSNameserverSuccessScore.Reset()
+	e.metrics.DNSNameserverLatencyScore.Reset()
+	e.metrics.DNSNameserverErrorScore.Reset()
+	e.metrics.DNSNameserverConsistencyScore.Reset()
 	for _, hs := range latencyMetrics.NameserverHealthScores {
 		if hs.Status != "insufficient_data" {
 			e.metrics.DNSNameserverHealthScore.WithLabelValues(
 				e.nodeName, hs.Nameserver).Set(hs.Score)
+			e.metrics.DNSNameserverSuccessScore.WithLabelValues(
+				e.nodeName, hs.Nameserver).Set(hs.SuccessScore)
+			e.metrics.DNSNameserverLatencyScore.WithLabelValues(
+				e.nodeName, hs.Nameserver).Set(hs.LatencyScore)
+			e.metrics.DNSNameserverErrorScore.WithLabelValues(
+				e.nodeName, hs.Nameserver).Set(hs.ErrorScore)
+			e.metrics.DNSNameserverConsistencyScore.WithLabelValues(
+				e.nodeName, hs.Nameserver).Set(hs.ConsistencyScore)
 		}
 	}
 

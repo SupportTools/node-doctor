@@ -32,7 +32,11 @@ type Metrics struct {
 	PeersTotal               *prometheus.GaugeVec
 	PeersReachableTotal      *prometheus.GaugeVec
 	DNSLatencySeconds        *prometheus.GaugeVec
-	DNSNameserverHealthScore *prometheus.GaugeVec
+	DNSNameserverHealthScore        *prometheus.GaugeVec
+	DNSNameserverSuccessScore      *prometheus.GaugeVec
+	DNSNameserverLatencyScore      *prometheus.GaugeVec
+	DNSNameserverErrorScore        *prometheus.GaugeVec
+	DNSNameserverConsistencyScore  *prometheus.GaugeVec
 	APIServerLatencySeconds  *prometheus.GaugeVec
 
 	// Histogram metrics
@@ -282,6 +286,46 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			},
 			[]string{"node", "nameserver"},
 		),
+		DNSNameserverSuccessScore: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_nameserver_success_score",
+				Help:        "Success-rate sub-score (0-100) for each DNS nameserver. Reflects query success rate.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "nameserver"},
+		),
+		DNSNameserverLatencyScore: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_nameserver_latency_score",
+				Help:        "P95-latency sub-score (0-100) for each DNS nameserver. 100 = at or below baseline latency.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "nameserver"},
+		),
+		DNSNameserverErrorScore: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_nameserver_error_score",
+				Help:        "Error-diversity sub-score (0-100) for each DNS nameserver. 100 = no errors observed.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "nameserver"},
+		),
+		DNSNameserverConsistencyScore: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_nameserver_consistency_score",
+				Help:        "Latency-variance sub-score (0-100) for each DNS nameserver. 100 = fully consistent latency.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "nameserver"},
+		),
 
 		APIServerLatencySeconds: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -397,6 +441,10 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.PeersReachableTotal,
 		m.DNSLatencySeconds,
 		m.DNSNameserverHealthScore,
+		m.DNSNameserverSuccessScore,
+		m.DNSNameserverLatencyScore,
+		m.DNSNameserverErrorScore,
+		m.DNSNameserverConsistencyScore,
 		m.APIServerLatencySeconds,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
@@ -439,6 +487,10 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.PeersReachableTotal,
 		m.DNSLatencySeconds,
 		m.DNSNameserverHealthScore,
+		m.DNSNameserverSuccessScore,
+		m.DNSNameserverLatencyScore,
+		m.DNSNameserverErrorScore,
+		m.DNSNameserverConsistencyScore,
 		m.APIServerLatencySeconds,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,

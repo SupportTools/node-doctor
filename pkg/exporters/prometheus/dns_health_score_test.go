@@ -321,3 +321,113 @@ func prometheusFloat(f float64) string {
 		return fmt.Sprintf("%g", f)
 	}
 }
+
+// TestDNSComponentScores_ExportedPerNameserver verifies that the four component
+// sub-scores (success, latency, error, consistency) are exported as separate
+// gauges alongside the composite health score.
+func TestDNSComponentScores_ExportedPerNameserver(t *testing.T) {
+	exporter, port := newStartedExporter(t)
+	ctx := context.Background()
+
+	status := (&types.Status{Source: "test", Timestamp: time.Now()}).
+		SetLatencyMetrics(&types.LatencyMetrics{
+			NameserverHealthScores: []types.NameserverHealthScore{
+				{
+					Nameserver:       "8.8.8.8",
+					Score:            85.0,
+					SuccessScore:     90.0,
+					LatencyScore:     80.0,
+					ErrorScore:       95.0,
+					ConsistencyScore: 75.0,
+					Status:           "healthy",
+				},
+			},
+		})
+
+	if err := exporter.ExportStatus(ctx, status); err != nil {
+		t.Fatalf("ExportStatus: %v", err)
+	}
+
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/metrics", port))
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var buf strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		buf.WriteString(scanner.Text())
+		buf.WriteByte('\n')
+	}
+	body := buf.String()
+
+	cases := []struct {
+		metric string
+		val    float64
+	}{
+		{"dns_nameserver_success_score", 90.0},
+		{"dns_nameserver_latency_score", 80.0},
+		{"dns_nameserver_error_score", 95.0},
+		{"dns_nameserver_consistency_score", 75.0},
+	}
+
+	for _, tc := range cases {
+		want := fmt.Sprintf(`{nameserver="8.8.8.8",node="test-node"} %s`, prometheusFloat(tc.val))
+		if !strings.Contains(body, tc.metric) {
+			t.Errorf("metric %s not found in output", tc.metric)
+		}
+		if !strings.Contains(body, want) {
+			t.Errorf("metric %s: expected label/value %q in output\nrelevant lines:\n%s",
+				tc.metric, want, extractLines(body, tc.metric))
+		}
+	}
+}
+
+// TestDNSComponentScores_InsufficientDataSkipped verifies that component scores
+// are not exported for nameservers with "insufficient_data" status.
+func TestDNSComponentScores_InsufficientDataSkipped(t *testing.T) {
+	exporter, port := newStartedExporter(t)
+	ctx := context.Background()
+
+	status := (&types.Status{Source: "test", Timestamp: time.Now()}).
+		SetLatencyMetrics(&types.LatencyMetrics{
+			NameserverHealthScores: []types.NameserverHealthScore{
+				{Nameserver: "1.1.1.1", Score: 0.0, SuccessScore: 0.0, Status: "insufficient_data"},
+			},
+		})
+
+	if err := exporter.ExportStatus(ctx, status); err != nil {
+		t.Fatalf("ExportStatus: %v", err)
+	}
+
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/metrics", port))
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var buf strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		buf.WriteString(scanner.Text())
+		buf.WriteByte('\n')
+	}
+	body := buf.String()
+
+	for _, metric := range []string{
+		"dns_nameserver_success_score",
+		"dns_nameserver_latency_score",
+		"dns_nameserver_error_score",
+		"dns_nameserver_consistency_score",
+	} {
+		if strings.Contains(body, `nameserver="1.1.1.1"`) && strings.Contains(body, metric) {
+			// Look for a line that contains both the metric name and the nameserver label
+			for _, line := range strings.Split(body, "\n") {
+				if strings.Contains(line, metric) && strings.Contains(line, `nameserver="1.1.1.1"`) {
+					t.Errorf("metric %s should NOT be exported for insufficient_data nameserver, got: %s", metric, line)
+				}
+			}
+		}
+	}
+}
