@@ -710,3 +710,59 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// TestServer_WithInitializedStorage validates that the server correctly uses
+// storage that has been explicitly initialized via Initialize().
+func TestServer_WithInitializedStorage(t *testing.T) {
+	config := &StorageConfig{
+		Path:      ":memory:",
+		Retention: 24 * time.Hour,
+	}
+
+	storage, err := NewSQLiteStorage(config)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := storage.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	defer storage.Close()
+
+	server, err := NewServer(nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	server.SetStorage(storage)
+
+	t.Run("node report persists to storage after initialization", func(t *testing.T) {
+		report := NodeReport{
+			NodeName:      "storage-test-node",
+			Timestamp:     time.Now(),
+			OverallHealth: HealthStatusHealthy,
+		}
+		body, _ := json.Marshal(report)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/reports", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		server.handleReports(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Errorf("expected 202, got %d", w.Code)
+		}
+
+		// Verify the report was persisted — retrievable from storage directly.
+		saved, err := storage.GetLatestNodeReport(ctx, "storage-test-node")
+		if err != nil {
+			t.Fatalf("GetLatestNodeReport() error = %v", err)
+		}
+		if saved == nil {
+			t.Fatal("expected report in storage, got nil")
+		}
+		if saved.NodeName != "storage-test-node" {
+			t.Errorf("expected NodeName 'storage-test-node', got %q", saved.NodeName)
+		}
+	})
+}

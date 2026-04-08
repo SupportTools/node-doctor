@@ -610,6 +610,44 @@ func TestSQLiteStorage_Statistics(t *testing.T) {
 	})
 }
 
+func TestSQLiteStorage_Initialize_Failure(t *testing.T) {
+	t.Run("returns error for inaccessible path", func(t *testing.T) {
+		config := &StorageConfig{
+			Path:      "/nonexistent/directory/that/cannot/be/created/database.db",
+			Retention: 24 * time.Hour,
+		}
+
+		storage, err := NewSQLiteStorage(config)
+		if err != nil {
+			t.Fatalf("NewSQLiteStorage() error = %v", err)
+		}
+
+		ctx := context.Background()
+		if err := storage.Initialize(ctx); err == nil {
+			t.Error("expected error for inaccessible path, got nil")
+			storage.Close()
+		}
+	})
+
+	t.Run("storage is unusable before Initialize", func(t *testing.T) {
+		config := &StorageConfig{
+			Path:      ":memory:",
+			Retention: 24 * time.Hour,
+		}
+
+		storage, err := NewSQLiteStorage(config)
+		if err != nil {
+			t.Fatalf("NewSQLiteStorage() error = %v", err)
+		}
+
+		// Attempting to use storage before Initialize should panic or error.
+		// We verify db is nil before initialization.
+		if storage.db != nil {
+			t.Error("expected db to be nil before Initialize is called")
+		}
+	})
+}
+
 func TestSQLiteStorage_RunCleanup(t *testing.T) {
 	config := &StorageConfig{
 		Path:      ":memory:",

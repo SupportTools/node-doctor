@@ -92,14 +92,20 @@ func main() {
 		log.Printf("[INFO] Initializing SQLite storage at: %s", config.Storage.Path)
 		sqliteStorage, err := controller.NewSQLiteStorage(&config.Storage)
 		if err != nil {
-			log.Fatalf("Failed to initialize storage: %v", err)
+			log.Fatalf("Failed to create storage: %v", err)
 		}
-		storage = sqliteStorage
 		defer func() {
 			if err := sqliteStorage.Close(); err != nil {
 				log.Printf("[ERROR] Error closing storage: %v", err)
 			}
 		}()
+		// Initialize opens the database connection and runs schema migrations.
+		// Fail fast here — continuing with an uninitialized storage would silently
+		// drop all node reports and lease data (s.db remains nil).
+		if err := sqliteStorage.Initialize(ctx); err != nil {
+			log.Fatalf("Failed to initialize storage: %v", err)
+		}
+		storage = sqliteStorage
 		log.Printf("[INFO] SQLite storage initialized successfully")
 	} else {
 		log.Printf("[INFO] No storage path configured, using in-memory storage only")
