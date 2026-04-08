@@ -13,6 +13,7 @@ on:
 env:
   GO_VERSION: '1.25'
   REGISTRY: docker.io/supporttools
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # Lint job - runs golangci-lint
