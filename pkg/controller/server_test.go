@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -982,6 +983,217 @@ func TestServer_RehydratedStateVisibleViaAPI(t *testing.T) {
 	}
 	if data["overallHealth"] != string(HealthStatusCritical) {
 		t.Errorf("expected overall health %q, got %v", HealthStatusCritical, data["overallHealth"])
+	}
+}
+
+// rehydrateStubStorage wraps a real SQLiteStorage and lets tests inject errors
+// for specific rehydration calls without implementing the full Storage interface.
+type rehydrateStubStorage struct {
+	*SQLiteStorage
+	reportErr error // if non-nil, GetAllLatestReports returns this error
+	leaseErr  error // if non-nil, GetActiveLeases returns this error
+}
+
+func (s *rehydrateStubStorage) GetAllLatestReports(ctx context.Context) (map[string]*NodeReport, error) {
+	if s.reportErr != nil {
+		return nil, s.reportErr
+	}
+	return s.SQLiteStorage.GetAllLatestReports(ctx)
+}
+
+func (s *rehydrateStubStorage) GetActiveLeases(ctx context.Context) ([]*Lease, error) {
+	if s.leaseErr != nil {
+		return nil, s.leaseErr
+	}
+	return s.SQLiteStorage.GetActiveLeases(ctx)
+}
+
+// TestServer_RehydratePartialFailure_ReportsErr verifies that a GetAllLatestReports
+// error is non-fatal: the server still starts and active leases are still loaded.
+func TestServer_RehydratePartialFailure_ReportsErr(t *testing.T) {
+	real := newServerTestStorage(t)
+	ctx := context.Background()
+
+	// Seed an active lease so we can verify it survives the reports failure.
+	seedLease := &Lease{
+		ID:              "partial-fail-lease-1",
+		NodeName:        "some-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       time.Now().Add(-1 * time.Minute),
+		ExpiresAt:       time.Now().Add(5 * time.Minute),
+		Status:          "active",
+	}
+	if err := real.SaveLease(ctx, seedLease); err != nil {
+		t.Fatalf("SaveLease: %v", err)
+	}
+
+	stub := &rehydrateStubStorage{SQLiteStorage: real, reportErr: errors.New("disk read error")}
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	server.SetStorage(stub)
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start should succeed despite GetAllLatestReports error: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	server.mu.RLock()
+	reportCount := len(server.nodeReports)
+	_, leaseExists := server.leases["partial-fail-lease-1"]
+	server.mu.RUnlock()
+
+	if reportCount != 0 {
+		t.Errorf("expected 0 node reports (reports errored), got %d", reportCount)
+	}
+	if !leaseExists {
+		t.Error("expected lease to be rehydrated even though GetAllLatestReports failed")
+	}
+}
+
+// TestServer_RehydratePartialFailure_LeasesErr verifies that a GetActiveLeases
+// error is non-fatal: the server still starts and node reports are still loaded.
+func TestServer_RehydratePartialFailure_LeasesErr(t *testing.T) {
+	real := newServerTestStorage(t)
+	ctx := context.Background()
+
+	// Seed a node report so we can verify it survives the leases failure.
+	if err := real.SaveNodeReport(ctx, &NodeReport{
+		NodeName:      "partial-fail-node",
+		Timestamp:     time.Now(),
+		OverallHealth: HealthStatusHealthy,
+	}); err != nil {
+		t.Fatalf("SaveNodeReport: %v", err)
+	}
+
+	stub := &rehydrateStubStorage{SQLiteStorage: real, leaseErr: errors.New("lease table locked")}
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	server.SetStorage(stub)
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start should succeed despite GetActiveLeases error: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	server.mu.RLock()
+	_, reportExists := server.nodeReports["partial-fail-node"]
+	leaseCount := len(server.leases)
+	server.mu.RUnlock()
+
+	if !reportExists {
+		t.Error("expected node report to be rehydrated even though GetActiveLeases failed")
+	}
+	if leaseCount != 0 {
+		t.Errorf("expected 0 leases (leases errored), got %d", leaseCount)
+	}
+}
+
+// TestServer_NilStorage_RehydrationSkipped verifies that a server started without
+// any storage attached starts cleanly with empty in-memory state (no panic).
+func TestServer_NilStorage_RehydrationSkipped(t *testing.T) {
+	ctx := context.Background()
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// Intentionally do NOT call SetStorage — storage remains nil.
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start with nil storage should not error: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	server.mu.RLock()
+	reportCount := len(server.nodeReports)
+	leaseCount := len(server.leases)
+	server.mu.RUnlock()
+
+	if reportCount != 0 {
+		t.Errorf("expected 0 node reports with nil storage, got %d", reportCount)
+	}
+	if leaseCount != 0 {
+		t.Errorf("expected 0 leases with nil storage, got %d", leaseCount)
+	}
+}
+
+// TestServer_ExpiredLeaseNotRehydrated verifies that leases whose ExpiresAt is in the
+// past are NOT loaded into the in-memory lease map on restart. Only active, non-expired
+// leases should be rehydrated.
+func TestServer_ExpiredLeaseNotRehydrated(t *testing.T) {
+	storage := newServerTestStorage(t)
+	ctx := context.Background()
+
+	// Seed an expired lease (ExpiresAt in the past, status still "active" in DB).
+	expiredLease := &Lease{
+		ID:              "expired-lease-1",
+		NodeName:        "stale-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       time.Now().Add(-10 * time.Minute),
+		ExpiresAt:       time.Now().Add(-1 * time.Minute), // already expired
+		Status:          "active",
+	}
+	if err := storage.SaveLease(ctx, expiredLease); err != nil {
+		t.Fatalf("SaveLease (expired): %v", err)
+	}
+
+	// Seed a still-active lease.
+	activeLease := &Lease{
+		ID:              "active-lease-1",
+		NodeName:        "live-node",
+		RemediationType: "drain-node",
+		GrantedAt:       time.Now().Add(-1 * time.Minute),
+		ExpiresAt:       time.Now().Add(9 * time.Minute),
+		Status:          "active",
+	}
+	if err := storage.SaveLease(ctx, activeLease); err != nil {
+		t.Fatalf("SaveLease (active): %v", err)
+	}
+
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	server.SetStorage(storage)
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	server.mu.RLock()
+	_, expiredExists := server.leases["expired-lease-1"]
+	_, activeExists := server.leases["active-lease-1"]
+	leaseCount := len(server.leases)
+	server.mu.RUnlock()
+
+	if expiredExists {
+		t.Error("expired lease should NOT be rehydrated into in-memory state")
+	}
+	if !activeExists {
+		t.Error("active lease should be rehydrated into in-memory state")
+	}
+	if leaseCount != 1 {
+		t.Errorf("expected exactly 1 rehydrated lease, got %d", leaseCount)
 	}
 }
 
