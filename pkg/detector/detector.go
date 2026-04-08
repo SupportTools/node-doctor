@@ -100,11 +100,25 @@ type ProblemDetector struct {
 	reloadMutex       sync.Mutex // Protects reload operations
 	started           bool
 	passedMonitors    []types.Monitor // Monitors passed directly to constructor
+
+	// Remediation
+	remediatorRegistry RemediationExecutor
+	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
 type MonitorFactory interface {
 	CreateMonitor(config types.MonitorConfig) (types.Monitor, error)
+}
+
+// RemediationExecutor is the minimal interface the detector needs from the remediator registry.
+// Using an interface (rather than the concrete *remediators.RemediatorRegistry) keeps the
+// detector package free of the remediators dependency and makes unit tests straightforward.
+type RemediationExecutor interface {
+	// Remediate executes the named remediator strategy for the given problem.
+	Remediate(ctx context.Context, remediatorType string, problem types.Problem) error
+	// IsDryRun reports whether the executor is running in dry-run mode.
+	IsDryRun() bool
 }
 
 // NewProblemDetector creates a new problem detector with the given configuration
@@ -139,17 +153,18 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 	}
 
 	pd := &ProblemDetector{
-		config:         config,
-		monitorHandles: make([]*MonitorHandle, 0),
-		exporters:      make([]types.Exporter, 0),
-		statusChan:     make(chan *types.Status, 1000),
-		ctx:            ctx,
-		cancel:         cancel,
-		stats:          monitorStats,
-		configWatcher:  configWatcher,
-		configFilePath: configFilePath,
-		monitorFactory: monitorFactory,
-		passedMonitors: monitors, // Store passed monitors to start in Start()
+		config:             config,
+		monitorHandles:     make([]*MonitorHandle, 0),
+		exporters:          make([]types.Exporter, 0),
+		statusChan:         make(chan *types.Status, 1000),
+		ctx:                ctx,
+		cancel:             cancel,
+		stats:              monitorStats,
+		configWatcher:      configWatcher,
+		configFilePath:     configFilePath,
+		monitorFactory:     monitorFactory,
+		passedMonitors:     monitors, // Store passed monitors to start in Start()
+		monitorConfigIndex: make(map[string]types.MonitorConfig),
 	}
 
 	// Create reload coordinator with callback and event emitter
@@ -171,6 +186,16 @@ func (pd *ProblemDetector) AddExporter(exporter types.Exporter) {
 
 	pd.exporters = append(pd.exporters, exporter)
 	log.Printf("[INFO] Added exporter to detector")
+}
+
+// SetRemediatorRegistry attaches a remediation executor to the detector.
+// If set before Start(), it will be used to remediate unhealthy conditions found in
+// processed statuses (subject to global config.Remediation.Enabled check).
+// Passing nil disables remediation without error.
+func (pd *ProblemDetector) SetRemediatorRegistry(r RemediationExecutor) {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+	pd.remediatorRegistry = r
 }
 
 // IsRunning returns true if the detector is currently running
@@ -367,6 +392,65 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 			pd.stats.IncrementExportsFailed()
 		} else {
 			pd.stats.IncrementExportsSucceeded()
+		}
+	}
+
+	// Evaluate remediation candidates for unhealthy conditions
+	pd.evaluateRemediation(status)
+}
+
+// evaluateRemediation checks whether any conditions in the status warrant remediation
+// and invokes the registry if configured. It is a no-op when:
+//   - no RemediationExecutor is attached
+//   - global config.Remediation.Enabled is false
+//   - the monitor has no remediation config or it is disabled
+func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
+	pd.mu.RLock()
+	registry := pd.remediatorRegistry
+	cfg := pd.config
+	monitorCfg, hasCfg := pd.monitorConfigIndex[status.Source]
+	pd.mu.RUnlock()
+
+	if registry == nil {
+		return
+	}
+
+	if !cfg.Remediation.Enabled {
+		return
+	}
+
+	if !hasCfg || monitorCfg.Remediation == nil || !monitorCfg.Remediation.Enabled {
+		return
+	}
+
+	remCfg := monitorCfg.Remediation
+
+	for _, cond := range status.Conditions {
+		if cond.Status != types.ConditionFalse {
+			continue
+		}
+
+		problem := types.Problem{
+			Type:       remCfg.Strategy,
+			Resource:   cond.Type,
+			Severity:   types.ProblemWarning,
+			Message:    cond.Message,
+			DetectedAt: cond.Transition,
+			Metadata: map[string]string{
+				"source":    status.Source,
+				"condition": cond.Type,
+				"reason":    cond.Reason,
+			},
+		}
+
+		if err := registry.Remediate(pd.ctx, remCfg.Strategy, problem); err != nil {
+			log.Printf("[WARN] Remediation failed for %s/%s (strategy=%s): %v",
+				status.Source, cond.Type, remCfg.Strategy, err)
+			pd.stats.IncrementRemediationsFailed()
+		} else {
+			log.Printf("[INFO] Remediation triggered for %s/%s (strategy=%s, dry-run=%v)",
+				status.Source, cond.Type, remCfg.Strategy, registry.IsDryRun())
+			pd.stats.IncrementRemediationsTriggered()
 		}
 	}
 }
@@ -593,8 +677,9 @@ func (pd *ProblemDetector) stopMonitorByName(name string) error {
 				return err
 			}
 
-			// Remove from handles list
+			// Remove from handles list and config index
 			pd.monitorHandles = append(pd.monitorHandles[:i], pd.monitorHandles[i+1:]...)
+			delete(pd.monitorConfigIndex, name)
 			log.Printf("[INFO] Stopped and removed monitor: %s", name)
 			return nil
 		}
@@ -635,6 +720,9 @@ func (pd *ProblemDetector) addMonitor(ctx context.Context, monitor types.Monitor
 
 	// Add to handles list
 	pd.monitorHandles = append(pd.monitorHandles, handle)
+
+	// Index by name so evaluateRemediation can look up MonitorConfig from status.Source
+	pd.monitorConfigIndex[config.Name] = config
 
 	pd.stats.IncrementMonitorsStarted()
 	return nil

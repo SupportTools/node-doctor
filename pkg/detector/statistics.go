@@ -9,15 +9,17 @@ import (
 // Statistics tracks operational metrics for the Problem Detector.
 // All methods are thread-safe and can be called concurrently.
 type Statistics struct {
-	mu                   sync.RWMutex // Protects all fields
-	monitorsStarted      int64        // Number of monitors successfully started
-	monitorsFailed       int64        // Number of monitors that failed to start
-	statusesReceived     int64        // Total status updates received
-	problemsDetected     int64        // Total problems detected from statuses
-	problemsDeduplicated int64        // Total problems after deduplication
-	exportsSucceeded     int64        // Successful export operations
-	exportsFailed        int64        // Failed export operations
-	startTime            time.Time    // When statistics tracking started
+	mu                    sync.RWMutex // Protects all fields
+	monitorsStarted       int64        // Number of monitors successfully started
+	monitorsFailed        int64        // Number of monitors that failed to start
+	statusesReceived      int64        // Total status updates received
+	problemsDetected      int64        // Total problems detected from statuses
+	problemsDeduplicated  int64        // Total problems after deduplication
+	exportsSucceeded      int64        // Successful export operations
+	exportsFailed         int64        // Failed export operations
+	remediationsTriggered int64        // Remediation calls that succeeded (or were dry-run)
+	remediationsFailed    int64        // Remediation calls that returned an error
+	startTime             time.Time    // When statistics tracking started
 }
 
 // NewStatistics creates a new Statistics instance with current timestamp.
@@ -76,6 +78,20 @@ func (s *Statistics) IncrementExportsFailed() {
 	s.exportsFailed++
 }
 
+// IncrementRemediationsTriggered atomically increments the remediations triggered counter.
+func (s *Statistics) IncrementRemediationsTriggered() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remediationsTriggered++
+}
+
+// IncrementRemediationsFailed atomically increments the remediations failed counter.
+func (s *Statistics) IncrementRemediationsFailed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remediationsFailed++
+}
+
 // GetMonitorsStarted returns the number of monitors successfully started.
 func (s *Statistics) GetMonitorsStarted() int64 {
 	s.mu.RLock()
@@ -123,6 +139,20 @@ func (s *Statistics) GetExportsFailed() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.exportsFailed
+}
+
+// GetRemediationsTriggered returns the number of remediations triggered (or dry-run simulated).
+func (s *Statistics) GetRemediationsTriggered() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.remediationsTriggered
+}
+
+// GetRemediationsFailed returns the number of remediations that returned an error.
+func (s *Statistics) GetRemediationsFailed() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.remediationsFailed
 }
 
 // GetStartTime returns when statistics tracking started.
@@ -181,14 +211,16 @@ func (s *Statistics) Copy() Statistics {
 	defer s.mu.RUnlock()
 
 	return Statistics{
-		monitorsStarted:      s.monitorsStarted,
-		monitorsFailed:       s.monitorsFailed,
-		statusesReceived:     s.statusesReceived,
-		problemsDetected:     s.problemsDetected,
-		problemsDeduplicated: s.problemsDeduplicated,
-		exportsSucceeded:     s.exportsSucceeded,
-		exportsFailed:        s.exportsFailed,
-		startTime:            s.startTime,
+		monitorsStarted:       s.monitorsStarted,
+		monitorsFailed:        s.monitorsFailed,
+		statusesReceived:      s.statusesReceived,
+		problemsDetected:      s.problemsDetected,
+		problemsDeduplicated:  s.problemsDeduplicated,
+		exportsSucceeded:      s.exportsSucceeded,
+		exportsFailed:         s.exportsFailed,
+		remediationsTriggered: s.remediationsTriggered,
+		remediationsFailed:    s.remediationsFailed,
+		startTime:             s.startTime,
 	}
 }
 
@@ -205,6 +237,8 @@ func (s *Statistics) Reset() {
 	s.problemsDeduplicated = 0
 	s.exportsSucceeded = 0
 	s.exportsFailed = 0
+	s.remediationsTriggered = 0
+	s.remediationsFailed = 0
 	s.startTime = time.Now()
 }
 
@@ -221,10 +255,12 @@ func (s *Statistics) Summary() map[string]interface{} {
 		"problems_detected":       s.problemsDetected,
 		"problems_deduplicated":   s.problemsDeduplicated,
 		"exports_succeeded":       s.exportsSucceeded,
-		"exports_failed":          s.exportsFailed,
-		"total_exports":           s.exportsSucceeded + s.exportsFailed,
-		"export_success_rate_pct": s.getExportSuccessRateUnsafe(),
-		"deduplication_rate_pct":  s.getDeduplicationRateUnsafe(),
+		"exports_failed":            s.exportsFailed,
+		"total_exports":             s.exportsSucceeded + s.exportsFailed,
+		"export_success_rate_pct":   s.getExportSuccessRateUnsafe(),
+		"deduplication_rate_pct":    s.getDeduplicationRateUnsafe(),
+		"remediations_triggered":    s.remediationsTriggered,
+		"remediations_failed":       s.remediationsFailed,
 	}
 }
 

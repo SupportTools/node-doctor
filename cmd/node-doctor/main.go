@@ -19,6 +19,7 @@ import (
 	prometheusexporter "github.com/supporttools/node-doctor/pkg/exporters/prometheus"
 	"github.com/supporttools/node-doctor/pkg/health"
 	"github.com/supporttools/node-doctor/pkg/monitors"
+	"github.com/supporttools/node-doctor/pkg/remediators"
 	"github.com/supporttools/node-doctor/pkg/types"
 	"github.com/supporttools/node-doctor/pkg/util"
 
@@ -205,6 +206,23 @@ func main() {
 	det, err := detector.NewProblemDetector(config, nil, exporterInterfaces, *configFile, monitorFactory)
 	if err != nil {
 		log.Fatalf("Failed to create detector: %v", err)
+	}
+
+	// Wire up the remediator registry if remediation is enabled in config
+	if config.Remediation.Enabled {
+		maxPerHour := config.Remediation.MaxRemediationsPerHour
+		if maxPerHour == 0 {
+			maxPerHour = 10 // sensible default
+		}
+		historySize := config.Remediation.HistorySize
+		if historySize == 0 {
+			historySize = 100
+		}
+		registry := remediators.NewRegistry(maxPerHour, historySize)
+		registry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
+		det.SetRemediatorRegistry(registry)
+		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d)",
+			registry.IsDryRun(), maxPerHour)
 	}
 
 	// Start the detector

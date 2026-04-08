@@ -273,6 +273,69 @@ func (m *MockExporter) GetExportCounts() (statusCount, problemCount int) {
 	return len(m.statusExports), len(m.problemExports)
 }
 
+// MockRemediationExecutor implements RemediationExecutor for testing.
+type MockRemediationExecutor struct {
+	mu         sync.Mutex
+	dryRun     bool
+	returnErr  error // if non-nil, Remediate returns this error
+	calls      []remediateCall
+}
+
+type remediateCall struct {
+	RemediatorType string
+	Problem        types.Problem
+}
+
+// NewMockRemediationExecutor creates a new MockRemediationExecutor.
+func NewMockRemediationExecutor() *MockRemediationExecutor {
+	return &MockRemediationExecutor{}
+}
+
+// SetDryRun configures the mock's dry-run mode.
+func (m *MockRemediationExecutor) SetDryRun(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dryRun = v
+}
+
+// SetError configures the error returned by Remediate.
+func (m *MockRemediationExecutor) SetError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.returnErr = err
+}
+
+// Remediate records the call and returns the configured error (if any).
+func (m *MockRemediationExecutor) Remediate(_ context.Context, remediatorType string, problem types.Problem) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, remediateCall{RemediatorType: remediatorType, Problem: problem})
+	return m.returnErr
+}
+
+// IsDryRun implements RemediationExecutor.
+func (m *MockRemediationExecutor) IsDryRun() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dryRun
+}
+
+// CallCount returns how many times Remediate was called.
+func (m *MockRemediationExecutor) CallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+// Calls returns a copy of the recorded calls.
+func (m *MockRemediationExecutor) Calls() []remediateCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]remediateCall, len(m.calls))
+	copy(out, m.calls)
+	return out
+}
+
 // MockMonitorFactory is a configurable mock implementation of MonitorFactory for testing.
 type MockMonitorFactory struct {
 	mu         sync.RWMutex
