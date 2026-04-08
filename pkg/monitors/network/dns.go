@@ -28,6 +28,9 @@ type DNSQuery struct {
 
 // NameserverDomainStatus tracks the status of DNS resolution for a specific
 // nameserver and domain combination.
+//
+// Fields are read and written exclusively while holding DNSMonitor.mu. Any future
+// access from a goroutine not holding that lock would require adding a per-struct mutex.
 type NameserverDomainStatus struct {
 	Nameserver   string
 	Domain       string
