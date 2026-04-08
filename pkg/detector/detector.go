@@ -307,9 +307,9 @@ func (pd *ProblemDetector) Start() error {
 // Stop stops the problem detector gracefully
 func (pd *ProblemDetector) Stop() error {
 	pd.mu.Lock()
-	defer pd.mu.Unlock()
 
 	if !pd.started {
+		pd.mu.Unlock()
 		return nil // Already stopped
 	}
 
@@ -331,12 +331,15 @@ func (pd *ProblemDetector) Stop() error {
 	// Close status channel
 	close(pd.statusChan)
 
-	// Wait for all goroutines to finish
+	// Mark stopped and release the lock BEFORE waiting for goroutines.
+	// evaluateRemediation (called from processStatuses goroutines tracked by pd.wg)
+	// acquires pd.mu.RLock; holding the write lock through wg.Wait() would deadlock.
+	pd.started = false
+	pd.mu.Unlock()
+
 	pd.wg.Wait()
 
-	pd.started = false
 	log.Printf("[INFO] Problem detector stopped")
-
 	return nil
 }
 
