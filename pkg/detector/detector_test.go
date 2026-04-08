@@ -674,3 +674,289 @@ func TestStatisticsTracking(t *testing.T) {
 		t.Errorf("Statistics copy should match original")
 	}
 }
+
+// ── dependsOn runtime enforcement tests ──────────────────────────────────────
+
+func TestTopologicalSortMonitors_LinearChain(t *testing.T) {
+	monitors := []types.MonitorConfig{
+		{Name: "c", DependsOn: []string{"b"}},
+		{Name: "a"},
+		{Name: "b", DependsOn: []string{"a"}},
+	}
+
+	sorted, err := topologicalSortMonitors(monitors)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sorted) != 3 {
+		t.Fatalf("expected 3 monitors, got %d", len(sorted))
+	}
+
+	pos := make(map[string]int, 3)
+	for i, m := range sorted {
+		pos[m.Name] = i
+	}
+	if pos["a"] >= pos["b"] {
+		t.Errorf("expected a before b, got positions a=%d b=%d", pos["a"], pos["b"])
+	}
+	if pos["b"] >= pos["c"] {
+		t.Errorf("expected b before c, got positions b=%d c=%d", pos["b"], pos["c"])
+	}
+}
+
+func TestTopologicalSortMonitors_Diamond(t *testing.T) {
+	// d depends on b and c; b and c both depend on a
+	monitors := []types.MonitorConfig{
+		{Name: "d", DependsOn: []string{"b", "c"}},
+		{Name: "b", DependsOn: []string{"a"}},
+		{Name: "c", DependsOn: []string{"a"}},
+		{Name: "a"},
+	}
+
+	sorted, err := topologicalSortMonitors(monitors)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	pos := make(map[string]int, 4)
+	for i, m := range sorted {
+		pos[m.Name] = i
+	}
+	if pos["a"] >= pos["b"] || pos["a"] >= pos["c"] {
+		t.Errorf("a must precede b and c: a=%d b=%d c=%d", pos["a"], pos["b"], pos["c"])
+	}
+	if pos["b"] >= pos["d"] || pos["c"] >= pos["d"] {
+		t.Errorf("b and c must precede d: b=%d c=%d d=%d", pos["b"], pos["c"], pos["d"])
+	}
+}
+
+func TestTopologicalSortMonitors_NoDeps(t *testing.T) {
+	monitors := []types.MonitorConfig{
+		{Name: "x"},
+		{Name: "y"},
+	}
+
+	sorted, err := topologicalSortMonitors(monitors)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sorted) != 2 {
+		t.Fatalf("expected 2 monitors, got %d", len(sorted))
+	}
+}
+
+func TestTopologicalSortMonitors_Cycle(t *testing.T) {
+	monitors := []types.MonitorConfig{
+		{Name: "a", DependsOn: []string{"b"}},
+		{Name: "b", DependsOn: []string{"a"}},
+	}
+
+	_, err := topologicalSortMonitors(monitors)
+	if err == nil {
+		t.Fatal("expected error for cycle, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error should mention cycle, got: %v", err)
+	}
+}
+
+func TestTopologicalSortMonitors_SelfLoop(t *testing.T) {
+	monitors := []types.MonitorConfig{
+		{Name: "a", DependsOn: []string{"a"}},
+	}
+
+	_, err := topologicalSortMonitors(monitors)
+	if err == nil {
+		t.Fatal("expected error for self-loop, got nil")
+	}
+}
+
+func TestDependsOn_BlockedStateInjection(t *testing.T) {
+	// dep-monitor is healthy initially then goes unhealthy.
+	// dep-child declares DependsOn: [dep-monitor].
+	// When dep-monitor reports ConditionFalse, dep-child's exported status
+	// must show "MonitorBlocked" with ConditionUnknown.
+
+	helper := NewTestHelper()
+	config := helper.CreateTestConfig()
+	config.Monitors = []types.MonitorConfig{
+		{Name: "dep-monitor", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "dep-child", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second, DependsOn: []string{"dep-monitor"}},
+	}
+	config.ApplyDefaults()
+
+	exporter := NewMockExporter("test-exporter")
+
+	depMonitor := NewMockMonitor("dep-monitor")
+	childMonitor := NewMockMonitor("dep-child")
+
+	factory := NewMockMonitorFactory()
+	factory.AddMonitor("dep-monitor", depMonitor)
+	factory.AddMonitor("dep-child", childMonitor)
+
+	pd, err := NewProblemDetector(config, nil, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
+	if err != nil {
+		t.Fatalf("NewProblemDetector: %v", err)
+	}
+
+	if err := pd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pd.Stop()
+
+	// Step 1: dep-monitor reports healthy — child should pass through.
+	healthyStatus := types.NewStatus("dep-monitor")
+	healthyStatus.AddCondition(types.NewCondition("Check", types.ConditionTrue, "OK", "all good"))
+	pd.statusChan <- healthyStatus
+
+	time.Sleep(150 * time.Millisecond) // let processStatus run
+
+	// Record baseline export count
+	baseCnt, _ := exporter.GetExportCounts()
+
+	// Step 2: dep-monitor reports unhealthy.
+	unhealthyStatus := types.NewStatus("dep-monitor")
+	unhealthyStatus.AddCondition(types.NewCondition("Check", types.ConditionFalse, "Fail", "something broke"))
+	pd.statusChan <- unhealthyStatus
+
+	time.Sleep(150 * time.Millisecond)
+
+	// Step 3: child sends a real status — it must be replaced by a blocked status.
+	childRealStatus := types.NewStatus("dep-child")
+	childRealStatus.AddCondition(types.NewCondition("ChildCheck", types.ConditionTrue, "OK", "child is fine"))
+	pd.statusChan <- childRealStatus
+
+	time.Sleep(150 * time.Millisecond)
+
+	exports := exporter.GetStatusExports()
+	// Find the last export from dep-child.
+	var lastChildExport *types.Status
+	for _, s := range exports {
+		if s.Source == "dep-child" {
+			lastChildExport = s
+		}
+	}
+	if lastChildExport == nil {
+		t.Fatalf("no export from dep-child found (total exports since baseline: %d)", len(exports)-baseCnt)
+	}
+
+	// Must have the MonitorBlocked condition with ConditionUnknown.
+	found := false
+	for _, cond := range lastChildExport.Conditions {
+		if cond.Type == "MonitorBlocked" && cond.Status == types.ConditionUnknown {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected MonitorBlocked/Unknown condition in dep-child export; got conditions: %+v", lastChildExport.Conditions)
+	}
+}
+
+func TestDependsOn_StartOrder(t *testing.T) {
+	// Verify that the detector starts monitors in topological order by checking
+	// that the dependents reverse-lookup is populated correctly after Start().
+
+	helper := NewTestHelper()
+	config := helper.CreateTestConfig()
+	config.Monitors = []types.MonitorConfig{
+		{Name: "child", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second, DependsOn: []string{"parent"}},
+		{Name: "parent", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+	}
+	config.ApplyDefaults()
+
+	factory := NewMockMonitorFactory()
+	pd, err := NewProblemDetector(config, nil, nil, "/tmp/test-config.yaml", factory, nil)
+	if err != nil {
+		t.Fatalf("NewProblemDetector: %v", err)
+	}
+
+	if err := pd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pd.Stop()
+
+	// After Start(), dependents["parent"] must include "child".
+	deps := pd.dependents["parent"]
+	found := false
+	for _, d := range deps {
+		if d == "child" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected dependents[parent] to contain 'child', got: %v", deps)
+	}
+}
+
+func TestDependsOn_TransitiveBlocking(t *testing.T) {
+	// Chain: grandparent → parent → child.
+	// When grandparent becomes unhealthy, parent is blocked;
+	// when parent is blocked its effective cached status has MonitorBlocked,
+	// so child should also be blocked transitively.
+
+	helper := NewTestHelper()
+	config := helper.CreateTestConfig()
+	config.Monitors = []types.MonitorConfig{
+		{Name: "grandparent", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "parent", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second, DependsOn: []string{"grandparent"}},
+		{Name: "child", Type: "test", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second, DependsOn: []string{"parent"}},
+	}
+	config.ApplyDefaults()
+
+	exporter := NewMockExporter("test-exporter")
+	factory := NewMockMonitorFactory()
+
+	pd, err := NewProblemDetector(config, nil, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
+	if err != nil {
+		t.Fatalf("NewProblemDetector: %v", err)
+	}
+	if err := pd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pd.Stop()
+
+	// grandparent fails.
+	grandparentFail := types.NewStatus("grandparent")
+	grandparentFail.AddCondition(types.NewCondition("Check", types.ConditionFalse, "Fail", "grandparent broke"))
+	pd.statusChan <- grandparentFail
+	time.Sleep(150 * time.Millisecond)
+
+	// parent sends a real (internally-OK) status — should become blocked.
+	parentStatus := types.NewStatus("parent")
+	parentStatus.AddCondition(types.NewCondition("Check", types.ConditionTrue, "OK", "parent is fine internally"))
+	pd.statusChan <- parentStatus
+	time.Sleep(150 * time.Millisecond)
+
+	// child sends a real status — should also become blocked (transitively).
+	childStatus := types.NewStatus("child")
+	childStatus.AddCondition(types.NewCondition("Check", types.ConditionTrue, "OK", "child is fine internally"))
+	pd.statusChan <- childStatus
+	time.Sleep(150 * time.Millisecond)
+
+	exports := exporter.GetStatusExports()
+
+	checkBlocked := func(monitorName string) bool {
+		for i := len(exports) - 1; i >= 0; i-- {
+			s := exports[i]
+			if s.Source != monitorName {
+				continue
+			}
+			for _, cond := range s.Conditions {
+				if cond.Type == "MonitorBlocked" {
+					return true
+				}
+			}
+			return false // last export for this monitor was NOT blocked
+		}
+		return false
+	}
+
+	if !checkBlocked("parent") {
+		t.Error("expected parent to be blocked when grandparent is unhealthy")
+	}
+	if !checkBlocked("child") {
+		t.Error("expected child to be transitively blocked when parent is blocked")
+	}
+}

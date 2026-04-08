@@ -106,6 +106,14 @@ type ProblemDetector struct {
 	configIndexMu      sync.RWMutex                   // Protects monitorConfigIndex (separate from pd.mu to avoid deadlock in addMonitor callers)
 	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
 	handlesMu          sync.Mutex                     // Protects monitorHandles slice (inner lock; never held when acquiring pd.mu or reloadMutex)
+
+	// Dependency scheduling: populated in Start() and read-only thereafter.
+	// lastStatus caches each monitor's most recent *types.Status for blocked-state evaluation.
+	// dependents is a reverse-lookup from dependency name → monitors that declared it in DependsOn.
+	// Invariant: both maps are written exactly once in Start() before any goroutine reads them.
+	lastStatusMu sync.RWMutex
+	lastStatus   map[string]*types.Status // monitor name -> most recent status
+	dependents   map[string][]string      // dependency name -> monitors that depend on it
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -172,6 +180,8 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 		monitorFactory:     monitorFactory,
 		passedMonitors:     monitors, // Store passed monitors to start in Start()
 		monitorConfigIndex: make(map[string]types.MonitorConfig),
+		lastStatus:         make(map[string]*types.Status),
+		dependents:         make(map[string][]string),
 	}
 
 	// Create reload coordinator with callback and event emitter
@@ -271,10 +281,27 @@ func (pd *ProblemDetector) Start() error {
 	}
 
 	// Start monitors from config via the MonitorFactory.
+	// Monitors are sorted topologically so that every dependency is started before the
+	// monitors that declare it in DependsOn. The sort also detects cycles not caught
+	// earlier (e.g. if validation was bypassed), failing loudly rather than silently.
+	//
 	// Note: passed monitors use synthetic names ("passed-monitor-N") so they will never
 	// collide with config monitor names here. The startedNames guard primarily protects
 	// against duplicate entries in config.Monitors itself.
-	for _, monitorConfig := range pd.config.Monitors {
+	sortedMonitors, sortErr := topologicalSortMonitors(pd.config.Monitors)
+	if sortErr != nil {
+		return fmt.Errorf("monitor dependency cycle detected, cannot start: %w", sortErr)
+	}
+
+	// Build the reverse-dependency index (dependency name → dependents) so
+	// processStatus can efficiently evaluate blocked state for each status update.
+	for _, mc := range sortedMonitors {
+		for _, dep := range mc.DependsOn {
+			pd.dependents[dep] = append(pd.dependents[dep], mc.Name)
+		}
+	}
+
+	for _, monitorConfig := range sortedMonitors {
 		if startedNames[monitorConfig.Name] {
 			log.Printf("[WARN] Monitor %s already started (skipping duplicate from config)", monitorConfig.Name)
 			continue
@@ -294,7 +321,7 @@ func (pd *ProblemDetector) Start() error {
 		}
 
 		startedNames[monitorConfig.Name] = true
-		log.Printf("[INFO] Started monitor: %s", monitorConfig.Name)
+		log.Printf("[INFO] Started monitor: %s (dependsOn=%v)", monitorConfig.Name, monitorConfig.DependsOn)
 	}
 
 	// Start status processing goroutine
@@ -403,6 +430,22 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 
 	// Update statistics
 	pd.stats.IncrementStatusesReceived()
+
+	// If this monitor's dependencies are unhealthy, replace the outgoing status
+	// with a synthetic "blocked" status. This prevents exporters from seeing
+	// misleading results from a monitor whose prerequisites are not satisfied.
+	if blocked, blockedBy := pd.isMonitorBlocked(status.Source); blocked {
+		log.Printf("[INFO] Monitor %s is blocked: dependency %q is unhealthy; emitting blocked status", status.Source, blockedBy)
+		status = synthBlockedStatus(status.Source, blockedBy)
+	}
+
+	// Cache the EFFECTIVE status (after possible blocked replacement) so that
+	// transitive dependents — monitors that depend on this monitor — can detect
+	// that it is blocked. Without this, a chain A→B→C where A fails would block B
+	// correctly but C would see B's pre-substitution real status and remain unblocked.
+	pd.lastStatusMu.Lock()
+	pd.lastStatus[status.Source] = status
+	pd.lastStatusMu.Unlock()
 
 	// Export to all exporters (single path - Status contains all data)
 	// Note: Previously this also called ExportProblem() for converted problems,
@@ -736,6 +779,114 @@ func (pd *ProblemDetector) stopMonitorByName(name string) error {
 	}
 	log.Printf("[INFO] Stopped and removed monitor: %s", name)
 	return nil
+}
+
+// topologicalSortMonitors returns monitors sorted so that each monitor's DependsOn
+// predecessors appear before it. Returns an error when a dependency cycle is detected.
+// Uses Kahn's algorithm (BFS) for O(V+E) performance.
+func topologicalSortMonitors(monitors []types.MonitorConfig) ([]types.MonitorConfig, error) {
+	// Build adjacency list and in-degree count.
+	// Edge direction: dep → monitor (dep must come before monitor).
+	inDegree := make(map[string]int, len(monitors))
+	successors := make(map[string][]string, len(monitors)) // dep → monitors that depend on it
+	nameSet := make(map[string]struct{}, len(monitors))
+
+	for _, m := range monitors {
+		nameSet[m.Name] = struct{}{}
+		if _, ok := inDegree[m.Name]; !ok {
+			inDegree[m.Name] = 0
+		}
+	}
+
+	for _, m := range monitors {
+		for _, dep := range m.DependsOn {
+			if _, ok := nameSet[dep]; !ok {
+				// Unknown dependency — validator should have caught this; skip gracefully.
+				continue
+			}
+			inDegree[m.Name]++
+			successors[dep] = append(successors[dep], m.Name)
+		}
+	}
+
+	// Seed queue with zero-in-degree nodes (no dependencies).
+	queue := make([]string, 0, len(monitors))
+	for _, m := range monitors {
+		if inDegree[m.Name] == 0 {
+			queue = append(queue, m.Name)
+		}
+	}
+
+	// Build name → config index for output reconstruction.
+	byName := make(map[string]types.MonitorConfig, len(monitors))
+	for _, m := range monitors {
+		byName[m.Name] = m
+	}
+
+	sorted := make([]types.MonitorConfig, 0, len(monitors))
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		sorted = append(sorted, byName[cur])
+		for _, succ := range successors[cur] {
+			inDegree[succ]--
+			if inDegree[succ] == 0 {
+				queue = append(queue, succ)
+			}
+		}
+	}
+
+	if len(sorted) != len(monitors) {
+		return nil, fmt.Errorf("dependsOn cycle detected among monitors: topological sort incomplete (%d of %d sorted)", len(sorted), len(monitors))
+	}
+
+	return sorted, nil
+}
+
+// isMonitorBlocked reports whether any of the named monitor's declared dependencies
+// currently reports an unhealthy condition (ConditionFalse). Returns the first
+// blocking dependency name or "" when unblocked.
+// Invariant: pd.lastStatus and pd.monitorConfigIndex are read-only after Start().
+func (pd *ProblemDetector) isMonitorBlocked(name string) (blocked bool, blockedBy string) {
+	pd.configIndexMu.RLock()
+	cfg, ok := pd.monitorConfigIndex[name]
+	pd.configIndexMu.RUnlock()
+	if !ok || len(cfg.DependsOn) == 0 {
+		return false, ""
+	}
+
+	pd.lastStatusMu.RLock()
+	defer pd.lastStatusMu.RUnlock()
+	for _, dep := range cfg.DependsOn {
+		depStatus, exists := pd.lastStatus[dep]
+		if !exists {
+			// Dependency has not yet reported — treat as unknown, not blocked.
+			continue
+		}
+		for _, cond := range depStatus.Conditions {
+			// Block if the dependency is explicitly unhealthy (ConditionFalse) OR
+			// if it is itself blocked (MonitorBlocked condition). The latter enables
+			// transitive blocking: if B→A and A fails, B becomes blocked; if C→B,
+			// C should also become blocked because B's effective status is "blocked".
+			if cond.Status == types.ConditionFalse || cond.Type == "MonitorBlocked" {
+				return true, dep
+			}
+		}
+	}
+	return false, ""
+}
+
+// synthBlockedStatus returns a synthetic Status that signals the named monitor is
+// blocked waiting for a dependency to become healthy.
+func synthBlockedStatus(monitorName, blockedBy string) *types.Status {
+	s := types.NewStatus(monitorName)
+	s.AddCondition(types.NewCondition(
+		"MonitorBlocked",
+		types.ConditionUnknown,
+		"DependencyUnhealthy",
+		fmt.Sprintf("Monitor %s is blocked: dependency %q is unhealthy", monitorName, blockedBy),
+	))
+	return s
 }
 
 // addMonitor adds a new monitor with its handle and starts it
