@@ -630,6 +630,32 @@ func ValidateDNSConfig(config types.MonitorConfig) error {
 		}
 	}
 
+	// Validate health scoring config if enabled
+	if dnsConfig.HealthScoring != nil && dnsConfig.HealthScoring.Enabled {
+		hs := dnsConfig.HealthScoring
+
+		// Threshold ordering: unhealthy must be strictly less than degraded
+		if hs.UnhealthyThreshold >= hs.DegradedThreshold {
+			return fmt.Errorf("healthScoring.unhealthyThreshold (%g) must be less than degradedThreshold (%g)",
+				hs.UnhealthyThreshold, hs.DegradedThreshold)
+		}
+		if hs.UnhealthyThreshold < 0 || hs.DegradedThreshold > 100 {
+			return fmt.Errorf("healthScoring thresholds must be in range [0, 100]")
+		}
+
+		// Weights must sum to 1.0 (within floating-point tolerance)
+		weightSum := hs.SuccessRateWeight + hs.LatencyWeight + hs.ErrorDiversityWeight + hs.ConsistencyWeight
+		if weightSum < 0.99 || weightSum > 1.01 {
+			return fmt.Errorf("healthScoring weights must sum to 1.0 (got %.4f: successRate=%.2f latency=%.2f errorDiversity=%.2f consistency=%.2f)",
+				weightSum, hs.SuccessRateWeight, hs.LatencyWeight, hs.ErrorDiversityWeight, hs.ConsistencyWeight)
+		}
+
+		// WindowSize bounds
+		if hs.WindowSize < 3 || hs.WindowSize > 1000 {
+			return fmt.Errorf("healthScoring.windowSize must be between 3 and 1000, got %d", hs.WindowSize)
+		}
+	}
+
 	// Validate that at least one type of DNS check is configured
 	if len(dnsConfig.ClusterDomains) == 0 && len(dnsConfig.ExternalDomains) == 0 && len(dnsConfig.CustomQueries) == 0 {
 		return fmt.Errorf("at least one of clusterDomains, externalDomains, or customQueries must be configured")
