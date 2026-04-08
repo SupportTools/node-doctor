@@ -429,7 +429,7 @@ func stddev64(a []float64, mean float64) float64 {
 		variance += d * d
 	}
 	variance /= float64(len(a) - 1)
-	// Integer sqrt via Newton's method (avoid math import dependency)
+	// Float64 sqrt via Newton's method (avoids importing the math package)
 	if variance <= 0 {
 		return 0
 	}

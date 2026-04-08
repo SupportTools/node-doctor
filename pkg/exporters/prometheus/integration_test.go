@@ -608,3 +608,70 @@ func TestMetricValues(t *testing.T) {
 		t.Errorf("expected to find 2 problems_total metrics, found %d", problemsCount)
 	}
 }
+
+func TestNameserverHealthScoreStaleMetricCleanup(t *testing.T) {
+	port := freePort(t)
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      port,
+		Path:      "/metrics",
+		Namespace: "test",
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("failed to create exporter: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := exporter.Start(ctx); err != nil {
+		t.Fatalf("failed to start exporter: %v", err)
+	}
+	defer exporter.Stop()
+
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
+
+	// Round 1: export health scores for two nameservers.
+	status1 := (&types.Status{Source: "test", Timestamp: time.Now()}).
+		SetLatencyMetrics(&types.LatencyMetrics{
+			NameserverHealthScores: []types.NameserverHealthScore{
+				{Nameserver: "8.8.8.8", Score: 95.0, Status: "healthy"},
+				{Nameserver: "1.1.1.1", Score: 88.0, Status: "healthy"},
+			},
+		})
+	if err := exporter.ExportStatus(ctx, status1); err != nil {
+		t.Fatalf("failed to export status round 1: %v", err)
+	}
+
+	body := scrapeMetrics(t, config.Port, config.Path)
+	if !strings.Contains(body, `nameserver="8.8.8.8"`) {
+		t.Error("round 1: expected 8.8.8.8 metric to be present")
+	}
+	if !strings.Contains(body, `nameserver="1.1.1.1"`) {
+		t.Error("round 1: expected 1.1.1.1 metric to be present")
+	}
+
+	// Round 2: 1.1.1.1 is removed from the nameserver list.
+	status2 := (&types.Status{Source: "test", Timestamp: time.Now()}).
+		SetLatencyMetrics(&types.LatencyMetrics{
+			NameserverHealthScores: []types.NameserverHealthScore{
+				{Nameserver: "8.8.8.8", Score: 92.0, Status: "healthy"},
+			},
+		})
+	if err := exporter.ExportStatus(ctx, status2); err != nil {
+		t.Fatalf("failed to export status round 2: %v", err)
+	}
+
+	body = scrapeMetrics(t, config.Port, config.Path)
+	if !strings.Contains(body, `nameserver="8.8.8.8"`) {
+		t.Error("round 2: expected 8.8.8.8 metric to still be present")
+	}
+	// The stale 1.1.1.1 gauge must be gone after Reset().
+	if strings.Contains(body, `nameserver="1.1.1.1"`) {
+		t.Error("round 2: stale 1.1.1.1 metric persisted after nameserver removal — Reset() not working")
+	}
+}

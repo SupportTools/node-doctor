@@ -184,6 +184,17 @@ monitors:
         - kubernetes.default.svc.cluster.local
         - google.com
       timeout: 3s
+      healthScoring:
+        enabled: true
+        degradedThreshold: 70
+        unhealthyThreshold: 40
+        successRateWeight: 0.40
+        latencyWeight: 0.25
+        errorDiversityWeight: 0.15
+        consistencyWeight: 0.20
+        windowSize: 20
+        latencyBaseline: 50ms
+        latencyMax: 2s
 
   # Gateway Connectivity Monitor
   - name: gateway-health

@@ -3,7 +3,7 @@
 
 # Project ID for this repository
 # All TaskForge MCP queries will default to this project
-project_id: 40
+project_id: 41
 
 # Repository URL (used for validation)
 # Supports both SSH and HTTPS formats
