@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -557,5 +558,105 @@ func TestServer_StartBindFailure(t *testing.T) {
 	// Server must not be marked as started after a bind failure.
 	if server.started {
 		t.Error("server.started should be false after a bind failure")
+	}
+}
+
+// TestServer_Stop_NoDeadlockWithInFlightHandler is a regression test for the
+// "Shutdown under lock" deadlock.
+//
+// Root cause: the original Stop() held s.mu.Lock() across the
+// httpServer.Shutdown() call.  Any connection that net/http had already
+// accepted — but whose handler goroutine had not yet called s.mu.RLock() —
+// would block on RLock() after Stop() acquired the write lock.  Shutdown()
+// would then wait for that handler to return, the handler would wait for the
+// lock, and the whole thing would stall until the 5-second Shutdown context
+// deadline fired.
+//
+// Fix: release s.mu before calling Shutdown() so handlers can still acquire
+// the read lock freely.
+//
+// This test approximates the scenario: it parks an in-flight handler inside
+// s.mu.RLock() (via a blocking health-check callback) and calls Stop()
+// concurrently, asserting that Stop() returns promptly once the handler
+// finishes — not after a multi-second timeout.
+func TestServer_Stop_NoDeadlockWithInFlightHandler(t *testing.T) {
+	t.Parallel()
+
+	// blockEntry is closed (once) when the health-check is running — i.e.
+	// the /healthz handler is holding s.mu.RLock.
+	// releaseBlock is closed to let the health-check (and thus the handler)
+	// return.
+	blockEntry := make(chan struct{})
+	releaseBlock := make(chan struct{})
+	var entered sync.Once
+
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to get free port: %v", err)
+	}
+	freePort := tmp.Addr().(*net.TCPAddr).Port
+	tmp.Close()
+
+	config := &Config{
+		Enabled:     true,
+		BindAddress: "127.0.0.1",
+		Port:        freePort,
+	}
+	srv, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// This check runs while handleHealthz holds s.mu.RLock.
+	srv.AddHealthCheck("blocker", func() error {
+		entered.Do(func() { close(blockEntry) })
+		<-releaseBlock
+		return nil
+	})
+
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	addr := srv.httpServer.Addr
+
+	// Fire /healthz in the background; it will park inside the health-check
+	// callback while holding s.mu.RLock.
+	go func() {
+		resp, err := http.Get("http://" + addr + "/healthz") //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	// Wait until the handler is truly inside the mutex.
+	select {
+	case <-blockEntry:
+	case <-time.After(3 * time.Second):
+		close(releaseBlock)
+		t.Fatal("timed out waiting for handler to enter the mutex")
+	}
+
+	// Call Stop() while the in-flight handler holds s.mu.RLock.
+	// Stop() will block on s.mu.Lock() until we release the handler.
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- srv.Stop() }()
+
+	// Give Stop() time to reach s.mu.Lock() (it will be blocked there).
+	time.Sleep(30 * time.Millisecond)
+
+	// Release the handler. With the fix: Stop() acquires Lock, releases it,
+	// calls Shutdown() (lock-free) → Shutdown finds nothing in-flight →
+	// returns quickly. With the bug: Stop() would hold Lock through Shutdown(),
+	// blocking any handler that arrived after Lock was taken.
+	close(releaseBlock)
+
+	// Stop() must return well within 1 second.
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Errorf("Stop() returned unexpected error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Stop() did not return within 1 s after handler released — likely deadlock")
 	}
 }

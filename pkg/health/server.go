@@ -180,27 +180,31 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // Stop stops the health server gracefully (implements ExporterLifecycle).
+//
+// IMPORTANT: the mutex is released before calling httpServer.Shutdown so that
+// in-flight HTTP handlers can still acquire s.mu.RLock. Holding Lock() across
+// Shutdown() would deadlock: Shutdown() waits for handlers to return, but any
+// handler that tries RLock() after Stop() acquires Lock() will block forever.
 func (s *Server) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.started {
+		s.mu.Unlock()
 		return nil
 	}
+	s.started = false
+	httpServer := s.httpServer
+	s.mu.Unlock() // release before Shutdown to avoid deadlock with in-flight handlers
 
 	log.Printf("[INFO] Stopping health server...")
 
-	// Shutdown HTTP server with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := s.httpServer.Shutdown(ctx); err != nil {
+	if err := httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown health server: %w", err)
 	}
 
-	s.started = false
 	log.Printf("[INFO] Health server stopped")
-
 	return nil
 }
 
