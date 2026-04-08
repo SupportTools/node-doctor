@@ -279,8 +279,8 @@ func (e *CorrelationEngine) detectTemporalCorrelation(stats map[string]*Nameserv
 	}
 
 	return []CorrelationResult{{
-		Type:       "temporal",
-		Confidence: conf,
+		Type:          "temporal",
+		Confidence:    conf,
 		AffectedItems: affected,
 		RootCause: fmt.Sprintf("%d nameservers showing correlated failures in the last %d minutes",
 			len(failing), e.cfg.WindowMinutes),

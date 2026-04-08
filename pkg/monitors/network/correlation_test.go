@@ -113,8 +113,8 @@ func TestDetectDomainPatternCorrelation_DomainFailingAcrossNameservers(t *testin
 
 	// Both nameservers failing for "bad-domain.com" with no recent success
 	statusMap := map[string]*NameserverDomainStatus{
-		"10.0.0.1:bad-domain.com": makeNSDomainStatus("10.0.0.1", "bad-domain.com", 5, time.Time{}),
-		"10.0.0.2:bad-domain.com": makeNSDomainStatus("10.0.0.2", "bad-domain.com", 3, time.Time{}),
+		"10.0.0.1:bad-domain.com":  makeNSDomainStatus("10.0.0.1", "bad-domain.com", 5, time.Time{}),
+		"10.0.0.2:bad-domain.com":  makeNSDomainStatus("10.0.0.2", "bad-domain.com", 3, time.Time{}),
 		"10.0.0.1:good-domain.com": makeNSDomainStatus("10.0.0.1", "good-domain.com", 0, time.Now()),
 		"10.0.0.2:good-domain.com": makeNSDomainStatus("10.0.0.2", "good-domain.com", 0, time.Now()),
 	}
