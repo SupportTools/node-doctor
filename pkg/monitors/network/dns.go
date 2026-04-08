@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"os"
@@ -526,6 +527,9 @@ type DNSMonitorConfig struct {
 
 	// TrendDetection configures statistical trend detection (Welford z-score, OLS slope, flap detection).
 	TrendDetection *TrendDetectionConfig `json:"trendDetection"`
+
+	// HistoricalMetrics configures local SQLite-backed time-series retention for DNS check results.
+	HistoricalMetrics *HistoricalMetricsConfig `json:"historicalMetrics"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -562,6 +566,10 @@ type DNSMonitor struct {
 	// Nil when TrendDetection is disabled.
 	clusterTrendDetector  *TrendDetector
 	externalTrendDetector *TrendDetector
+
+	// metricsStore persists per-check DNS samples to a local SQLite database.
+	// Nil when HistoricalMetrics is disabled.
+	metricsStore MetricsStore
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
@@ -632,6 +640,18 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 	if dnsConfig.TrendDetection != nil && dnsConfig.TrendDetection.Enabled {
 		monitor.clusterTrendDetector = NewTrendDetector(dnsConfig.TrendDetection)
 		monitor.externalTrendDetector = NewTrendDetector(dnsConfig.TrendDetection)
+	}
+
+	// Initialize historical metrics store when configured.
+	if dnsConfig.HistoricalMetrics != nil && dnsConfig.HistoricalMetrics.Enabled {
+		store, err := NewSQLiteMetricsStore(dnsConfig.HistoricalMetrics)
+		if err != nil {
+			return nil, fmt.Errorf("create dns metrics store: %w", err)
+		}
+		if err := store.Initialize(ctx); err != nil {
+			return nil, fmt.Errorf("init dns metrics store: %w", err)
+		}
+		monitor.metricsStore = store
 	}
 
 	// Set the check function
@@ -1177,6 +1197,34 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		config.TrendDetection = td
 	}
 
+	// Parse HistoricalMetrics
+	if val, ok := configMap["historicalMetrics"]; ok {
+		hmMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("historicalMetrics must be an object")
+		}
+		hm := &HistoricalMetricsConfig{}
+		if v, ok := hmMap["enabled"]; ok {
+			if b, ok := v.(bool); ok {
+				hm.Enabled = b
+			}
+		}
+		if v, ok := hmMap["storagePath"]; ok {
+			if s, ok := v.(string); ok {
+				hm.StoragePath = s
+			}
+		}
+		if v, ok := hmMap["retentionDays"]; ok {
+			switch n := v.(type) {
+			case float64:
+				hm.RetentionDays = int(n)
+			case int:
+				hm.RetentionDays = n
+			}
+		}
+		config.HistoricalMetrics = hm
+	}
+
 	return config, nil
 }
 
@@ -1360,6 +1408,18 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		}
 	}
 
+	// Default HistoricalMetrics config when block is absent.
+	if c.HistoricalMetrics == nil {
+		c.HistoricalMetrics = &HistoricalMetricsConfig{Enabled: false}
+	} else if c.HistoricalMetrics.Enabled {
+		if c.HistoricalMetrics.StoragePath == "" {
+			c.HistoricalMetrics.StoragePath = "/var/lib/node-doctor/dns-metrics.db"
+		}
+		if c.HistoricalMetrics.RetentionDays <= 0 {
+			c.HistoricalMetrics.RetentionDays = 7
+		}
+	}
+
 	return nil
 }
 
@@ -1382,6 +1442,11 @@ func (m *DNSMonitor) predictiveAlertingEnabled() bool {
 func (m *DNSMonitor) trendDetectionEnabled() bool {
 	return m.config.TrendDetection != nil && m.config.TrendDetection.Enabled &&
 		m.clusterTrendDetector != nil && m.externalTrendDetector != nil
+}
+
+// historicalMetricsEnabled returns true when the metrics store has been initialised.
+func (m *DNSMonitor) historicalMetricsEnabled() bool {
+	return m.metricsStore != nil
 }
 
 // checkDNS performs the DNS health check.
@@ -1991,6 +2056,24 @@ func (m *DNSMonitor) checkNameservers(ctx context.Context, status *types.Status)
 		// Feed result into health scoring stats (if enabled)
 		if m.healthScoringEnabled() {
 			m.recordNameserverCheck(ns, lookupErr == nil, latency, classifyDNSError(lookupErr))
+		}
+
+		// Persist to historical metrics store (if enabled).
+		if m.historicalMetricsEnabled() {
+			errTypeName := ""
+			if lookupErr != nil {
+				errTypeName = string(classifyDNSError(lookupErr))
+			}
+			if recErr := m.metricsStore.Record(context.Background(), DNSMetricSample{
+				Timestamp:  time.Now(),
+				Nameserver: ns,
+				Domain:     testDomain,
+				Success:    lookupErr == nil,
+				LatencyMs:  float64(latency.Milliseconds()),
+				ErrorType:  errTypeName,
+			}); recErr != nil {
+				log.Printf("[WARN] dns metrics store: failed to record sample for %s: %v", ns, recErr)
+			}
 		}
 	}
 }
