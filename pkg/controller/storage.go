@@ -76,6 +76,12 @@ func (s *SQLiteStorage) Initialize(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Guard against double-initialization — a second call would overwrite s.db
+	// and leak the original database connection handle.
+	if s.db != nil {
+		return fmt.Errorf("storage already initialized")
+	}
+
 	// Open database
 	db, err := sql.Open("sqlite", s.dbPath)
 	if err != nil {

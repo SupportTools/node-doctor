@@ -626,6 +626,12 @@ func TestSQLiteStorage_Initialize_Failure(t *testing.T) {
 		if err := storage.Initialize(ctx); err == nil {
 			t.Error("expected error for inaccessible path, got nil")
 			storage.Close()
+		} else {
+			// db must remain nil after a failed Initialize — any storage
+			// operation on an uninitialized instance would panic otherwise.
+			if storage.db != nil {
+				t.Error("expected storage.db to be nil after failed Initialize")
+			}
 		}
 	})
 
@@ -646,6 +652,15 @@ func TestSQLiteStorage_Initialize_Failure(t *testing.T) {
 			t.Error("expected db to be nil before Initialize is called")
 		}
 	})
+}
+
+func TestSQLiteStorage_Initialize_DoubleInit(t *testing.T) {
+	storage := newTestStorage(t)
+	// Calling Initialize a second time must return an error, not silently leak
+	// the first database handle.
+	if err := storage.Initialize(context.Background()); err == nil {
+		t.Error("expected error on double Initialize, got nil")
+	}
 }
 
 func TestSQLiteStorage_RunCleanup(t *testing.T) {
