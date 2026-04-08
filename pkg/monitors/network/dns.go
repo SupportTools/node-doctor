@@ -124,6 +124,9 @@ type ConsistencyCheckConfig struct {
 type DNSErrorType string
 
 const (
+	// DNSErrorNone indicates no error occurred; the DNS check was successful.
+	DNSErrorNone DNSErrorType = "None"
+
 	// DNSErrorTimeout indicates the DNS query timed out.
 	// Suggests: Network issues, server overload, or firewall blocking.
 	DNSErrorTimeout DNSErrorType = "Timeout"
@@ -153,7 +156,7 @@ const (
 // while Timeout suggests infrastructure issues.
 func classifyDNSError(err error) DNSErrorType {
 	if err == nil {
-		return DNSErrorUnknown
+		return DNSErrorNone
 	}
 
 	// Check for net.DNSError type first (most specific information)
@@ -362,6 +365,8 @@ func computeHealthScore(ns *NameserverStats, cfg *NameserverHealthScoringConfig,
 // Higher values represent more impactful error types.
 func errorSeverity(e DNSErrorType) int {
 	switch e {
+	case DNSErrorNone:
+		return 0
 	case DNSErrorTimeout:
 		return 3
 	case DNSErrorSERVFAIL, DNSErrorRefused, DNSErrorNXDOMAIN:

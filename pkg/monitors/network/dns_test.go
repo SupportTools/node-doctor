@@ -2057,9 +2057,9 @@ func TestClassifyDNSError(t *testing.T) {
 		expected DNSErrorType
 	}{
 		{
-			name:     "nil error returns Unknown",
+			name:     "nil error returns None",
 			err:      nil,
-			expected: DNSErrorUnknown,
+			expected: DNSErrorNone,
 		},
 		{
 			name:     "i/o timeout",
@@ -2127,6 +2127,7 @@ func TestDNSErrorTypeString(t *testing.T) {
 		errType  DNSErrorType
 		expected string
 	}{
+		{DNSErrorNone, "None"},
 		{DNSErrorTimeout, "Timeout"},
 		{DNSErrorNXDOMAIN, "NXDOMAIN"},
 		{DNSErrorSERVFAIL, "SERVFAIL"},
