@@ -760,6 +760,22 @@ func (s *Server) requestLease(w http.ResponseWriter, r *http.Request) {
 	// Record metrics
 	s.metrics.RecordLeaseGranted(req.RemediationType)
 
+	// Fire RemediationCoordinated event when multiple nodes are coordinating the same
+	// remediation type. The lease has already been added to s.leases above, so counting
+	// active leases for this type gives the current coordination count.
+	if s.eventRecorder != nil {
+		var coordinatedNodes []string
+		for _, l := range s.leases {
+			if l.RemediationType == req.RemediationType && l.Status == "active" {
+				coordinatedNodes = append(coordinatedNodes, l.NodeName)
+			}
+		}
+		if len(coordinatedNodes) > 1 {
+			correlationID := fmt.Sprintf("remediation-%s-%d", req.RemediationType, time.Now().Unix())
+			s.eventRecorder.RecordRemediationCoordinated(r.Context(), req.RemediationType, coordinatedNodes, correlationID)
+		}
+	}
+
 	log.Printf("[INFO] Granted remediation lease %s to node %s for %s (expires: %s)",
 		leaseID, req.NodeName, req.RemediationType, lease.ExpiresAt.Format(time.RFC3339))
 

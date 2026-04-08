@@ -1453,3 +1453,60 @@ func TestServer_CorrelationsPersistedAndRecoverable(t *testing.T) {
 		t.Errorf("expected correlation ID 'corr-infr-aabb', got %q", active[0].ID)
 	}
 }
+
+func TestServer_RemediationCoordinatedEvent_MultipleLeases(t *testing.T) {
+	// Verify that granting a second lease of the same remediation type triggers
+	// the RecordRemediationCoordinated path without panicking.
+	// The recorder is disabled so no real k8s event is emitted; this is a
+	// smoke test for the wiring.
+	recorder, err := NewEventRecorder(&EventRecorderConfig{
+		Enabled:   false,
+		Namespace: "test",
+	})
+	if err != nil {
+		t.Fatalf("NewEventRecorder: %v", err)
+	}
+
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Coordination.Enabled = true
+	config.Coordination.MaxConcurrentRemediations = 5
+	config.Coordination.DefaultLeaseDuration = time.Minute
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// Inject disabled recorder to exercise the wiring code path.
+	server.eventRecorder = recorder
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	addr := server.httpServer.Addr
+	grant := func(node string) {
+		body, _ := json.Marshal(map[string]interface{}{
+			"node":       node,
+			"remediation": "disk-cleanup",
+			"reason":     "test",
+		})
+		resp, err := http.Post("http://"+addr+"/api/v1/leases", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST /api/v1/leases/request (node %s): %v", node, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("lease request for node %s: status %d", node, resp.StatusCode)
+		}
+	}
+
+	// First lease: coordination path skipped (only 1 active lease).
+	grant("node-alpha")
+	// Second lease of the same type: coordinatedNodes will have 2 entries;
+	// RecordRemediationCoordinated should be called without panic.
+	grant("node-beta")
+}
