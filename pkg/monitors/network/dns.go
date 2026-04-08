@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -479,19 +480,10 @@ func stddev64(a []float64, mean float64) float64 {
 		variance += d * d
 	}
 	variance /= float64(len(a) - 1)
-	// Float64 sqrt via Newton's method (avoids importing the math package)
 	if variance <= 0 {
 		return 0
 	}
-	x := variance
-	for i := 0; i < 50; i++ {
-		xn := (x + variance/x) / 2
-		if xn >= x {
-			break
-		}
-		x = xn
-	}
-	return x
+	return math.Sqrt(variance)
 }
 
 // DNSMonitorConfig holds the configuration for the DNS monitor.

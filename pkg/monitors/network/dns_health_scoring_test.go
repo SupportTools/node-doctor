@@ -440,3 +440,43 @@ func defaultHealthScoringConfig() *NameserverHealthScoringConfig {
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
+
+func TestStddev64(t *testing.T) {
+	tests := []struct {
+		name    string
+		values  []float64
+		mean    float64
+		wantMin float64 // exclusive lower bound (0 means "must be > 0")
+		wantMax float64 // inclusive upper bound
+		wantZero bool   // expect exactly 0
+	}{
+		// Fewer than 2 elements → zero by definition (no variance possible)
+		{"empty", []float64{}, 0, 0, 0, true},
+		{"single element", []float64{5.0}, 5.0, 0, 0, true},
+		// All values equal → variance is 0 → stddev is 0
+		{"all equal", []float64{3.0, 3.0, 3.0}, 3.0, 0, 0, true},
+		// Simple case: [1, 3], mean=2, variance=((1-2)²+(3-2)²)/1=2, stddev=sqrt(2)≈1.414
+		{"two elements", []float64{1.0, 3.0}, 2.0, 1.413, 1.415, false},
+		// Sub-nanosecond variance — this is the bug the Newton's method had:
+		// variance = 0.0000001 (1e-7), sqrt ≈ 0.000316...
+		// Newton's method starting at x=variance broke here (returned variance, not sqrt).
+		{"sub-nanosecond variance", []float64{1e-4, 2e-4}, 1.5e-4, 3e-5, 8e-5, false},
+		// Large values
+		{"large values", []float64{1000.0, 2000.0, 3000.0}, 2000.0, 999.9, 1000.1, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stddev64(tc.values, tc.mean)
+			if tc.wantZero {
+				if got != 0 {
+					t.Errorf("stddev64() = %v, want 0", got)
+				}
+				return
+			}
+			if got <= tc.wantMin || got > tc.wantMax {
+				t.Errorf("stddev64() = %v, want in range (%v, %v]", got, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}
