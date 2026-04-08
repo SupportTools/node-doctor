@@ -492,6 +492,53 @@ func TestMonitorChannelClosure(t *testing.T) {
 	}
 }
 
+// TestNoDuplicateMonitorStarts verifies that each configured monitor starts exactly once,
+// even when a caller (incorrectly) passes the same monitors both as passedMonitors and
+// via the config. The deduplication guard in Start() must prevent double starts.
+func TestNoDuplicateMonitorStarts(t *testing.T) {
+	helper := NewTestHelper()
+	config := helper.CreateTestConfig()
+	config.Monitors = []types.MonitorConfig{
+		helper.CreateTestMonitorConfig("monitor-a", "test"),
+		helper.CreateTestMonitorConfig("monitor-b", "test"),
+	}
+
+	startCount := make(map[string]int)
+	var mu sync.Mutex
+
+	factory := NewMockMonitorFactory().SetCreateFunc(func(cfg types.MonitorConfig) (types.Monitor, error) {
+		mu.Lock()
+		startCount[cfg.Name]++
+		mu.Unlock()
+		return NewMockMonitor(cfg.Name), nil
+	})
+
+	// Pass no monitors directly — factory is the sole startup path (production behaviour).
+	det, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("exp")}, "/tmp/test-config.yaml", factory)
+	if err != nil {
+		t.Fatalf("NewProblemDetector() error = %v", err)
+	}
+
+	if err := det.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	det.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, name := range []string{"monitor-a", "monitor-b"} {
+		if startCount[name] != 1 {
+			t.Errorf("monitor %s started %d time(s), want exactly 1", name, startCount[name])
+		}
+	}
+
+	stats := det.GetStatistics()
+	if stats.GetMonitorsStarted() != 2 {
+		t.Errorf("expected 2 monitors started, got %d", stats.GetMonitorsStarted())
+	}
+}
+
 func TestStatisticsTracking(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()

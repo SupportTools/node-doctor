@@ -186,19 +186,6 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Create and start monitors
-	log.Printf("[INFO] Creating monitors...")
-	monitorInstances, err := createMonitors(ctx, config.Monitors)
-	if err != nil {
-		log.Fatalf("Failed to create monitors: %v", err)
-	}
-
-	if len(monitorInstances) == 0 {
-		log.Fatalf("No valid monitors configured")
-	}
-
-	log.Printf("[INFO] Created %d monitors", len(monitorInstances))
-
 	// Create exporters
 	log.Printf("[INFO] Creating exporters...")
 	exporters, exporterInterfaces, err := createExporters(ctx, config)
@@ -211,10 +198,11 @@ func main() {
 	// Create monitor factory for hot reload
 	monitorFactory := &monitorFactoryAdapter{ctx: ctx}
 
-	// Create the detector with configured monitors and exporters
+	// Create the detector with configured exporters.
+	// Monitors are created by the monitorFactory during detector.Start() — do not pre-create them here.
 	log.Printf("[INFO] Creating detector...")
 
-	det, err := detector.NewProblemDetector(config, monitorInstances, exporterInterfaces, *configFile, monitorFactory)
+	det, err := detector.NewProblemDetector(config, nil, exporterInterfaces, *configFile, monitorFactory)
 	if err != nil {
 		log.Fatalf("Failed to create detector: %v", err)
 	}

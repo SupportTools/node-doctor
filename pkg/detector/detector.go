@@ -215,8 +215,38 @@ func (pd *ProblemDetector) Start() error {
 		pd.watchConfigChanges()
 	}()
 
-	// Start monitors from config (requires MonitorFactory)
+	// Build a set of already-registered monitor names to prevent duplicate starts.
+	// passedMonitors are started first (highest priority), then config-derived monitors
+	// are created via the factory — but only if no monitor with that name was already added.
+	startedNames := make(map[string]bool)
+
+	// Start passed monitors (for testing or programmatic injection of additional monitors).
+	// These are monitors supplied directly to the constructor and are NOT derived from config.
+	for i, monitor := range pd.passedMonitors {
+		monitorConfig := types.MonitorConfig{
+			Name:    fmt.Sprintf("passed-monitor-%d", i),
+			Enabled: true,
+		}
+
+		if err := pd.addMonitor(pd.ctx, monitor, monitorConfig); err != nil {
+			log.Printf("[ERROR] Failed to start passed monitor %d: %v", i, err)
+			pd.stats.IncrementMonitorsFailed()
+			continue
+		}
+
+		startedNames[monitorConfig.Name] = true
+		log.Printf("[INFO] Started passed monitor: %s", monitorConfig.Name)
+	}
+
+	// Start monitors from config via the MonitorFactory.
+	// Skip any monitor whose name is already running to guard against accidental
+	// double-registration (e.g. if a caller passes pre-created monitors AND a factory).
 	for _, monitorConfig := range pd.config.Monitors {
+		if startedNames[monitorConfig.Name] {
+			log.Printf("[WARN] Monitor %s already started (skipping duplicate from config)", monitorConfig.Name)
+			continue
+		}
+
 		monitor, err := pd.createMonitor(monitorConfig)
 		if err != nil {
 			log.Printf("[ERROR] Failed to create monitor %s: %v", monitorConfig.Name, err)
@@ -230,24 +260,8 @@ func (pd *ProblemDetector) Start() error {
 			continue
 		}
 
+		startedNames[monitorConfig.Name] = true
 		log.Printf("[INFO] Started monitor: %s", monitorConfig.Name)
-	}
-
-	// Start passed monitors (for testing or programmatic use)
-	for i, monitor := range pd.passedMonitors {
-		// Create a synthetic config for passed monitors
-		monitorConfig := types.MonitorConfig{
-			Name:    fmt.Sprintf("passed-monitor-%d", i),
-			Enabled: true,
-		}
-
-		if err := pd.addMonitor(pd.ctx, monitor, monitorConfig); err != nil {
-			log.Printf("[ERROR] Failed to start passed monitor %d: %v", i, err)
-			pd.stats.IncrementMonitorsFailed()
-			continue
-		}
-
-		log.Printf("[INFO] Started passed monitor: %s", monitorConfig.Name)
 	}
 
 	// Start status processing goroutine
