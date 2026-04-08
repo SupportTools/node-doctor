@@ -209,6 +209,112 @@ func TestControllerMetrics_RecordReportError(t *testing.T) {
 	}
 }
 
+func TestControllerMetrics_UpdateCorrelationMetrics(t *testing.T) {
+	metrics := NewControllerMetrics()
+
+	metrics.UpdateCorrelationMetrics(3)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, "node_doctor_correlation_active_total 3") {
+		t.Error("expected correlation_active_total to be 3")
+	}
+}
+
+func TestControllerMetrics_RecordCorrelationDetected(t *testing.T) {
+	metrics := NewControllerMetrics()
+
+	metrics.RecordCorrelationDetected("infrastructure")
+	metrics.RecordCorrelationDetected("infrastructure")
+	metrics.RecordCorrelationDetected("common_cause")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `node_doctor_correlation_detected_total{type="infrastructure"} 2`) {
+		t.Error("expected infrastructure correlation count to be 2")
+	}
+	if !strings.Contains(body, `node_doctor_correlation_detected_total{type="common_cause"} 1`) {
+		t.Error("expected common_cause correlation count to be 1")
+	}
+}
+
+func TestControllerMetrics_RecordStorageOperation(t *testing.T) {
+	metrics := NewControllerMetrics()
+
+	metrics.RecordStorageOperation("save_report")
+	metrics.RecordStorageOperation("save_report")
+	metrics.RecordStorageOperation("get_lease")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `node_doctor_storage_operations_total{operation="save_report"} 2`) {
+		t.Error("expected save_report operation count to be 2")
+	}
+	if !strings.Contains(body, `node_doctor_storage_operations_total{operation="get_lease"} 1`) {
+		t.Error("expected get_lease operation count to be 1")
+	}
+}
+
+func TestControllerMetrics_RecordStorageError(t *testing.T) {
+	metrics := NewControllerMetrics()
+
+	metrics.RecordStorageError("save_report")
+	metrics.RecordStorageError("get_lease")
+	metrics.RecordStorageError("get_lease")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `node_doctor_storage_errors_total{operation="save_report"} 1`) {
+		t.Error("expected save_report error count to be 1")
+	}
+	if !strings.Contains(body, `node_doctor_storage_errors_total{operation="get_lease"} 2`) {
+		t.Error("expected get_lease error count to be 2")
+	}
+}
+
+func TestControllerMetrics_RecordRequest(t *testing.T) {
+	metrics := NewControllerMetrics()
+
+	metrics.RecordRequest("GET", "/api/v1/nodes", "200", 0.045)
+	metrics.RecordRequest("GET", "/api/v1/nodes", "200", 0.032)
+	metrics.RecordRequest("POST", "/api/v1/reports", "201", 0.012)
+	metrics.RecordRequest("GET", "/api/v1/nodes", "500", 0.001)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `node_doctor_http_requests_total{method="GET",path="/api/v1/nodes",status="200"} 2`) {
+		t.Error("expected GET /api/v1/nodes 200 count to be 2")
+	}
+	if !strings.Contains(body, `node_doctor_http_requests_total{method="POST",path="/api/v1/reports",status="201"} 1`) {
+		t.Error("expected POST /api/v1/reports 201 count to be 1")
+	}
+	if !strings.Contains(body, `node_doctor_http_requests_total{method="GET",path="/api/v1/nodes",status="500"} 1`) {
+		t.Error("expected GET /api/v1/nodes 500 count to be 1")
+	}
+	// Histogram count and sum should be present (sum validates duration is actually observed)
+	if !strings.Contains(body, `node_doctor_http_request_duration_seconds_count{method="GET",path="/api/v1/nodes",status="200"} 2`) {
+		t.Error("expected histogram count to be 2 for GET /api/v1/nodes 200")
+	}
+	if !strings.Contains(body, `node_doctor_http_request_duration_seconds_sum{method="GET",path="/api/v1/nodes",status="200"} 0.077`) {
+		t.Error("expected histogram sum to be 0.077 for GET /api/v1/nodes 200 (0.045 + 0.032)")
+	}
+}
+
 func TestServer_MetricsEndpoint(t *testing.T) {
 	server, _ := NewServer(nil)
 
