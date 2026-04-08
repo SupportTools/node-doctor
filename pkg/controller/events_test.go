@@ -487,6 +487,163 @@ func TestEventRecorder_RecordProblemDetected(t *testing.T) {
 	})
 }
 
+func TestEventRecorder_RecordClusterDNSDegraded(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("records event with correct reason and message", func(t *testing.T) {
+		fakeClient := fake.NewSimpleClientset()
+		recorder := &EventRecorder{
+			enabled:         true,
+			client:          fakeClient,
+			namespace:       "node-doctor",
+			lastEventTime:   make(map[string]time.Time),
+			rateLimitPeriod: 5 * time.Minute,
+		}
+
+		affectedNodes := []string{"node-1", "node-2", "node-3"}
+		recorder.RecordClusterDNSDegraded(ctx, affectedNodes, 10, "corr-dns-abc123")
+
+		events, _ := fakeClient.CoreV1().Events("node-doctor").List(ctx, metav1.ListOptions{})
+
+		if len(events.Items) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events.Items))
+		}
+
+		event := events.Items[0]
+		if event.Reason != EventReasonClusterDNSDegraded {
+			t.Errorf("expected reason %s, got %s", EventReasonClusterDNSDegraded, event.Reason)
+		}
+		if event.Type != EventTypeWarning {
+			t.Errorf("expected type %s, got %s", EventTypeWarning, event.Type)
+		}
+	})
+
+	t.Run("rate limits duplicate events", func(t *testing.T) {
+		fakeClient := fake.NewSimpleClientset()
+		recorder := &EventRecorder{
+			enabled:         true,
+			client:          fakeClient,
+			namespace:       "node-doctor",
+			lastEventTime:   make(map[string]time.Time),
+			rateLimitPeriod: 5 * time.Minute,
+		}
+
+		affectedNodes := []string{"node-1"}
+		recorder.RecordClusterDNSDegraded(ctx, affectedNodes, 5, "corr-1")
+		recorder.RecordClusterDNSDegraded(ctx, affectedNodes, 5, "corr-1")
+
+		events, _ := fakeClient.CoreV1().Events("node-doctor").List(ctx, metav1.ListOptions{})
+		if len(events.Items) != 1 {
+			t.Errorf("expected rate limiter to suppress duplicate, got %d events", len(events.Items))
+		}
+	})
+}
+
+func TestEventRecorder_RecordClusterNetworkPartition(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("records event with partition groups", func(t *testing.T) {
+		fakeClient := fake.NewSimpleClientset()
+		recorder := &EventRecorder{
+			enabled:         true,
+			client:          fakeClient,
+			namespace:       "node-doctor",
+			lastEventTime:   make(map[string]time.Time),
+			rateLimitPeriod: 5 * time.Minute,
+		}
+
+		partitionA := []string{"node-1", "node-2"}
+		partitionB := []string{"node-3", "node-4"}
+		recorder.RecordClusterNetworkPartition(ctx, partitionA, partitionB, "corr-net-xyz")
+
+		events, _ := fakeClient.CoreV1().Events("node-doctor").List(ctx, metav1.ListOptions{})
+
+		if len(events.Items) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events.Items))
+		}
+
+		event := events.Items[0]
+		if event.Reason != EventReasonClusterNetworkPartition {
+			t.Errorf("expected reason %s, got %s", EventReasonClusterNetworkPartition, event.Reason)
+		}
+		if event.Type != EventTypeWarning {
+			t.Errorf("expected type %s, got %s", EventTypeWarning, event.Type)
+		}
+	})
+
+	t.Run("distinct correlation IDs are not rate-limited", func(t *testing.T) {
+		// Each call gets its own client because the fake k8s client does not
+		// implement GenerateName and collapses all events to name ""; sharing a
+		// client across multiple Creates would cause a name-conflict error.
+		for _, corrID := range []string{"corr-1", "corr-2"} {
+			fakeClient := fake.NewSimpleClientset()
+			recorder := &EventRecorder{
+				enabled:         true,
+				client:          fakeClient,
+				namespace:       "node-doctor",
+				lastEventTime:   make(map[string]time.Time),
+				rateLimitPeriod: 5 * time.Minute,
+			}
+
+			recorder.RecordClusterNetworkPartition(ctx, []string{"node-1"}, []string{"node-2"}, corrID)
+
+			events, _ := fakeClient.CoreV1().Events("node-doctor").List(ctx, metav1.ListOptions{})
+			if len(events.Items) != 1 {
+				t.Errorf("corrID=%s: expected 1 event, got %d", corrID, len(events.Items))
+			}
+		}
+	})
+}
+
+func TestEventRecorder_RecordRemediationCoordinated(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("records Normal event with remediation details", func(t *testing.T) {
+		fakeClient := fake.NewSimpleClientset()
+		recorder := &EventRecorder{
+			enabled:         true,
+			client:          fakeClient,
+			namespace:       "node-doctor",
+			lastEventTime:   make(map[string]time.Time),
+			rateLimitPeriod: 5 * time.Minute,
+		}
+
+		affectedNodes := []string{"node-1", "node-2"}
+		recorder.RecordRemediationCoordinated(ctx, "restart-dns", affectedNodes, "corr-dns-001")
+
+		events, _ := fakeClient.CoreV1().Events("node-doctor").List(ctx, metav1.ListOptions{})
+
+		if len(events.Items) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events.Items))
+		}
+
+		event := events.Items[0]
+		if event.Reason != EventReasonRemediationCoordinated {
+			t.Errorf("expected reason %s, got %s", EventReasonRemediationCoordinated, event.Reason)
+		}
+		if event.Type != EventTypeNormal {
+			t.Errorf("expected type %s (coordinated remediation is informational), got %s", EventTypeNormal, event.Type)
+		}
+	})
+
+	t.Run("no event when disabled", func(t *testing.T) {
+		fakeClient := fake.NewSimpleClientset()
+		recorder := &EventRecorder{
+			enabled:         false,
+			client:          nil,
+			lastEventTime:   make(map[string]time.Time),
+			rateLimitPeriod: 5 * time.Minute,
+		}
+
+		recorder.RecordRemediationCoordinated(ctx, "restart-kubelet", []string{"node-1"}, "corr-1")
+
+		events, _ := fakeClient.CoreV1().Events("node-doctor").List(ctx, metav1.ListOptions{})
+		if len(events.Items) != 0 {
+			t.Errorf("expected no events when disabled, got %d", len(events.Items))
+		}
+	})
+}
+
 func TestEventRecorder_DisabledRecorder(t *testing.T) {
 	recorder := &EventRecorder{
 		enabled:       false,
@@ -504,6 +661,9 @@ func TestEventRecorder_DisabledRecorder(t *testing.T) {
 	recorder.RecordLeaseGranted(ctx, &Lease{})
 	recorder.RecordLeaseDenied(ctx, "node-1", "restart-kubelet", "reason")
 	recorder.RecordProblemDetected(ctx, "node-1", &ProblemSummary{})
+	recorder.RecordClusterDNSDegraded(ctx, []string{"node-1"}, 3, "corr-1")
+	recorder.RecordClusterNetworkPartition(ctx, []string{"node-1"}, []string{"node-2"}, "corr-1")
+	recorder.RecordRemediationCoordinated(ctx, "restart-dns", []string{"node-1"}, "corr-1")
 
 	// No panics or errors expected
 }

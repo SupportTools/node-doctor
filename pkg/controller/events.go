@@ -39,6 +39,11 @@ const (
 	EventReasonRemediationStarted   = "RemediationStarted"
 	EventReasonRemediationCompleted = "RemediationCompleted"
 	EventReasonRemediationFailed    = "RemediationFailed"
+
+	// Cluster-specific diagnostic events
+	EventReasonClusterDNSDegraded      = "ClusterDNSDegraded"
+	EventReasonClusterNetworkPartition = "ClusterNetworkPartition"
+	EventReasonRemediationCoordinated  = "RemediationCoordinated"
 )
 
 // Event types
@@ -382,6 +387,65 @@ func (r *EventRecorder) RecordProblemResolved(ctx context.Context, nodeName stri
 	message := fmt.Sprintf("Problem resolved on node %s: %s", nodeName, problemType)
 
 	r.recordEventForNode(ctx, nodeName, EventReasonProblemResolved, EventTypeNormal, message)
+}
+
+// RecordClusterDNSDegraded records an event when DNS failures affect more than the configured threshold of nodes.
+// This fires when the correlator detects an infrastructure-wide DNS problem (e.g., >30% of nodes).
+func (r *EventRecorder) RecordClusterDNSDegraded(ctx context.Context, affectedNodes []string, totalNodes int, correlationID string) {
+	if !r.IsEnabled() {
+		return
+	}
+
+	key := "cluster-dns-degraded"
+	if r.shouldRateLimit(key) {
+		return
+	}
+
+	pct := 0
+	if totalNodes > 0 {
+		pct = len(affectedNodes) * 100 / totalNodes
+	}
+
+	message := fmt.Sprintf("Cluster DNS degraded: %d/%d nodes (%d%%) reporting DNS failures. Correlation: %s. Affected: %s",
+		len(affectedNodes), totalNodes, pct, correlationID, strings.Join(affectedNodes, ", "))
+
+	r.recordEvent(ctx, nil, EventReasonClusterDNSDegraded, EventTypeWarning, message)
+}
+
+// RecordClusterNetworkPartition records an event when a network partition is detected across the cluster.
+// A partition means some nodes cannot communicate with others, causing split-brain conditions.
+func (r *EventRecorder) RecordClusterNetworkPartition(ctx context.Context, partitionA, partitionB []string, correlationID string) {
+	if !r.IsEnabled() {
+		return
+	}
+
+	key := fmt.Sprintf("cluster-network-partition-%s", correlationID)
+	if r.shouldRateLimit(key) {
+		return
+	}
+
+	message := fmt.Sprintf("Network partition detected: group A (%s) cannot reach group B (%s). Correlation: %s",
+		strings.Join(partitionA, ", "), strings.Join(partitionB, ", "), correlationID)
+
+	r.recordEvent(ctx, nil, EventReasonClusterNetworkPartition, EventTypeWarning, message)
+}
+
+// RecordRemediationCoordinated records an event when the controller coordinates remediation across multiple nodes.
+// This provides an audit trail for cluster-level remediation decisions.
+func (r *EventRecorder) RecordRemediationCoordinated(ctx context.Context, remediationType string, affectedNodes []string, correlationID string) {
+	if !r.IsEnabled() {
+		return
+	}
+
+	key := fmt.Sprintf("remediation-coordinated-%s-%s", remediationType, correlationID)
+	if r.shouldRateLimit(key) {
+		return
+	}
+
+	message := fmt.Sprintf("Coordinated remediation '%s' initiated for %d node(s): %s (correlation: %s)",
+		remediationType, len(affectedNodes), strings.Join(affectedNodes, ", "), correlationID)
+
+	r.recordEvent(ctx, nil, EventReasonRemediationCoordinated, EventTypeNormal, message)
 }
 
 // recordEvent creates a Kubernetes event for the controller itself

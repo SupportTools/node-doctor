@@ -27,6 +27,9 @@ type Server struct {
 	// Correlator for pattern detection
 	correlator *Correlator
 
+	// Kubernetes event recorder
+	eventRecorder *EventRecorder
+
 	// State
 	mu        sync.RWMutex
 	started   bool
@@ -56,9 +59,26 @@ func NewServer(config *ControllerConfig) (*Server, error) {
 		metrics:     NewControllerMetrics(),
 	}
 
+	// Initialize Kubernetes event recorder if enabled
+	if config.Kubernetes.Enabled && config.Kubernetes.CreateEvents {
+		recorderCfg := &EventRecorderConfig{
+			Kubeconfig:      config.Kubernetes.Kubeconfig,
+			InCluster:       config.Kubernetes.InCluster,
+			Namespace:       config.Kubernetes.Namespace,
+			Enabled:         true,
+			RateLimitPeriod: 5 * time.Minute,
+		}
+		recorder, err := NewEventRecorder(recorderCfg)
+		if err != nil {
+			log.Printf("[WARN] Failed to initialize event recorder: %v", err)
+		} else {
+			s.eventRecorder = recorder
+		}
+	}
+
 	// Initialize correlator if enabled
 	if config.Correlation.Enabled {
-		s.correlator = NewCorrelator(&config.Correlation, nil, s.metrics, nil)
+		s.correlator = NewCorrelator(&config.Correlation, nil, s.metrics, s.eventRecorder)
 	}
 
 	// Initialize HTTP routes
