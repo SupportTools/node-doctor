@@ -667,3 +667,72 @@ func TestEventRecorder_DisabledRecorder(t *testing.T) {
 
 	// No panics or errors expected
 }
+
+func TestIsDNSCorrelation(t *testing.T) {
+	tests := []struct {
+		name     string
+		problems []string
+		want     bool
+	}{
+		{"DNSFailure", []string{"DNSFailure"}, true},
+		{"dns-lowercase", []string{"dns-timeout"}, true},
+		{"DNS-mixed-case", []string{"ClusterDNSUnreachable"}, true},
+		{"no dns", []string{"NetworkUnreachable"}, false},
+		{"empty", []string{}, false},
+		{"multiple, first has dns", []string{"DNSFailure", "NetworkUnreachable"}, true},
+		{"multiple, second has dns", []string{"NetworkUnreachable", "DNSTimeout"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			corr := &Correlation{ProblemTypes: tc.problems}
+			if got := isDNSCorrelation(corr); got != tc.want {
+				t.Errorf("isDNSCorrelation(%v) = %v, want %v", tc.problems, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsNetworkPartitionCorrelation(t *testing.T) {
+	tests := []struct {
+		name     string
+		corrType string
+		metadata map[string]interface{}
+		want     bool
+	}{
+		{
+			"common-cause network-infrastructure",
+			CorrelationTypeCommonCause,
+			map[string]interface{}{"pattern": "network-infrastructure"},
+			true,
+		},
+		{
+			"common-cause different pattern",
+			CorrelationTypeCommonCause,
+			map[string]interface{}{"pattern": "resource-exhaustion"},
+			false,
+		},
+		{
+			"infrastructure type",
+			CorrelationTypeInfrastructure,
+			map[string]interface{}{"pattern": "network-infrastructure"},
+			false,
+		},
+		{
+			"no metadata",
+			CorrelationTypeCommonCause,
+			nil,
+			false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			corr := &Correlation{
+				Type:     tc.corrType,
+				Metadata: tc.metadata,
+			}
+			if got := isNetworkPartitionCorrelation(corr); got != tc.want {
+				t.Errorf("isNetworkPartitionCorrelation() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

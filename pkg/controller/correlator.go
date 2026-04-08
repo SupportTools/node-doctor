@@ -265,6 +265,20 @@ func (c *Correlator) evaluate(ctx context.Context) {
 			// Record event
 			if c.events != nil {
 				c.events.RecordCorrelation(ctx, corr)
+
+				// Emit specific cluster-level events based on problem types.
+				if isDNSCorrelation(corr) {
+					c.events.RecordClusterDNSDegraded(ctx, corr.AffectedNodes, totalNodes, corr.ID)
+				} else if isNetworkPartitionCorrelation(corr) {
+					// Split affected nodes into two conceptual groups for the partition event.
+					// The correlation does not know which nodes can reach which, so we use a
+					// 50/50 split of the sorted affected-node list as a best-effort approximation.
+					mid := len(corr.AffectedNodes) / 2
+					if mid == 0 {
+						mid = 1
+					}
+					c.events.RecordClusterNetworkPartition(ctx, corr.AffectedNodes[:mid], corr.AffectedNodes[mid:], corr.ID)
+				}
 			}
 
 			// Update metrics
@@ -423,6 +437,28 @@ func (c *Correlator) detectCommonCauseCorrelation(reports []*NodeReport) []*Corr
 	}
 
 	return correlations
+}
+
+// isDNSCorrelation returns true when any of the correlation's problem types indicate DNS failure.
+func isDNSCorrelation(corr *Correlation) bool {
+	for _, p := range corr.ProblemTypes {
+		if strings.Contains(strings.ToLower(p), "dns") {
+			return true
+		}
+	}
+	return false
+}
+
+// isNetworkPartitionCorrelation returns true when the correlation matches the
+// network-infrastructure common-cause pattern (DNS + network failures together).
+func isNetworkPartitionCorrelation(corr *Correlation) bool {
+	if corr.Type != CorrelationTypeCommonCause {
+		return false
+	}
+	if pattern, ok := corr.Metadata["pattern"]; ok {
+		return pattern == "network-infrastructure"
+	}
+	return false
 }
 
 // detectCascadeCorrelation detects sequential problem chains.
