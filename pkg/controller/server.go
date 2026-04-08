@@ -773,20 +773,24 @@ func (s *Server) requestLease(w http.ResponseWriter, r *http.Request) {
 	// Record metrics
 	s.metrics.RecordLeaseGranted(req.RemediationType)
 
-	// Fire RemediationCoordinated event when multiple nodes are coordinating the same
-	// remediation type. The lease has already been added to s.leases above, so counting
-	// active leases for this type gives the current coordination count.
-	if s.eventRecorder != nil {
-		var coordinatedNodes []string
+	// Snapshot the coordinated-node list while holding s.mu so we read consistent
+	// lease state. Then fire the event asynchronously to avoid holding the write
+	// lock across a potentially-blocking Kubernetes API call.
+	var (
+		coordinatedNodes  []string
+		recorder          = s.eventRecorder
+		remediationType   = req.RemediationType
+	)
+	if recorder != nil {
 		for _, l := range s.leases {
-			if l.RemediationType == req.RemediationType && l.Status == "active" {
+			if l.RemediationType == remediationType && l.Status == "active" {
 				coordinatedNodes = append(coordinatedNodes, l.NodeName)
 			}
 		}
-		if len(coordinatedNodes) > 1 {
-			correlationID := fmt.Sprintf("remediation-%s-%d", req.RemediationType, time.Now().Unix())
-			s.eventRecorder.RecordRemediationCoordinated(r.Context(), req.RemediationType, coordinatedNodes, correlationID)
-		}
+	}
+	if len(coordinatedNodes) > 1 {
+		correlationID := fmt.Sprintf("remediation-%s-%d", remediationType, time.Now().Unix())
+		go recorder.RecordRemediationCoordinated(context.Background(), remediationType, coordinatedNodes, correlationID)
 	}
 
 	log.Printf("[INFO] Granted remediation lease %s to node %s for %s (expires: %s)",
