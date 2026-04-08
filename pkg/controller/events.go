@@ -396,7 +396,7 @@ func (r *EventRecorder) RecordClusterDNSDegraded(ctx context.Context, affectedNo
 		return
 	}
 
-	key := "cluster-dns-degraded"
+	key := fmt.Sprintf("cluster-dns-degraded-%s", correlationID)
 	if r.shouldRateLimit(key) {
 		return
 	}

@@ -537,6 +537,39 @@ func TestEventRecorder_RecordClusterDNSDegraded(t *testing.T) {
 			t.Errorf("expected rate limiter to suppress duplicate, got %d events", len(events.Items))
 		}
 	})
+
+	t.Run("different correlationIDs are not rate-limited", func(t *testing.T) {
+		// Regression test for the static key bug: with key="cluster-dns-degraded",
+		// a second call with a different correlationID would be suppressed as a
+		// "duplicate". The fix uses per-correlationID keys.
+		// We verify via the rate-limit map: both keys must be present after the calls,
+		// meaning neither was suppressed before reaching the recorder.
+		fakeClient := fake.NewSimpleClientset()
+		recorder := &EventRecorder{
+			enabled:         true,
+			client:          fakeClient,
+			namespace:       "node-doctor",
+			lastEventTime:   make(map[string]time.Time),
+			rateLimitPeriod: 5 * time.Minute,
+		}
+
+		affectedNodes := []string{"node-1", "node-2"}
+		recorder.RecordClusterDNSDegraded(ctx, affectedNodes, 5, "corr-dns-first")
+		recorder.RecordClusterDNSDegraded(ctx, affectedNodes, 5, "corr-dns-second")
+
+		// Both per-correlationID rate-limit keys must be set, confirming neither was
+		// suppressed by the other's rate-limit entry.
+		recorder.mu.RLock()
+		_, hasFirst := recorder.lastEventTime["cluster-dns-degraded-corr-dns-first"]
+		_, hasSecond := recorder.lastEventTime["cluster-dns-degraded-corr-dns-second"]
+		recorder.mu.RUnlock()
+		if !hasFirst {
+			t.Error("rate-limit key for corr-dns-first missing — event was suppressed before firing")
+		}
+		if !hasSecond {
+			t.Error("rate-limit key for corr-dns-second missing — static key bug: second event was suppressed")
+		}
+	})
 }
 
 func TestEventRecorder_RecordClusterNetworkPartition(t *testing.T) {
