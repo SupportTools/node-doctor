@@ -171,16 +171,20 @@ func (s *Server) Stop(ctx context.Context) error {
 		close(s.leaseCleanupStopCh)
 	}
 
-	// Release lock before waiting: cleanupExpiredLeases() also acquires s.mu.Lock(),
-	// so holding it here while waiting causes a deadlock if a cleanup tick is in flight.
+	// Capture references before releasing the lock so the blocking operations
+	// below do not need to hold s.mu. In-flight HTTP handlers also acquire
+	// s.mu.Lock(), so holding it across httpServer.Shutdown() would deadlock
+	// if any handler is still running.
+	correlator := s.correlator
+	httpServer := s.httpServer
 	s.mu.Unlock()
-	s.leaseCleanupWg.Wait()
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
-	// Stop correlator
-	if s.correlator != nil {
-		if err := s.correlator.Stop(); err != nil {
+	// Wait for cleanup goroutine: cleanupExpiredLeases() acquires s.mu.Lock(),
+	// so this must happen after releasing the lock above.
+	s.leaseCleanupWg.Wait()
+
+	if correlator != nil {
+		if err := correlator.Stop(); err != nil {
 			log.Printf("[WARN] Failed to stop correlator: %v", err)
 		}
 	}
@@ -193,11 +197,13 @@ func (s *Server) Stop(ctx context.Context) error {
 		defer cancel()
 	}
 
-	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("failed to shutdown server: %w", err)
 	}
 
+	s.mu.Lock()
 	s.ready = false
+	s.mu.Unlock()
 
 	log.Printf("[INFO] Controller server stopped")
 	return nil
