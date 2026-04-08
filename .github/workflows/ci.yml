@@ -122,7 +122,7 @@ jobs:
           cache: true
 
       - name: Run gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.25.0
         with:
           args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
 
@@ -233,7 +233,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Trivy security scan on image
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: ${{ env.REGISTRY }}/node-doctor:${{ steps.tag.outputs.TAG }}
           format: 'sarif'
