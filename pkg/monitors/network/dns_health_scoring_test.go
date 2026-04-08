@@ -178,7 +178,7 @@ func TestComputeHealthScore_StatusThresholds(t *testing.T) {
 	}{
 		{"perfect", 1.0, "healthy"},
 		{"good", 0.9, "healthy"},
-		{"degraded", 0.6, "healthy"}, // composite score ~78 — latency/consistency lift it
+		{"60pct-success-still-healthy", 0.6, "healthy"}, // composite score ~78 — latency/consistency lift it above the degraded threshold
 		{"mostly-failing", 0.2, "degraded"},
 		{"all-failing", 0.0, "unhealthy"},
 	}
