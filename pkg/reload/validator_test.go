@@ -6,6 +6,13 @@ import (
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/types"
+
+	// Blank imports trigger monitor init() registration so isValidMonitorType
+	// returns correct results during tests (mirrors what main.go does at startup).
+	_ "github.com/supporttools/node-doctor/pkg/monitors/custom"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/kubernetes"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/network"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/system"
 )
 
 func TestNewConfigValidator(t *testing.T) {
@@ -155,7 +162,7 @@ func TestValidate_DuplicateMonitorNames(t *testing.T) {
 	// Add monitor with same name (exact duplicate)
 	config.Monitors = append(config.Monitors, types.MonitorConfig{
 		Name:           "test-monitor-2",
-		Type:           "disk-check",
+		Type:           "system-disk",
 		Enabled:        true,
 		Interval:       30 * time.Second,
 		Timeout:        10 * time.Second,
@@ -166,7 +173,7 @@ func TestValidate_DuplicateMonitorNames(t *testing.T) {
 	// Add another monitor with the same name as test-monitor-2
 	config.Monitors = append(config.Monitors, types.MonitorConfig{
 		Name:           "test-monitor-2", // Duplicate name
-		Type:           "disk-check",
+		Type:           "system-disk",
 		Enabled:        true,
 		Interval:       30 * time.Second,
 		Timeout:        10 * time.Second,
@@ -342,7 +349,7 @@ func TestValidate_MaxMonitorsExceeded(t *testing.T) {
 	config.Monitors = append(config.Monitors,
 		types.MonitorConfig{
 			Name:           "extra-monitor-1",
-			Type:           "disk-check",
+			Type:           "system-disk",
 			Enabled:        true,
 			Interval:       30 * time.Second,
 			Timeout:        10 * time.Second,
@@ -351,7 +358,7 @@ func TestValidate_MaxMonitorsExceeded(t *testing.T) {
 		},
 		types.MonitorConfig{
 			Name:           "extra-monitor-2",
-			Type:           "disk-check",
+			Type:           "system-disk",
 			Enabled:        true,
 			Interval:       30 * time.Second,
 			Timeout:        10 * time.Second,
@@ -385,7 +392,7 @@ func TestValidate_CircularDependencies(t *testing.T) {
 	config.Monitors = []types.MonitorConfig{
 		{
 			Name:           "monitor1",
-			Type:           "disk-check",
+			Type:           "system-disk",
 			Enabled:        true,
 			Interval:       30 * time.Second,
 			Timeout:        10 * time.Second,
@@ -395,7 +402,7 @@ func TestValidate_CircularDependencies(t *testing.T) {
 		},
 		{
 			Name:           "monitor2",
-			Type:           "disk-check",
+			Type:           "system-disk",
 			Enabled:        true,
 			Interval:       30 * time.Second,
 			Timeout:        10 * time.Second,
@@ -746,7 +753,7 @@ func createValidConfig() *types.NodeDoctorConfig {
 		Monitors: []types.MonitorConfig{
 			{
 				Name:           "test-monitor",
-				Type:           "disk-check",
+				Type:           "system-disk",
 				Enabled:        true,
 				Interval:       30 * time.Second,
 				Timeout:        10 * time.Second,
@@ -909,7 +916,7 @@ func TestValidate_KubeletMonitorConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := createValidConfig()
-			cfg.Monitors[0].Type = "kubelet"
+			cfg.Monitors[0].Type = "kubernetes-kubelet-check"
 			cfg.Monitors[0].Config = tt.config
 
 			validator := NewConfigValidator()
@@ -1011,7 +1018,7 @@ func TestValidate_CapacityMonitorConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := createValidConfig()
-			cfg.Monitors[0].Type = "capacity"
+			cfg.Monitors[0].Type = "kubernetes-capacity-check"
 			cfg.Monitors[0].Config = tt.config
 
 			validator := NewConfigValidator()
@@ -1111,7 +1118,7 @@ func TestValidate_LogPatternMonitorConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := createValidConfig()
-			cfg.Monitors[0].Type = "log-pattern"
+			cfg.Monitors[0].Type = "custom-logpattern"
 			cfg.Monitors[0].Config = tt.config
 
 			validator := NewConfigValidator()
@@ -1250,7 +1257,7 @@ func TestValidate_ScriptMonitorConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := createValidConfig()
-			cfg.Monitors[0].Type = "script"
+			cfg.Monitors[0].Type = "custom-plugin"
 			cfg.Monitors[0].Config = tt.config
 
 			validator := NewConfigValidator()
@@ -1279,94 +1286,33 @@ func TestValidate_ScriptMonitorConfig(t *testing.T) {
 	}
 }
 
-// TestValidate_PrometheusMonitorConfig tests prometheus monitor validation
+// TestValidate_PrometheusMonitorConfig verifies that the legacy "prometheus"
+// monitor type is rejected by the reload validator because it is not registered
+// in monitors.DefaultRegistry (no prometheus-scrape monitor implementation exists).
+// This is intentional: startup validation via ValidateWithRegistry also rejects it.
 func TestValidate_PrometheusMonitorConfig(t *testing.T) {
-	tests := []struct {
-		name          string
-		config        map[string]interface{}
-		expectedField string
-		expectedMsg   string
-	}{
-		{
-			name: "valid prometheus config",
-			config: map[string]interface{}{
-				"url":   "http://prometheus:9090",
-				"query": "up{job=\"kubernetes\"}",
-			},
-			expectedField: "",
-			expectedMsg:   "",
-		},
-		{
-			name:          "nil config",
-			config:        nil,
-			expectedField: "monitors[0].config",
-			expectedMsg:   "prometheus monitor requires configuration",
-		},
-		{
-			name: "missing url",
-			config: map[string]interface{}{
-				"query": "up{job=\"kubernetes\"}",
-			},
-			expectedField: "monitors[0].config.url",
-			expectedMsg:   "url is required",
-		},
-		{
-			name: "missing query",
-			config: map[string]interface{}{
-				"url": "http://prometheus:9090",
-			},
-			expectedField: "monitors[0].config.query",
-			expectedMsg:   "query is required",
-		},
-		{
-			name: "invalid url type",
-			config: map[string]interface{}{
-				"url":   123,
-				"query": "up",
-			},
-			expectedField: "monitors[0].config.url",
-			expectedMsg:   "url must be a string",
-		},
-		{
-			name: "invalid query type",
-			config: map[string]interface{}{
-				"url":   "http://prometheus:9090",
-				"query": 123,
-			},
-			expectedField: "monitors[0].config.query",
-			expectedMsg:   "query must be a string",
-		},
+	cfg := createValidConfig()
+	cfg.Monitors[0].Type = "prometheus"
+	cfg.Monitors[0].Config = map[string]interface{}{
+		"url":   "http://prometheus:9090",
+		"query": "up{job=\"kubernetes\"}",
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := createValidConfig()
-			cfg.Monitors[0].Type = "prometheus"
-			cfg.Monitors[0].Config = tt.config
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
 
-			validator := NewConfigValidator()
-			result := validator.Validate(cfg)
-
-			if tt.expectedField == "" {
-				if !result.Valid {
-					t.Errorf("Expected valid config, got errors: %v", result.Errors)
-				}
-			} else {
-				if result.Valid {
-					t.Error("Expected validation to fail")
-				}
-				hasExpectedError := false
-				for _, err := range result.Errors {
-					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
-						hasExpectedError = true
-						break
-					}
-				}
-				if !hasExpectedError {
-					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
-				}
-			}
-		})
+	if result.Valid {
+		t.Error("Expected 'prometheus' (unregistered type) to be rejected, got valid")
+	}
+	hasTypeError := false
+	for _, err := range result.Errors {
+		if err.Field == "monitors[0].type" && strings.Contains(err.Message, "prometheus") {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("Expected unsupported-type error for 'prometheus', got: %v", result.Errors)
 	}
 }
 
@@ -1879,5 +1825,31 @@ func TestValidate_InvalidMetadataName(t *testing.T) {
 	}
 	if !hasNameError {
 		t.Errorf("Expected invalid name error, got: %v", result.Errors)
+	}
+}
+
+// TestValidate_ReloadRejectsUnregisteredMonitorType verifies that a config
+// hot-reloaded with an unregistered monitor type is rejected by the validator,
+// consistent with startup validation via ValidateWithRegistry.
+func TestValidate_ReloadRejectsUnregisteredMonitorType(t *testing.T) {
+	cfg := createValidConfig()
+	cfg.Monitors[0].Type = "unregistered-monitor-type"
+
+	validator := NewConfigValidator()
+	result := validator.Validate(cfg)
+
+	if result.Valid {
+		t.Fatal("Expected validation to fail for unregistered monitor type, got valid")
+	}
+
+	hasTypeError := false
+	for _, err := range result.Errors {
+		if err.Field == "monitors[0].type" {
+			hasTypeError = true
+			break
+		}
+	}
+	if !hasTypeError {
+		t.Errorf("Expected monitors[0].type error, got: %v", result.Errors)
 	}
 }

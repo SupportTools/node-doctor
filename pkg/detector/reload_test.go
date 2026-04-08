@@ -36,6 +36,7 @@ func TestStopMonitorByName(t *testing.T) {
 					[]types.Exporter{NewMockExporter("test-exporter")},
 					"/tmp/test-config.yaml",
 					factory,
+					nil,
 				)
 				if err != nil {
 					return nil, err
@@ -65,6 +66,7 @@ func TestStopMonitorByName(t *testing.T) {
 					[]types.Exporter{NewMockExporter("test-exporter")},
 					"/tmp/test-config.yaml",
 					factory,
+					nil,
 				)
 				if err != nil {
 					return nil, err
@@ -117,6 +119,7 @@ func TestEmitReloadEvent(t *testing.T) {
 		[]types.Exporter{NewMockExporter("test-exporter")},
 		"/tmp/test-config.yaml",
 		factory,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create problem detector: %v", err)
@@ -196,6 +199,7 @@ func TestApplyConfigReload(t *testing.T) {
 			[]types.Exporter{NewMockExporter("test-exporter")},
 			"/tmp/test-config.yaml",
 			factory,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create problem detector: %v", err)
@@ -267,6 +271,7 @@ func TestApplyConfigReload(t *testing.T) {
 			[]types.Exporter{NewMockExporter("test-exporter")},
 			"/tmp/test-config.yaml",
 			factory,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create problem detector: %v", err)
@@ -306,6 +311,7 @@ func TestApplyConfigReload(t *testing.T) {
 			[]types.Exporter{NewMockExporter("test-exporter")},
 			"/tmp/test-config.yaml",
 			factory,
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("Failed to create problem detector: %v", err)
@@ -370,6 +376,7 @@ func TestConfigReloadCriticalErrorHandling(t *testing.T) {
 		[]types.Exporter{NewMockExporter("test-exporter")},
 		"/tmp/test-config.yaml",
 		factory,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create problem detector: %v", err)

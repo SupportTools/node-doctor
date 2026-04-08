@@ -64,6 +64,7 @@ func BenchmarkProblemDetector_StartStop(b *testing.B) {
 			[]types.Exporter{exporter},
 			configPath,
 			factory,
+			nil,
 		)
 		if err != nil {
 			b.Fatalf("Failed to create detector: %v", err)
@@ -108,7 +109,7 @@ func BenchmarkProblemDetector_StatusProcessing_SingleMonitor(b *testing.B) {
 		b.Fatalf("Failed to write config file: %v", err)
 	}
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory, nil)
 	if err != nil {
 		b.Fatalf("Failed to create detector: %v", err)
 	}
@@ -179,7 +180,7 @@ func BenchmarkProblemDetector_FanIn_MultiMonitor(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
 
-				detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory)
+				detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory, nil)
 				if err != nil {
 					b.Fatalf("Failed to create detector: %v", err)
 				}
@@ -243,7 +244,7 @@ func BenchmarkProblemDetector_ExportDistribution(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				b.StopTimer()
 
-				detector, err := NewProblemDetector(config, []types.Monitor{}, exporters, configPath, factory)
+				detector, err := NewProblemDetector(config, []types.Monitor{}, exporters, configPath, factory, nil)
 				if err != nil {
 					b.Fatalf("Failed to create detector: %v", err)
 				}
@@ -294,7 +295,7 @@ func BenchmarkProblemDetector_HighThroughput(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 
-		detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory)
+		detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory, nil)
 		if err != nil {
 			b.Fatalf("Failed to create detector: %v", err)
 		}
@@ -336,7 +337,7 @@ func BenchmarkProblemDetector_Parallel(b *testing.B) {
 		b.Fatalf("Failed to write config file: %v", err)
 	}
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, configPath, factory, nil)
 	if err != nil {
 		b.Fatalf("Failed to create detector: %v", err)
 	}

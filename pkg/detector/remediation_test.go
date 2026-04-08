@@ -59,7 +59,7 @@ func buildDetectorWithRemediation(t *testing.T, monitorCfg types.MonitorConfig, 
 	mon := NewMockMonitor(monitorCfg.Name)
 	factory := NewMockMonitorFactory().AddMonitor(monitorCfg.Name, mon)
 
-	pd, err := NewProblemDetector(cfg, nil, []types.Exporter{NewMockExporter("e")}, "config.yaml", factory)
+	pd, err := NewProblemDetector(cfg, nil, []types.Exporter{NewMockExporter("e")}, "config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestEvaluateRemediation_GlobalDisabledSkips(t *testing.T) {
 	factory := NewMockMonitorFactory().AddMonitor("my-monitor", mon)
 	exec := NewMockRemediationExecutor()
 
-	pd, err := NewProblemDetector(cfg, nil, []types.Exporter{NewMockExporter("e")}, "config.yaml", factory)
+	pd, err := NewProblemDetector(cfg, nil, []types.Exporter{NewMockExporter("e")}, "config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector: %v", err)
 	}

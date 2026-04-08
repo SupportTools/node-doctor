@@ -163,20 +163,18 @@ func (v *ConfigValidator) validateMonitor(monitor types.MonitorConfig, prefix st
 		v.addError(result, prefix+".interval", "monitor interval must be at least 5 seconds")
 	}
 
-	// Type-specific validation
+	// Type-specific validation — keys must match the registered type names.
 	switch monitor.Type {
-	case "kubelet":
+	case "kubernetes-kubelet-check":
 		v.validateKubeletConfig(monitor, prefix, result)
-	case "capacity":
+	case "kubernetes-capacity-check":
 		v.validateCapacityConfig(monitor, prefix, result)
-	case "disk-check":
+	case "system-disk":
 		v.validateDiskCheckConfig(monitor, prefix, result)
-	case "log-pattern":
+	case "custom-logpattern":
 		v.validateLogPatternConfig(monitor, prefix, result)
-	case "script":
+	case "custom-plugin":
 		v.validateScriptConfig(monitor, prefix, result)
-	case "prometheus":
-		v.validatePrometheusConfig(monitor, prefix, result)
 	}
 
 	// Validate remediation if present
@@ -351,34 +349,6 @@ func (v *ConfigValidator) validateScriptConfig(monitor types.MonitorConfig, pref
 				v.addError(result, prefix+".config.timeout", "invalid timeout duration format")
 			}
 		}
-	}
-}
-
-// validatePrometheusConfig validates Prometheus monitor configuration
-func (v *ConfigValidator) validatePrometheusConfig(monitor types.MonitorConfig, prefix string, result *ValidationResult) {
-	if monitor.Config == nil {
-		v.addError(result, prefix+".config", "prometheus monitor requires configuration")
-		return
-	}
-
-	config := monitor.Config
-
-	// Validate URL
-	if url, exists := config["url"]; exists {
-		if _, ok := url.(string); !ok {
-			v.addError(result, prefix+".config.url", "url must be a string")
-		}
-	} else {
-		v.addError(result, prefix+".config.url", "url is required")
-	}
-
-	// Validate query
-	if query, exists := config["query"]; exists {
-		if _, ok := query.(string); !ok {
-			v.addError(result, prefix+".config.query", "query must be a string")
-		}
-	} else {
-		v.addError(result, prefix+".config.query", "query is required")
 	}
 }
 
@@ -630,17 +600,11 @@ func (v *ConfigValidator) isValidKubernetesName(name string) bool {
 }
 
 func (v *ConfigValidator) isValidMonitorType(monitorType string) bool {
-	// Use the monitor registry to validate types dynamically
+	// Use the monitor registry to validate types dynamically.
+	// This mirrors startup validation via ValidateWithRegistry so both paths
+	// accept exactly the same set of registered monitor types.
 	registeredTypes := monitors.GetRegisteredTypes()
 	for _, validType := range registeredTypes {
-		if monitorType == validType {
-			return true
-		}
-	}
-
-	// Legacy monitor types for backward compatibility
-	legacyTypes := []string{"kubelet", "capacity", "disk-check", "log-pattern", "script", "prometheus"}
-	for _, validType := range legacyTypes {
 		if monitorType == validType {
 			return true
 		}

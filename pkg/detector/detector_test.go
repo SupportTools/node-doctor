@@ -3,6 +3,7 @@ package detector
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestNewProblemDetector(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			detector, err := NewProblemDetector(tt.config, tt.monitors, tt.exporters, tt.configPath, tt.factory)
+			detector, err := NewProblemDetector(tt.config, tt.monitors, tt.exporters, tt.configPath, tt.factory, nil)
 
 			if tt.wantError {
 				if err == nil {
@@ -86,6 +87,71 @@ func TestNewProblemDetector(t *testing.T) {
 	}
 }
 
+// TestNewProblemDetector_WithRegistry verifies that registry-aware validation rejects
+// configs that reference monitor types not present in the provided registry.
+func TestNewProblemDetector_WithRegistry(t *testing.T) {
+	helper := NewTestHelper()
+	factory := NewMockMonitorFactory()
+
+	t.Run("unknown monitor type rejected when registry provided", func(t *testing.T) {
+		config := helper.CreateTestConfig() // has monitor type "test"
+		// Registry that doesn't know "test"
+		registry := newMockRegistry("cpu-check", "disk-check")
+		_, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("exp")},
+			"/tmp/test-config.yaml",
+			factory,
+			registry,
+		)
+		if err == nil {
+			t.Fatal("expected error for unknown monitor type, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown monitor type") {
+			t.Errorf("error should mention unknown monitor type, got: %v", err)
+		}
+	})
+
+	t.Run("known monitor type accepted when registry provided", func(t *testing.T) {
+		config := helper.CreateTestConfig() // has monitor type "test"
+		// Registry that knows "test"
+		registry := newMockRegistry("test")
+		det, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("exp")},
+			"/tmp/test-config.yaml",
+			factory,
+			registry,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error with registered type: %v", err)
+		}
+		if det == nil {
+			t.Fatal("expected non-nil detector")
+		}
+	})
+
+	t.Run("nil registry skips type check", func(t *testing.T) {
+		config := helper.CreateTestConfig() // has monitor type "test"
+		det, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("exp")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("unexpected error with nil registry: %v", err)
+		}
+		if det == nil {
+			t.Fatal("expected non-nil detector")
+		}
+	})
+}
+
 func TestProblemDetector_AllMonitorsFail(t *testing.T) {
 	helper := NewTestHelper()
 	config := helper.CreateTestConfig()
@@ -95,7 +161,7 @@ func TestProblemDetector_AllMonitorsFail(t *testing.T) {
 		return NewMockMonitor(config.Name).SetStartError(fmt.Errorf("failed to start")), nil
 	})
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -137,7 +203,7 @@ func TestProblemDetector_SomeMonitorsFail(t *testing.T) {
 		return NewMockMonitor(config.Name).AddStatusUpdate(helper.CreateTestStatus(config.Name)), nil
 	})
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("test")}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -173,7 +239,7 @@ func TestProblemDetector_StatusProcessing(t *testing.T) {
 	})
 
 	exporter := NewMockExporter("test-exporter")
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -216,7 +282,7 @@ func TestExportDistribution(t *testing.T) {
 		return NewMockMonitor(config.Name).AddStatusUpdate(helper.CreateTestStatus(config.Name)), nil
 	})
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter1, exporter2, exporter3}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter1, exporter2, exporter3}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -249,7 +315,7 @@ func TestGracefulShutdown(t *testing.T) {
 	factory := NewMockMonitorFactory()
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -302,7 +368,7 @@ func TestShutdownTimeout(t *testing.T) {
 		return NewMockMonitor(config.Name).AddStatusUpdate(helper.CreateTestStatus(config.Name)), nil
 	})
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -346,7 +412,7 @@ func TestConcurrencySafety(t *testing.T) {
 
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -388,7 +454,7 @@ func TestChannelOverflow(t *testing.T) {
 
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -427,7 +493,7 @@ func TestExportFailureIsolation(t *testing.T) {
 		return NewMockMonitor(config.Name).AddStatusUpdate(status), nil
 	})
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failStatusExporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failStatusExporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -469,7 +535,7 @@ func TestMonitorChannelClosure(t *testing.T) {
 
 	exporter := NewMockExporter("test-exporter")
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{exporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -514,7 +580,7 @@ func TestNoDuplicateMonitorStarts(t *testing.T) {
 	})
 
 	// Pass no monitors directly — factory is the sole startup path (production behaviour).
-	det, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("exp")}, "/tmp/test-config.yaml", factory)
+	det, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{NewMockExporter("exp")}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}
@@ -560,7 +626,7 @@ func TestStatisticsTracking(t *testing.T) {
 	successExporter := NewMockExporter("success-exp")
 	failExporter := NewMockExporter("fail-exp").SetStatusExportError(fmt.Errorf("export failed"))
 
-	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failExporter}, "/tmp/test-config.yaml", factory)
+	detector, err := NewProblemDetector(config, []types.Monitor{}, []types.Exporter{successExporter, failExporter}, "/tmp/test-config.yaml", factory, nil)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)
 	}

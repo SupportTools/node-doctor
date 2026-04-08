@@ -207,6 +207,7 @@ func TestProblemDetector_Run(t *testing.T) {
 		[]types.Exporter{NewMockExporter("test")},
 		"/tmp/test-config.yaml",
 		factory,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("NewProblemDetector() error = %v", err)

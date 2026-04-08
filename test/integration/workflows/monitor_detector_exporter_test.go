@@ -53,7 +53,7 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 	configPath := test.TempConfigFile(t, "integration-test")
 
 	// Create problem detector (with config file for reload support)
-	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil)
+	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil, nil)
 	test.AssertNoError(t, err, "Failed to create problem detector")
 
 	// Start detector in background
@@ -220,6 +220,7 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 		[]types.Exporter{mockExporter},
 		configPath, // use temp config file for reload support
 		nil,        // no monitor factory in tests
+		nil,        // no registry validator in tests
 	)
 	test.AssertNoError(t, err, "Failed to create problem detector")
 
@@ -330,7 +331,7 @@ func TestStatusExportFlow(t *testing.T) {
 	// Create temp config file for test
 	configPath := test.TempConfigFile(t, "status-export-test")
 
-	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil)
+	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, []types.Exporter{mockExporter}, configPath, nil, nil)
 	test.AssertNoError(t, err)
 
 	var wg sync.WaitGroup

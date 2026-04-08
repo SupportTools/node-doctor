@@ -63,7 +63,7 @@ func TestConcurrentMonitorStatusUpdates(t *testing.T) {
 	configPath := test.TempConfigFile(t, "concurrent-test")
 
 	// Create detector (with config file for reload support)
-	pd, err := detector.NewProblemDetector(config, monitors, []types.Exporter{mockExporter}, configPath, nil)
+	pd, err := detector.NewProblemDetector(config, monitors, []types.Exporter{mockExporter}, configPath, nil, nil)
 	test.AssertNoError(t, err)
 
 	// Start detector
@@ -282,7 +282,7 @@ func TestConcurrentExporterOperations(t *testing.T) {
 	configPath := test.TempConfigFile(t, "multi-exporter-test")
 
 	// Create detector with multiple exporters (with config file for reload support)
-	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, exporters, configPath, nil)
+	pd, err := detector.NewProblemDetector(config, []types.Monitor{mockMonitor}, exporters, configPath, nil, nil)
 	test.AssertNoError(t, err)
 
 	// Start detector
@@ -375,6 +375,7 @@ func TestRaceConditionDetection(t *testing.T) {
 		[]types.Exporter{exporter},
 		configPath, // use temp config file for reload support
 		nil,        // no monitor factory in tests
+		nil,        // no registry validator in tests
 	)
 	test.AssertNoError(t, err)
 

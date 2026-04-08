@@ -122,8 +122,11 @@ type RemediationExecutor interface {
 	IsDryRun() bool
 }
 
-// NewProblemDetector creates a new problem detector with the given configuration
-func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor, exporters []types.Exporter, configFilePath string, monitorFactory MonitorFactory) (*ProblemDetector, error) {
+// NewProblemDetector creates a new problem detector with the given configuration.
+// registry is an optional MonitorRegistryValidator; when non-nil, startup validation
+// also checks that all configured monitor types are registered before the detector
+// starts. Pass nil to skip registry type checks (useful in tests with mock types).
+func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor, exporters []types.Exporter, configFilePath string, monitorFactory MonitorFactory, registry types.MonitorRegistryValidator) (*ProblemDetector, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -132,8 +135,10 @@ func NewProblemDetector(config *types.NodeDoctorConfig, monitors []types.Monitor
 		return nil, fmt.Errorf("config file path cannot be empty")
 	}
 
-	// Validate configuration
-	if err := config.Validate(); err != nil {
+	// Registry-aware validation: checks monitor types against the registry and
+	// detects circular monitor dependencies, in addition to basic field validation.
+	// registry may be nil in tests; ValidateWithRegistry handles nil gracefully.
+	if err := config.ValidateWithRegistry(registry); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 

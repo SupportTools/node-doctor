@@ -443,3 +443,28 @@ func (h *TestHelper) CreateTestStatus(source string) *types.Status {
 func (h *TestHelper) CreateTestProblem(problemType, source string, severity types.ProblemSeverity) *types.Problem {
 	return types.NewProblem(problemType, source, severity, "Test problem message")
 }
+
+// mockRegistryValidator is a test implementation of types.MonitorRegistryValidator.
+type mockRegistryValidator struct {
+	registered map[string]bool
+}
+
+func newMockRegistry(types ...string) *mockRegistryValidator {
+	r := &mockRegistryValidator{registered: make(map[string]bool)}
+	for _, t := range types {
+		r.registered[t] = true
+	}
+	return r
+}
+
+func (m *mockRegistryValidator) IsRegistered(monitorType string) bool {
+	return m.registered[monitorType]
+}
+
+func (m *mockRegistryValidator) GetRegisteredTypes() []string {
+	out := make([]string, 0, len(m.registered))
+	for t := range m.registered {
+		out = append(out, t)
+	}
+	return out
+}

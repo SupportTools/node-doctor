@@ -12,6 +12,13 @@ import (
 	"github.com/supporttools/node-doctor/pkg/reload"
 	"github.com/supporttools/node-doctor/pkg/types"
 	"gopkg.in/yaml.v2"
+
+	// Blank imports trigger monitor init() registration so the reload validator
+	// accepts registered type names (mirrors startup behaviour in main.go).
+	_ "github.com/supporttools/node-doctor/pkg/monitors/custom"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/kubernetes"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/network"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/system"
 )
 
 // ReloadTestHelper provides utilities for integration testing config reload functionality
@@ -54,6 +61,7 @@ func (h *ReloadTestHelper) Setup(t *testing.T, initialConfig *types.NodeDoctorCo
 		[]types.Exporter{NewMockExporter("test-exporter")},
 		h.configFile,
 		h.factory,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Failed to create problem detector: %v", err)
@@ -235,8 +243,8 @@ func TestConfigReloadEndToEnd(t *testing.T) {
 
 	// Setup initial config with 2 monitors
 	initialMonitors := []types.MonitorConfig{
-		{Name: "monitor-1", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
-		{Name: "monitor-2", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "monitor-1", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "monitor-2", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	initialConfig := CreateTestConfigWithMonitors(initialMonitors)
 
@@ -259,8 +267,8 @@ func TestConfigReloadEndToEnd(t *testing.T) {
 
 	// Update config: add 1 monitor, remove 1 monitor, modify 1 monitor
 	newMonitors := []types.MonitorConfig{
-		{Name: "monitor-2", Type: "kubelet", Enabled: true, Interval: 60 * time.Second, Timeout: 10 * time.Second}, // Modified interval
-		{Name: "monitor-3", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second}, // Added
+		{Name: "monitor-2", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 60 * time.Second, Timeout: 10 * time.Second}, // Modified interval
+		{Name: "monitor-3", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second}, // Added
 		// monitor-1 is removed
 	}
 	newConfig := CreateTestConfigWithMonitors(newMonitors)
@@ -332,7 +340,7 @@ func TestConfigReloadWithValidationFailure(t *testing.T) {
 
 	// Setup initial valid config
 	initialMonitors := []types.MonitorConfig{
-		{Name: "monitor-1", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "monitor-1", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	initialConfig := CreateTestConfigWithMonitors(initialMonitors)
 
@@ -361,11 +369,11 @@ monitors:
     enabled: true
     interval: "30s"
   - name: "duplicate"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
   - name: "duplicate"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
@@ -422,7 +430,7 @@ func TestConfigReloadConcurrentSafety(t *testing.T) {
 
 	// Setup initial config
 	initialMonitors := []types.MonitorConfig{
-		{Name: "monitor-1", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "monitor-1", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	initialConfig := CreateTestConfigWithMonitors(initialMonitors)
 
@@ -437,7 +445,7 @@ func TestConfigReloadConcurrentSafety(t *testing.T) {
 
 	// Create new valid config
 	newMonitors := []types.MonitorConfig{
-		{Name: "monitor-2", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "monitor-2", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	newConfig := CreateTestConfigWithMonitors(newMonitors)
 	helper.UpdateConfig(t, newConfig)
@@ -500,7 +508,7 @@ func TestConfigReloadExporterUpdates(t *testing.T) {
 
 	// Setup initial config with HTTP exporter
 	initialMonitors := []types.MonitorConfig{
-		{Name: "monitor-1", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "monitor-1", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	initialConfig := CreateTestConfigWithMonitors(initialMonitors)
 	initialConfig.Exporters.HTTP.Webhooks[0].URL = "http://localhost:8080/webhook1"
@@ -569,9 +577,9 @@ func TestConfigReloadMonitorLifecycle(t *testing.T) {
 
 	// Setup initial config with 3 monitors
 	initialMonitors := []types.MonitorConfig{
-		{Name: "keep-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
-		{Name: "modify-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
-		{Name: "remove-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "keep-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "modify-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "remove-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	initialConfig := CreateTestConfigWithMonitors(initialMonitors)
 
@@ -591,9 +599,9 @@ func TestConfigReloadMonitorLifecycle(t *testing.T) {
 
 	// Update config: remove 1, modify 1, add 1
 	newMonitors := []types.MonitorConfig{
-		{Name: "keep-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
-		{Name: "modify-monitor", Type: "kubelet", Enabled: true, Interval: 60 * time.Second, Timeout: 10 * time.Second}, // Modified
-		{Name: "new-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},    // Added
+		{Name: "keep-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "modify-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 60 * time.Second, Timeout: 10 * time.Second}, // Modified
+		{Name: "new-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},    // Added
 		// remove-monitor is removed
 	}
 	newConfig := CreateTestConfigWithMonitors(newMonitors)
@@ -655,7 +663,7 @@ func TestConfigReloadPartialFailureRecovery(t *testing.T) {
 
 	// Setup initial config
 	initialMonitors := []types.MonitorConfig{
-		{Name: "working-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "working-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	initialConfig := CreateTestConfigWithMonitors(initialMonitors)
 
@@ -688,8 +696,8 @@ func TestConfigReloadPartialFailureRecovery(t *testing.T) {
 
 	// Update config to add a monitor that will fail to create
 	newMonitors := []types.MonitorConfig{
-		{Name: "working-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
-		{Name: "failing-monitor", Type: "kubelet", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "working-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
+		{Name: "failing-monitor", Type: "kubernetes-kubelet-check", Enabled: true, Interval: 30 * time.Second, Timeout: 10 * time.Second},
 	}
 	newConfig := CreateTestConfigWithMonitors(newMonitors)
 

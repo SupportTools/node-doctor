@@ -158,7 +158,7 @@ func main() {
 		log.Fatalf("Failed to apply configuration defaults: %v", err)
 	}
 
-	if err := config.Validate(); err != nil {
+	if err := config.ValidateWithRegistry(monitors.DefaultRegistry); err != nil {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func main() {
 	// Monitors are created by the monitorFactory during detector.Start() — do not pre-create them here.
 	log.Printf("[INFO] Creating detector...")
 
-	det, err := detector.NewProblemDetector(config, nil, exporterInterfaces, *configFile, monitorFactory)
+	det, err := detector.NewProblemDetector(config, nil, exporterInterfaces, *configFile, monitorFactory, monitors.DefaultRegistry)
 	if err != nil {
 		log.Fatalf("Failed to create detector: %v", err)
 	}

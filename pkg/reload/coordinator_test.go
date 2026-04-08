@@ -119,7 +119,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: test-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s
@@ -146,7 +146,7 @@ remediation:
 		Monitors: []types.MonitorConfig{
 			{
 				Name:     "test-monitor",
-				Type:     "kubelet",
+				Type:     "kubernetes-kubelet-check",
 				Enabled:  true,
 				Interval: 30 * time.Second,
 				Timeout:  10 * time.Second,
@@ -212,7 +212,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: new-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s
@@ -468,7 +468,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: new-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s
@@ -545,7 +545,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: test-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s
@@ -572,7 +572,7 @@ remediation:
 		Monitors: []types.MonitorConfig{
 			{
 				Name:     "test-monitor",
-				Type:     "kubelet",
+				Type:     "kubernetes-kubelet-check",
 				Enabled:  true,
 				Interval: 30 * time.Second,
 				Timeout:  10 * time.Second,
@@ -650,7 +650,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: test-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s
@@ -776,7 +776,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: test-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s
@@ -886,7 +886,7 @@ settings:
   nodeName: test-node
 monitors:
   - name: test-monitor
-    type: kubelet
+    type: kubernetes-kubelet-check
     enabled: true
     interval: 30s
     timeout: 10s

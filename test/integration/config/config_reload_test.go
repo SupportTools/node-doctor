@@ -31,6 +31,13 @@ import (
 	"github.com/supporttools/node-doctor/pkg/types"
 	"github.com/supporttools/node-doctor/pkg/util"
 	"github.com/supporttools/node-doctor/test"
+
+	// Blank imports trigger monitor init() registration so the reload validator
+	// accepts registered type names (mirrors startup behaviour in main.go).
+	_ "github.com/supporttools/node-doctor/pkg/monitors/custom"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/kubernetes"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/network"
+	_ "github.com/supporttools/node-doctor/pkg/monitors/system"
 )
 
 // testReloadCallback is a helper for capturing reload events
@@ -134,7 +141,7 @@ settings:
   logLevel: "info"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
     timeout: "10s"
@@ -190,12 +197,12 @@ settings:
   logLevel: "info"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
     timeout: "10s"
   - name: "monitor-2"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "60s"
     timeout: "15s"
@@ -245,11 +252,11 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
   - name: "monitor-2"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "60s"
 exporters:
@@ -296,7 +303,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
@@ -341,7 +348,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
     timeout: "10s"
@@ -389,7 +396,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "60s"
     timeout: "15s"
@@ -436,7 +443,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
@@ -517,7 +524,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
@@ -567,7 +574,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "` + string(rune('0'+interval/10)) + `0s"
 exporters:
@@ -611,7 +618,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
@@ -658,7 +665,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
@@ -700,12 +707,12 @@ func TestConfigDiff_ComputeChanges(t *testing.T) {
 			name: "no changes",
 			oldConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
 				},
 			},
 			newConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
 				},
 			},
 			expectedAdded:    0,
@@ -717,13 +724,13 @@ func TestConfigDiff_ComputeChanges(t *testing.T) {
 			name: "monitor added",
 			oldConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
 				},
 			},
 			newConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
-					{Name: "mon2", Type: "kubelet", Interval: 60 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
+					{Name: "mon2", Type: "kubernetes-kubelet-check", Interval: 60 * time.Second},
 				},
 			},
 			expectedAdded:    1,
@@ -735,13 +742,13 @@ func TestConfigDiff_ComputeChanges(t *testing.T) {
 			name: "monitor removed",
 			oldConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
-					{Name: "mon2", Type: "kubelet", Interval: 60 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
+					{Name: "mon2", Type: "kubernetes-kubelet-check", Interval: 60 * time.Second},
 				},
 			},
 			newConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
 				},
 			},
 			expectedAdded:    0,
@@ -753,12 +760,12 @@ func TestConfigDiff_ComputeChanges(t *testing.T) {
 			name: "monitor modified",
 			oldConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
 				},
 			},
 			newConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 60 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 60 * time.Second},
 				},
 			},
 			expectedAdded:    0,
@@ -770,16 +777,16 @@ func TestConfigDiff_ComputeChanges(t *testing.T) {
 			name: "complex changes",
 			oldConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 30 * time.Second},
-					{Name: "mon2", Type: "kubelet", Interval: 60 * time.Second},
-					{Name: "mon3", Type: "kubelet", Interval: 90 * time.Second},
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 30 * time.Second},
+					{Name: "mon2", Type: "kubernetes-kubelet-check", Interval: 60 * time.Second},
+					{Name: "mon3", Type: "kubernetes-kubelet-check", Interval: 90 * time.Second},
 				},
 			},
 			newConfig: &types.NodeDoctorConfig{
 				Monitors: []types.MonitorConfig{
-					{Name: "mon1", Type: "kubelet", Interval: 45 * time.Second},  // modified
-					{Name: "mon3", Type: "kubelet", Interval: 90 * time.Second},  // unchanged
-					{Name: "mon4", Type: "kubelet", Interval: 120 * time.Second}, // added
+					{Name: "mon1", Type: "kubernetes-kubelet-check", Interval: 45 * time.Second},  // modified
+					{Name: "mon3", Type: "kubernetes-kubelet-check", Interval: 90 * time.Second},  // unchanged
+					{Name: "mon4", Type: "kubernetes-kubelet-check", Interval: 120 * time.Second}, // added
 				},
 			},
 			expectedAdded:    1,
@@ -846,7 +853,7 @@ settings:
   nodeName: "test-node"
 monitors:
   - name: "monitor-1"
-    type: "kubelet"
+    type: "kubernetes-kubelet-check"
     enabled: true
     interval: "30s"
 exporters:
