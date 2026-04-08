@@ -15,9 +15,10 @@ import (
 )
 
 func TestMetricsEndpoint(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9106,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -35,8 +36,10 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	// Wait for server to start
-	time.Sleep(200 * time.Millisecond)
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
 
 	// Test metrics endpoint
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
@@ -79,9 +82,10 @@ func TestMetricsEndpoint(t *testing.T) {
 }
 
 func TestHealthEndpoint(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9107,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -99,8 +103,10 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	// Wait for server to start
-	time.Sleep(200 * time.Millisecond)
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
 
 	// Test health endpoint
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
@@ -137,9 +143,10 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestPrometheusFormat(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9108,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -156,6 +163,11 @@ func TestPrometheusFormat(t *testing.T) {
 		t.Fatalf("failed to start exporter: %v", err)
 	}
 	defer exporter.Stop()
+
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
 
 	// Export some data to create metrics
 	status := &types.Status{
@@ -189,9 +201,6 @@ func TestPrometheusFormat(t *testing.T) {
 		Message:    "Test problem",
 	}
 	exporter.ExportProblem(ctx, problem)
-
-	// Wait for metrics to be updated
-	time.Sleep(100 * time.Millisecond)
 
 	// Get metrics
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
@@ -257,9 +266,10 @@ func TestPrometheusFormat(t *testing.T) {
 }
 
 func TestConditionStatusGauge(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9112,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -277,6 +287,11 @@ func TestConditionStatusGauge(t *testing.T) {
 	}
 	defer exporter.Stop()
 
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
+
 	// Export status with condition True
 	status := &types.Status{
 		Source:    "test",
@@ -292,8 +307,6 @@ func TestConditionStatusGauge(t *testing.T) {
 		},
 	}
 	exporter.ExportStatus(ctx, status)
-
-	time.Sleep(100 * time.Millisecond)
 
 	// Scrape and verify gauge == 1
 	body := scrapeMetrics(t, config.Port, config.Path)
@@ -319,8 +332,6 @@ func TestConditionStatusGauge(t *testing.T) {
 		},
 	}
 	exporter.ExportStatus(ctx, status2)
-
-	time.Sleep(100 * time.Millisecond)
 
 	// Scrape and verify gauge == 0
 	body = scrapeMetrics(t, config.Port, config.Path)
@@ -360,9 +371,10 @@ func containsMetricWithValue(body, metricName, conditionType, value string) bool
 }
 
 func TestConcurrentScrapes(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9109,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -380,8 +392,10 @@ func TestConcurrentScrapes(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	// Wait for server to start
-	time.Sleep(200 * time.Millisecond)
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
 
 	// Run concurrent scrapes
 	const numGoroutines = 10
@@ -430,9 +444,10 @@ func TestConcurrentScrapes(t *testing.T) {
 }
 
 func TestServerShutdown(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9110,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -449,8 +464,10 @@ func TestServerShutdown(t *testing.T) {
 		t.Fatalf("failed to start exporter: %v", err)
 	}
 
-	// Wait for server to start
-	time.Sleep(200 * time.Millisecond)
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
 
 	// Verify server is running
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
@@ -459,14 +476,16 @@ func TestServerShutdown(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Stop the exporter
+	// Stop the exporter — server.Shutdown is synchronous
 	err = exporter.Stop()
 	if err != nil {
 		t.Errorf("failed to stop exporter: %v", err)
 	}
 
-	// Wait for shutdown
-	time.Sleep(500 * time.Millisecond)
+	// Poll until port is closed instead of sleeping a fixed duration
+	if err := waitForPortClosed(addr, 5*time.Second); err != nil {
+		t.Fatalf("server port never closed after stop: %v", err)
+	}
 
 	// Verify server is no longer running
 	_, err = http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
@@ -476,9 +495,10 @@ func TestServerShutdown(t *testing.T) {
 }
 
 func TestMetricValues(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9111,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -495,6 +515,11 @@ func TestMetricValues(t *testing.T) {
 		t.Fatalf("failed to start exporter: %v", err)
 	}
 	defer exporter.Stop()
+
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
 
 	// Export multiple status updates
 	for i := 0; i < 3; i++ {
@@ -516,9 +541,6 @@ func TestMetricValues(t *testing.T) {
 		}
 		exporter.ExportProblem(ctx, problem)
 	}
-
-	// Wait for metrics to be updated
-	time.Sleep(100 * time.Millisecond)
 
 	// Get metrics
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))

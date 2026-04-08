@@ -5,33 +5,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/supporttools/node-doctor/pkg/types"
 )
-
-// waitForServerReady polls until the server is accepting connections
-func waitForServerReady(addr string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-			if err == nil {
-				conn.Close()
-				return nil
-			}
-		}
-	}
-}
 
 func TestNewPrometheusExporter(t *testing.T) {
 	tests := []struct {
@@ -150,9 +129,10 @@ func TestNewPrometheusExporter(t *testing.T) {
 }
 
 func TestPrometheusExporterLifecycle(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9102, // Use different port for each test
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -171,8 +151,12 @@ func TestPrometheusExporterLifecycle(t *testing.T) {
 		t.Fatalf("failed to start exporter: %v", err)
 	}
 
-	// Verify server is running
-	time.Sleep(200 * time.Millisecond) // Give server time to start
+	// Wait for server to be ready before making requests
+	addr := fmt.Sprintf("localhost:%d", config.Port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
+
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err != nil {
 		t.Fatalf("failed to connect to metrics server: %v", err)
@@ -203,9 +187,10 @@ func TestPrometheusExporterLifecycle(t *testing.T) {
 }
 
 func TestExportStatus(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9103,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -271,9 +256,10 @@ func TestExportStatus(t *testing.T) {
 }
 
 func TestExportProblem(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9104,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -329,9 +315,10 @@ func TestExportProblem(t *testing.T) {
 }
 
 func TestConcurrentExports(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9105,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -353,10 +340,13 @@ func TestConcurrentExports(t *testing.T) {
 	const numGoroutines = 10
 	const numOperations = 10
 
+	var wg sync.WaitGroup
 	errCh := make(chan error, numGoroutines*numOperations*2)
 
 	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
 		go func(id int) {
+			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				// Export status
 				status := &types.Status{
@@ -390,21 +380,11 @@ func TestConcurrentExports(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for all operations and check for errors
-	timeout := time.After(10 * time.Second)
-	expectedOps := numGoroutines * numOperations * 2
-	completedOps := 0
-
-	for completedOps < expectedOps {
-		select {
-		case err := <-errCh:
-			t.Errorf("concurrent operation failed: %v", err)
-		case <-timeout:
-			t.Fatalf("timeout waiting for concurrent operations")
-		default:
-			completedOps++
-			time.Sleep(10 * time.Millisecond)
-		}
+	// Wait for all goroutines to finish, then collect any errors
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("concurrent operation failed: %v", err)
 	}
 }
 
@@ -424,9 +404,10 @@ func contains(s, substr string) bool {
 }
 
 func TestIsReloadable(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9106,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -444,9 +425,12 @@ func TestIsReloadable(t *testing.T) {
 }
 
 func TestReload(t *testing.T) {
+	port1 := freePort(t)
+	port2 := freePort(t)
+
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9107,
+		Port:      port1,
 		Path:      "/metrics",
 		Namespace: "test",
 		Subsystem: "sub1",
@@ -503,7 +487,7 @@ func TestReload(t *testing.T) {
 			name: "same config - no restart needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      9107,
+				Port:      port1,
 				Path:      "/metrics",
 				Namespace: "test",
 				Subsystem: "sub1",
@@ -515,7 +499,7 @@ func TestReload(t *testing.T) {
 			name: "different port - restart needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      9108,
+				Port:      port2,
 				Path:      "/metrics",
 				Namespace: "test",
 				Subsystem: "sub1",
@@ -526,7 +510,7 @@ func TestReload(t *testing.T) {
 			name: "different path - restart needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      9108,
+				Port:      port2,
 				Path:      "/custom-metrics",
 				Namespace: "test",
 			},
@@ -536,7 +520,7 @@ func TestReload(t *testing.T) {
 			name: "different namespace - metrics recreation needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      9108,
+				Port:      port2,
 				Path:      "/custom-metrics",
 				Namespace: "new_namespace",
 			},
@@ -546,7 +530,7 @@ func TestReload(t *testing.T) {
 			name: "different subsystem - metrics recreation needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      9108,
+				Port:      port2,
 				Path:      "/custom-metrics",
 				Namespace: "new_namespace",
 				Subsystem: "new_subsystem",
@@ -557,7 +541,7 @@ func TestReload(t *testing.T) {
 			name: "different labels - metrics recreation needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      9108,
+				Port:      port2,
 				Path:      "/custom-metrics",
 				Namespace: "new_namespace",
 				Labels:    map[string]string{"env": "prod", "region": "us-east"},
@@ -587,9 +571,12 @@ func TestReload(t *testing.T) {
 }
 
 func TestReloadNotStarted(t *testing.T) {
+	port1 := freePort(t)
+	port2 := freePort(t)
+
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9109,
+		Port:      port1,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -603,7 +590,7 @@ func TestReloadNotStarted(t *testing.T) {
 	// Reload without starting - should work but not restart server
 	newConfig := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9110,
+		Port:      port2,
 		Path:      "/new-metrics",
 		Namespace: "new_test",
 	}
@@ -615,9 +602,10 @@ func TestReloadNotStarted(t *testing.T) {
 }
 
 func TestNeedsServerRestart(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9111,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -710,9 +698,10 @@ func TestNeedsServerRestart(t *testing.T) {
 }
 
 func TestNeedsMetricsRecreation(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9112,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -1070,9 +1059,10 @@ func TestShutdownServer(t *testing.T) {
 	}
 
 	// Test shutdown of valid server
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9113,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
@@ -1089,7 +1079,7 @@ func TestShutdownServer(t *testing.T) {
 		t.Fatalf("failed to start exporter: %v", err)
 	}
 
-	// Wait for server to be ready using proper readiness check
+	// Wait for server to be ready using deterministic readiness check
 	addr := fmt.Sprintf("localhost:%d", config.Port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
@@ -1102,14 +1092,18 @@ func TestShutdownServer(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Test normal shutdown
+	// Test normal shutdown — server.Shutdown is synchronous so the port
+	// should be closed by the time shutdownServer returns.
 	err = shutdownServer(exporter.server, 5*time.Second)
 	if err != nil {
 		t.Errorf("unexpected error during shutdown: %v", err)
 	}
 
-	// Verify server is stopped - use short timeout with retry
-	time.Sleep(100 * time.Millisecond)
+	// Poll until the port is fully closed instead of relying on a fixed sleep
+	if err := waitForPortClosed(addr, 5*time.Second); err != nil {
+		t.Fatalf("server port never closed after shutdown: %v", err)
+	}
+
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	_, err = client.Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
 	if err == nil {
@@ -1118,9 +1112,10 @@ func TestShutdownServer(t *testing.T) {
 }
 
 func TestExportProblemBeforeStart(t *testing.T) {
+	port := freePort(t)
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      9114,
+		Port:      port,
 		Path:      "/metrics",
 		Namespace: "test",
 	}
