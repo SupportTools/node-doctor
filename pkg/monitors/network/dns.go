@@ -523,6 +523,9 @@ type DNSMonitorConfig struct {
 
 	// PredictiveAlerting configures early-warning breach prediction using linear regression.
 	PredictiveAlerting *PredictiveAlertConfig `json:"predictiveAlerting"`
+
+	// TrendDetection configures statistical trend detection (Welford z-score, OLS slope, flap detection).
+	TrendDetection *TrendDetectionConfig `json:"trendDetection"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -553,6 +556,12 @@ type DNSMonitor struct {
 	// correlationEngine analyses failure patterns across nameservers and domains.
 	// Nil when correlation is disabled.
 	correlationEngine *CorrelationEngine
+
+	// clusterTrendDetector and externalTrendDetector accumulate per-cycle success rates
+	// and surface DNSDegrading, DNSAnomalous, and DNSFlapping conditions.
+	// Nil when TrendDetection is disabled.
+	clusterTrendDetector  *TrendDetector
+	externalTrendDetector *TrendDetector
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
@@ -617,6 +626,12 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 	// Initialise the correlation engine if enabled.
 	if dnsConfig.Correlation != nil && dnsConfig.Correlation.Enabled {
 		monitor.correlationEngine = newCorrelationEngine(dnsConfig.Correlation)
+	}
+
+	// Initialise trend detectors if enabled.
+	if dnsConfig.TrendDetection != nil && dnsConfig.TrendDetection.Enabled {
+		monitor.clusterTrendDetector = NewTrendDetector(dnsConfig.TrendDetection)
+		monitor.externalTrendDetector = NewTrendDetector(dnsConfig.TrendDetection)
 	}
 
 	// Set the check function
@@ -1110,6 +1125,58 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		config.Correlation = corr
 	}
 
+	// Parse TrendDetection
+	if val, ok := configMap["trendDetection"]; ok {
+		tdMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("trendDetection must be an object")
+		}
+		td := &TrendDetectionConfig{}
+		if enabled, ok := tdMap["enabled"].(bool); ok {
+			td.Enabled = enabled
+		}
+		if v, ok := tdMap["windowSize"]; ok {
+			switch n := v.(type) {
+			case float64:
+				td.WindowSize = int(n)
+			case int:
+				td.WindowSize = n
+			}
+		}
+		if v, ok := tdMap["degradationThreshold"].(float64); ok {
+			td.DegradationThreshold = v
+		}
+		if v, ok := tdMap["anomalyZScore"].(float64); ok {
+			td.AnomalyZScore = v
+		}
+		if fdVal, ok := tdMap["flapDetection"]; ok {
+			if fdMap, ok := fdVal.(map[string]interface{}); ok {
+				fd := &FlapDetectionConfig{}
+				if enabled, ok := fdMap["enabled"].(bool); ok {
+					fd.Enabled = enabled
+				}
+				if v, ok := fdMap["minOscillations"]; ok {
+					switch n := v.(type) {
+					case float64:
+						fd.MinOscillations = int(n)
+					case int:
+						fd.MinOscillations = n
+					}
+				}
+				if v, ok := fdMap["windowMinutes"]; ok {
+					switch n := v.(type) {
+					case float64:
+						fd.WindowMinutes = int(n)
+					case int:
+						fd.WindowMinutes = n
+					}
+				}
+				td.FlapDetection = fd
+			}
+		}
+		config.TrendDetection = td
+	}
+
 	return config, nil
 }
 
@@ -1241,6 +1308,40 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		}
 	}
 
+	// Default trend detection config — disabled by default for backward compatibility.
+	if c.TrendDetection == nil {
+		c.TrendDetection = &TrendDetectionConfig{Enabled: false}
+	} else if c.TrendDetection.Enabled {
+		if c.TrendDetection.WindowSize <= 0 {
+			c.TrendDetection.WindowSize = 20
+		}
+		if c.TrendDetection.DegradationThreshold == 0 {
+			c.TrendDetection.DegradationThreshold = -0.05
+		}
+		if c.TrendDetection.AnomalyZScore <= 0 {
+			c.TrendDetection.AnomalyZScore = 2.5
+		}
+		if c.TrendDetection.FlapDetection == nil {
+			c.TrendDetection.FlapDetection = &FlapDetectionConfig{
+				Enabled:         true,
+				MinOscillations: 3,
+				WindowMinutes:   10,
+			}
+		} else {
+			// If the user provided a flapDetection block, treat presence as implicit
+			// opt-in (matching the nil-path behaviour that sets Enabled: true).
+			// The bool zero value is indistinguishable from an explicit false, but a
+			// user who supplies a flapDetection block almost certainly intends to use it.
+			c.TrendDetection.FlapDetection.Enabled = true
+			if c.TrendDetection.FlapDetection.MinOscillations <= 0 {
+				c.TrendDetection.FlapDetection.MinOscillations = 3
+			}
+			if c.TrendDetection.FlapDetection.WindowMinutes <= 0 {
+				c.TrendDetection.FlapDetection.WindowMinutes = 10
+			}
+		}
+	}
+
 	// Default correlation config — disabled by default for backward compatibility.
 	if c.Correlation == nil {
 		c.Correlation = &CorrelationConfig{Enabled: false}
@@ -1276,6 +1377,11 @@ func (m *DNSMonitor) correlationEnabled() bool {
 // predictiveAlertingEnabled returns true when predictive alerting is configured and enabled.
 func (m *DNSMonitor) predictiveAlertingEnabled() bool {
 	return m.config.PredictiveAlerting != nil && m.config.PredictiveAlerting.Enabled
+}
+
+func (m *DNSMonitor) trendDetectionEnabled() bool {
+	return m.config.TrendDetection != nil && m.config.TrendDetection.Enabled &&
+		m.clusterTrendDetector != nil && m.externalTrendDetector != nil
 }
 
 // checkDNS performs the DNS health check.
@@ -1323,6 +1429,9 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	}
 	if m.correlationEnabled() {
 		m.runCorrelationAnalysis(status)
+	}
+	if m.trendDetectionEnabled() {
+		m.computeTrendDetection(status)
 	}
 	m.mu.Unlock()
 
@@ -2048,6 +2157,16 @@ func (m *DNSMonitor) computePredictiveAlerts(status *types.Status, latencyMetric
 	}
 }
 
+// computeTrendDetection runs the trend detectors for cluster and external DNS trackers,
+// then adds DNSDegrading, DNSAnomalous, and DNSFlapping conditions to status.
+// Caller must hold m.mu.
+func (m *DNSMonitor) computeTrendDetection(status *types.Status) {
+	clusterRes := m.clusterTrendDetector.Analyze()
+	externalRes := m.externalTrendDetector.Analyze()
+	AddTrendConditions(clusterRes, "Cluster", status)
+	AddTrendConditions(externalRes, "External", status)
+}
+
 // parseResolverConfig parses /etc/resolv.conf to extract nameservers.
 func (m *DNSMonitor) parseResolverConfig() ([]string, error) {
 	file, err := os.Open(m.config.ResolverPath)
@@ -2103,14 +2222,23 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 	}
 
 	// Track success rate in sliding window
+	now := time.Now()
 	m.clusterSuccessTracker.Add(&CheckResult{
-		Timestamp: time.Now(),
+		Timestamp: now,
 		Success:   clusterOK,
 	})
 	m.externalSuccessTracker.Add(&CheckResult{
-		Timestamp: time.Now(),
+		Timestamp: now,
 		Success:   externalOK,
 	})
+
+	// Feed current success rates to trend detectors (if enabled).
+	// The rate is computed from the ring buffer after the new sample is added so that
+	// the trend detector sees a smoothed value rather than a raw 0/1 boolean.
+	if m.trendDetectionEnabled() {
+		m.clusterTrendDetector.Observe(m.clusterSuccessTracker.GetSuccessRate(), now)
+		m.externalTrendDetector.Observe(m.externalSuccessTracker.GetSuccessRate(), now)
+	}
 
 	// Report ClusterDNSDown condition if cluster DNS failures exceed threshold
 	if m.clusterFailureCount >= m.config.FailureCountThreshold {
