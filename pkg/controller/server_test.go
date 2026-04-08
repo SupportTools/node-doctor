@@ -1245,6 +1245,128 @@ func TestServer_Stop_NoDeadlockWithCleanup(t *testing.T) {
 	}
 }
 
+// TestServer_Stop_NoDeadlock_ShutdownWithInFlightHandler is a regression test for the
+// deadlock where Stop() held s.mu.Lock() while calling httpServer.Shutdown(). Any
+// in-flight HTTP handler that also acquires s.mu.Lock() would block waiting for the
+// lock, while Shutdown() would block waiting for the handler — circular wait.
+//
+// The fix (Task #14454): Stop() releases s.mu before calling Shutdown(), so
+// in-flight handlers can complete and Shutdown() can return.
+//
+// Test design: a custom handler is registered that (a) signals it is running,
+// (b) waits for a gate before calling s.mu.Lock(), and (c) writes a response.
+// After confirming the HTTP connection is in-flight, Stop() is called.
+// After 100ms — enough time for Stop() to acquire and release its own lock and
+// enter Shutdown() — the handler is allowed to acquire s.mu.Lock().
+//
+// With the FIXED code: Stop() has already released s.mu; the handler acquires it
+// and completes; Shutdown() returns; both goroutines finish within the timeout.
+// With the OLD BUGGY code: Stop() holds s.mu while Shutdown() is waiting for the
+// handler; the handler is blocked on s.mu.Lock(); deadlock → timeout fires.
+func TestServer_Stop_NoDeadlock_ShutdownWithInFlightHandler(t *testing.T) {
+	ctx := context.Background()
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// handlerStarted is signalled when the test handler is executing (HTTP connection
+	// is active and will be tracked by httpServer.Shutdown()).
+	handlerStarted := make(chan struct{}, 1)
+	// handlerCanLock is closed to allow the handler to proceed to acquire s.mu.
+	handlerCanLock := make(chan struct{})
+
+	// Register a test-only route that simulates a handler needing s.mu.Lock().
+	// This must be done before Start() so the route is active when the server starts.
+	server.mux.HandleFunc("/test/deadlock-probe", func(w http.ResponseWriter, r *http.Request) {
+		// Signal that the HTTP connection is now in-flight.
+		select {
+		case handlerStarted <- struct{}{}:
+		default:
+		}
+
+		// Wait until the test allows us to proceed (gives Stop() time to start).
+		select {
+		case <-handlerCanLock:
+		case <-r.Context().Done():
+			return
+		}
+
+		// Acquire the server's write lock — this is what deadlocked with the old code.
+		server.mu.Lock()
+		defer server.mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	serverAddr := server.httpServer.Addr
+
+	// Issue a real HTTP request so the connection is tracked by httpServer.Shutdown().
+	httpDone := make(chan struct{})
+	go func() {
+		defer close(httpDone)
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Get("http://" + serverAddr + "/test/deadlock-probe")
+		if err == nil {
+			resp.Body.Close()
+		}
+		// Ignore errors — Shutdown may close the connection before the response is sent.
+	}()
+
+	// Wait for the handler to begin executing (connection is in-flight).
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		close(handlerCanLock)
+		t.Fatal("HTTP handler did not start within timeout")
+	}
+
+	// Call Stop() concurrently. It will acquire s.mu, mark the server as stopped,
+	// release s.mu, and then enter httpServer.Shutdown().
+	stopDone := make(chan error, 1)
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() {
+		stopDone <- server.Stop(stopCtx)
+	}()
+
+	// Wait long enough for Stop() to have: acquired s.mu, released it, and called
+	// Shutdown(). Shutdown() will now be waiting for the in-flight connection.
+	// (Stop() holds s.mu only for a few microseconds of bookkeeping.)
+	time.Sleep(100 * time.Millisecond)
+
+	// Allow the handler to proceed to s.mu.Lock(). With the FIXED code, Stop()
+	// has already released s.mu, so the handler acquires it immediately and
+	// completes — allowing Shutdown() to return. With the OLD BUGGY code, Stop()
+	// would still hold s.mu inside Shutdown(), so the handler would deadlock.
+	close(handlerCanLock)
+
+	deadline := time.After(5 * time.Second)
+	for remaining := 2; remaining > 0; {
+		select {
+		case err := <-stopDone:
+			if err != nil {
+				t.Errorf("Stop(): %v", err)
+			}
+			remaining--
+		case <-httpDone:
+			remaining--
+		case <-deadline:
+			t.Fatal("deadlock: Stop() or in-flight HTTP handler did not complete — " +
+				"httpServer.Shutdown() may be holding s.mu while waiting for a handler that needs s.mu")
+		}
+	}
+}
+
 // TestServer_CorrelatorReceivesStorage verifies that when a server is configured
 // with both correlation enabled and a storage backend, the correlator is wired
 // to that storage before Start() calls correlator.Start().
