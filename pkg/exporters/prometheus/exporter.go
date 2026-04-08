@@ -293,6 +293,17 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 		}
 	}
 
+	// Record DNS predictive alerting metrics.
+	// Reset first so that stale label combinations don't persist across scrapes.
+	e.metrics.DNSPredictedBreachSeconds.Reset()
+	e.metrics.DNSPredictionConfidence.Reset()
+	for _, pa := range latencyMetrics.DNSPredictiveAlerts {
+		e.metrics.DNSPredictionConfidence.WithLabelValues(
+			e.nodeName, pa.DomainType).Set(pa.Confidence)
+		e.metrics.DNSPredictedBreachSeconds.WithLabelValues(
+			e.nodeName, pa.DomainType).Set(pa.TimeToBreach)
+	}
+
 	// Record API server latency metrics
 	if latencyMetrics.APIServer != nil {
 		latencySeconds := latencyMetrics.APIServer.LatencyMs / 1000.0

@@ -520,6 +520,9 @@ type DNSMonitorConfig struct {
 
 	// Correlation configures cross-domain and cross-nameserver failure pattern detection.
 	Correlation *CorrelationConfig `json:"correlation"`
+
+	// PredictiveAlerting configures early-warning breach prediction using linear regression.
+	PredictiveAlerting *PredictiveAlertConfig `json:"predictiveAlerting"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -1034,6 +1037,44 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		config.HealthScoring = hs
 	}
 
+	// Parse PredictiveAlerting
+	if val, ok := configMap["predictiveAlerting"]; ok {
+		paMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("predictiveAlerting must be an object")
+		}
+		pa := &PredictiveAlertConfig{}
+		if enabled, ok := paMap["enabled"].(bool); ok {
+			pa.Enabled = enabled
+		}
+		if v, ok := paMap["predictionWindow"].(string); ok {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid predictiveAlerting.predictionWindow: %w", err)
+			}
+			pa.PredictionWindow = d
+		}
+		if v, ok := paMap["warningLeadTime"].(string); ok {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid predictiveAlerting.warningLeadTime: %w", err)
+			}
+			pa.WarningLeadTime = d
+		}
+		if v, ok := paMap["minDataPoints"]; ok {
+			switch n := v.(type) {
+			case float64:
+				pa.MinDataPoints = int(n)
+			case int:
+				pa.MinDataPoints = n
+			}
+		}
+		if v, ok := paMap["confidenceThreshold"].(float64); ok {
+			pa.ConfidenceThreshold = v
+		}
+		config.PredictiveAlerting = pa
+	}
+
 	// Parse Correlation
 	if val, ok := configMap["correlation"]; ok {
 		corrMap, ok := val.(map[string]interface{})
@@ -1176,6 +1217,30 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		}
 	}
 
+	// Default predictive alerting config — disabled by default for backward compatibility.
+	if c.PredictiveAlerting == nil {
+		c.PredictiveAlerting = &PredictiveAlertConfig{
+			Enabled:             false,
+			PredictionWindow:    30 * time.Minute,
+			WarningLeadTime:     15 * time.Minute,
+			MinDataPoints:       10,
+			ConfidenceThreshold: 0.8,
+		}
+	} else {
+		if c.PredictiveAlerting.PredictionWindow <= 0 {
+			c.PredictiveAlerting.PredictionWindow = 30 * time.Minute
+		}
+		if c.PredictiveAlerting.WarningLeadTime <= 0 {
+			c.PredictiveAlerting.WarningLeadTime = 15 * time.Minute
+		}
+		if c.PredictiveAlerting.MinDataPoints <= 0 {
+			c.PredictiveAlerting.MinDataPoints = 10
+		}
+		if c.PredictiveAlerting.ConfidenceThreshold <= 0 {
+			c.PredictiveAlerting.ConfidenceThreshold = 0.8
+		}
+	}
+
 	// Default correlation config — disabled by default for backward compatibility.
 	if c.Correlation == nil {
 		c.Correlation = &CorrelationConfig{Enabled: false}
@@ -1208,6 +1273,11 @@ func (m *DNSMonitor) correlationEnabled() bool {
 	return m.config.Correlation != nil && m.config.Correlation.Enabled && m.correlationEngine != nil
 }
 
+// predictiveAlertingEnabled returns true when predictive alerting is configured and enabled.
+func (m *DNSMonitor) predictiveAlertingEnabled() bool {
+	return m.config.PredictiveAlerting != nil && m.config.PredictiveAlerting.Enabled
+}
+
 // checkDNS performs the DNS health check.
 func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	status := types.NewStatus(m.name)
@@ -1234,8 +1304,9 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	// Update failure counters and conditions
 	m.updateFailureTracking(clusterOK, externalOK, status)
 
-	// Compute per-nameserver health scores and attach to status metadata; run
-	// correlation analysis while holding the lock so we get a consistent snapshot.
+	// Compute per-nameserver health scores, predictive alerts, and attach to status
+	// metadata; run correlation analysis while holding the lock so we get a consistent
+	// snapshot of all ring-buffer and stats state.
 	m.mu.Lock()
 	latencyMetrics := &types.LatencyMetrics{
 		DNS: m.latencyMetrics,
@@ -1243,7 +1314,11 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	if m.healthScoringEnabled() {
 		latencyMetrics.NameserverHealthScores = m.computeNameserverHealthScores(status)
 	}
-	if len(latencyMetrics.DNS) > 0 || len(latencyMetrics.NameserverHealthScores) > 0 {
+	if m.predictiveAlertingEnabled() {
+		m.computePredictiveAlerts(status, latencyMetrics)
+	}
+	if len(latencyMetrics.DNS) > 0 || len(latencyMetrics.NameserverHealthScores) > 0 ||
+		len(latencyMetrics.DNSPredictiveAlerts) > 0 {
 		status.SetLatencyMetrics(latencyMetrics)
 	}
 	if m.correlationEnabled() {
@@ -1924,6 +1999,48 @@ func (m *DNSMonitor) computeNameserverHealthScores(status *types.Status) []types
 	}
 
 	return scores
+}
+
+// computePredictiveAlerts runs linear-regression analysis on the cluster and external
+// success-rate ring buffers, adds DNSPredictedDegradation conditions to status when a
+// breach is predicted within WarningLeadTime, and appends the results to latencyMetrics
+// for Prometheus export.
+// Caller must hold m.mu.
+func (m *DNSMonitor) computePredictiveAlerts(status *types.Status, latencyMetrics *types.LatencyMetrics) {
+	cfg := m.config.PredictiveAlerting
+	threshold := m.config.SuccessRateTracking.FailureRateThreshold
+
+	clusterResult := analyzeRingBuffer(m.clusterSuccessTracker, threshold, cfg)
+	externalResult := analyzeRingBuffer(m.externalSuccessTracker, threshold, cfg)
+
+	// Add DNSPredictedDegradation conditions for breaches within lead time.
+	if clusterResult.WillBreach && clusterResult.WithinLeadTime {
+		status.AddCondition(types.NewCondition(
+			"DNSPredictedDegradation",
+			types.ConditionTrue,
+			"ClusterDNSBreachPredicted",
+			buildPredictiveConditionMessage("Cluster", clusterResult),
+		))
+	}
+	if externalResult.WillBreach && externalResult.WithinLeadTime {
+		status.AddCondition(types.NewCondition(
+			"DNSPredictedDegradation",
+			types.ConditionTrue,
+			"ExternalDNSBreachPredicted",
+			buildPredictiveConditionMessage("External", externalResult),
+		))
+	}
+
+	// Always append predictive metrics when a prediction was computed, so Prometheus
+	// can track confidence and time-to-breach even without an active alert.
+	if clusterResult.HasPrediction {
+		latencyMetrics.DNSPredictiveAlerts = append(latencyMetrics.DNSPredictiveAlerts,
+			toDNSPredictiveAlert("cluster", clusterResult))
+	}
+	if externalResult.HasPrediction {
+		latencyMetrics.DNSPredictiveAlerts = append(latencyMetrics.DNSPredictiveAlerts,
+			toDNSPredictiveAlert("external", externalResult))
+	}
 }
 
 // parseResolverConfig parses /etc/resolv.conf to extract nameservers.

@@ -37,7 +37,12 @@ type Metrics struct {
 	DNSNameserverLatencyScore      *prometheus.GaugeVec
 	DNSNameserverErrorScore        *prometheus.GaugeVec
 	DNSNameserverConsistencyScore  *prometheus.GaugeVec
-	APIServerLatencySeconds  *prometheus.GaugeVec
+
+	// DNS predictive alerting metrics.
+	DNSPredictedBreachSeconds  *prometheus.GaugeVec
+	DNSPredictionConfidence    *prometheus.GaugeVec
+
+	APIServerLatencySeconds *prometheus.GaugeVec
 
 	// Histogram metrics
 	MonitorCheckDuration      *prometheus.HistogramVec
@@ -327,6 +332,28 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node", "nameserver"},
 		),
 
+		DNSPredictedBreachSeconds: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_predicted_breach_seconds",
+				Help:        "Seconds until the DNS success rate is predicted to breach the failure threshold. -1 means no breach predicted within the prediction window.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "domain_type"},
+		),
+
+		DNSPredictionConfidence: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_prediction_confidence",
+				Help:        "R² confidence score (0–1) of the DNS success-rate linear regression. Higher values indicate a more reliable prediction.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "domain_type"},
+		),
+
 		APIServerLatencySeconds: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace:   namespace,
@@ -445,6 +472,8 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.DNSNameserverLatencyScore,
 		m.DNSNameserverErrorScore,
 		m.DNSNameserverConsistencyScore,
+		m.DNSPredictedBreachSeconds,
+		m.DNSPredictionConfidence,
 		m.APIServerLatencySeconds,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
@@ -491,6 +520,8 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.DNSNameserverLatencyScore,
 		m.DNSNameserverErrorScore,
 		m.DNSNameserverConsistencyScore,
+		m.DNSPredictedBreachSeconds,
+		m.DNSPredictionConfidence,
 		m.APIServerLatencySeconds,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,

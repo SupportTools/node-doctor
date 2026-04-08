@@ -403,6 +403,29 @@ type LatencyMetrics struct {
 
 	// NameserverHealthScores holds per-nameserver composite health scores (0-100).
 	NameserverHealthScores []NameserverHealthScore `json:"nameserver_health_scores,omitempty"`
+
+	// DNSPredictiveAlerts holds linear-regression-based breach predictions for
+	// the cluster and external DNS success-rate trackers.
+	DNSPredictiveAlerts []DNSPredictiveAlert `json:"dns_predictive_alerts,omitempty"`
+}
+
+// DNSPredictiveAlert holds a single predictive analysis result for export to
+// the Prometheus exporter and condition reporting.
+type DNSPredictiveAlert struct {
+	// DomainType is "cluster" or "external".
+	DomainType string `json:"domain_type"`
+	// Confidence is the R² score (0–1) of the underlying regression.
+	Confidence float64 `json:"confidence"`
+	// TimeToBreach is seconds until the predicted threshold breach;
+	// -1 when no breach is predicted within the prediction window.
+	TimeToBreach float64 `json:"time_to_breach"`
+	// PredictedBreach is the RFC3339-formatted UTC timestamp of the expected breach;
+	// empty when no breach is predicted.
+	PredictedBreach string `json:"predicted_breach,omitempty"`
+	// WillBreach is true when the breach is predicted within PredictionWindow.
+	WillBreach bool `json:"will_breach"`
+	// WithinLeadTime is true when the breach is predicted within WarningLeadTime.
+	WithinLeadTime bool `json:"within_lead_time"`
 }
 
 // NameserverHealthScore is the computed composite health score for a single DNS nameserver.
