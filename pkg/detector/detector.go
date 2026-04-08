@@ -239,8 +239,9 @@ func (pd *ProblemDetector) Start() error {
 	}
 
 	// Start monitors from config via the MonitorFactory.
-	// Skip any monitor whose name is already running to guard against accidental
-	// double-registration (e.g. if a caller passes pre-created monitors AND a factory).
+	// Note: passed monitors use synthetic names ("passed-monitor-N") so they will never
+	// collide with config monitor names here. The startedNames guard primarily protects
+	// against duplicate entries in config.Monitors itself.
 	for _, monitorConfig := range pd.config.Monitors {
 		if startedNames[monitorConfig.Name] {
 			log.Printf("[WARN] Monitor %s already started (skipping duplicate from config)", monitorConfig.Name)

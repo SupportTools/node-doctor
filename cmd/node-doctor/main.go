@@ -213,6 +213,13 @@ func main() {
 		log.Fatalf("Failed to start detector: %v", err)
 	}
 
+	// Guard against a silent no-op start: if every monitor failed to create/start,
+	// the detector returns nil from Start() but is effectively useless.
+	startStats := det.GetStatistics()
+	if startStats.GetMonitorsStarted() == 0 && len(config.Monitors) > 0 {
+		log.Fatalf("No monitors started successfully — check monitor configuration (all %d configured monitor(s) failed)", len(config.Monitors))
+	}
+
 	log.Printf("[INFO] Node Doctor started successfully")
 
 	// Wait for shutdown signal
