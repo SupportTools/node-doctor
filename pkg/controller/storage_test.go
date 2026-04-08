@@ -708,3 +708,49 @@ func TestSQLiteStorage_RunCleanup(t *testing.T) {
 		t.Errorf("expected lease status 'expired', got %q", lease.Status)
 	}
 }
+
+// TestSQLiteStorage_GetActiveLeases_ExcludesExpired verifies that GetActiveLeases
+// applies the expires_at > NOW() filter: expired leases (status "active" in DB but
+// ExpiresAt in the past) must not be returned.
+func TestSQLiteStorage_GetActiveLeases_ExcludesExpired(t *testing.T) {
+	storage := newTestStorage(t)
+	ctx := context.Background()
+
+	// Seed an expired lease (ExpiresAt in the past, still marked "active").
+	expired := &Lease{
+		ID:              "expired-lease-1",
+		NodeName:        "stale-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       time.Now().Add(-10 * time.Minute),
+		ExpiresAt:       time.Now().Add(-1 * time.Minute),
+		Status:          "active",
+	}
+	if err := storage.SaveLease(ctx, expired); err != nil {
+		t.Fatalf("SaveLease (expired): %v", err)
+	}
+
+	// Seed a still-active lease.
+	active := &Lease{
+		ID:              "active-lease-1",
+		NodeName:        "live-node",
+		RemediationType: "drain-node",
+		GrantedAt:       time.Now().Add(-1 * time.Minute),
+		ExpiresAt:       time.Now().Add(9 * time.Minute),
+		Status:          "active",
+	}
+	if err := storage.SaveLease(ctx, active); err != nil {
+		t.Fatalf("SaveLease (active): %v", err)
+	}
+
+	leases, err := storage.GetActiveLeases(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveLeases: %v", err)
+	}
+
+	if len(leases) != 1 {
+		t.Fatalf("expected 1 active lease, got %d", len(leases))
+	}
+	if leases[0].ID != "active-lease-1" {
+		t.Errorf("expected active-lease-1, got %q", leases[0].ID)
+	}
+}
