@@ -207,6 +207,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	// if any handler is still running.
 	correlator := s.correlator
 	httpServer := s.httpServer
+	// Ensure stopping is cleared regardless of how Stop() exits (including error paths).
+	defer func() {
+		s.mu.Lock()
+		s.stopping = false
+		s.mu.Unlock()
+	}()
 	s.mu.Unlock()
 
 	// Wait for cleanup goroutine: cleanupExpiredLeases() acquires s.mu.Lock(),
