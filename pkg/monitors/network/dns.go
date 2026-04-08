@@ -475,6 +475,9 @@ type DNSMonitorConfig struct {
 
 	// HealthScoring configures the per-nameserver composite health scoring system.
 	HealthScoring *NameserverHealthScoringConfig `json:"healthScoring"`
+
+	// Correlation configures cross-domain and cross-nameserver failure pattern detection.
+	Correlation *CorrelationConfig `json:"correlation"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -501,6 +504,10 @@ type DNSMonitor struct {
 	// Per-nameserver sliding-window stats for composite health scoring.
 	// Keyed by nameserver IP string. Populated by checkNameservers when HealthScoring is enabled.
 	nameserverStats map[string]*NameserverStats
+
+	// correlationEngine analyses failure patterns across nameservers and domains.
+	// Nil when correlation is disabled.
+	correlationEngine *CorrelationEngine
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
@@ -560,6 +567,11 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 		externalSuccessTracker: NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
 		nameserverStats:        make(map[string]*NameserverStats),
 		BaseMonitor:            baseMonitor,
+	}
+
+	// Initialise the correlation engine if enabled.
+	if dnsConfig.Correlation != nil && dnsConfig.Correlation.Enabled {
+		monitor.correlationEngine = newCorrelationEngine(dnsConfig.Correlation)
 	}
 
 	// Set the check function
@@ -980,6 +992,41 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		config.HealthScoring = hs
 	}
 
+	// Parse Correlation
+	if val, ok := configMap["correlation"]; ok {
+		corrMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("correlation must be an object")
+		}
+		corr := &CorrelationConfig{}
+		if enabled, ok := corrMap["enabled"].(bool); ok {
+			corr.Enabled = enabled
+		}
+		if v, ok := corrMap["minConfidence"].(float64); ok {
+			corr.MinConfidence = v
+		}
+		if v, ok := corrMap["windowMinutes"]; ok {
+			switch n := v.(type) {
+			case float64:
+				corr.WindowMinutes = int(n)
+			case int:
+				corr.WindowMinutes = n
+			}
+		}
+		if v, ok := corrMap["nameserverFailureThreshold"].(float64); ok {
+			corr.NameserverFailureThreshold = v
+		}
+		if v, ok := corrMap["minNameserversForDomainCorrelation"]; ok {
+			switch n := v.(type) {
+			case float64:
+				corr.MinNameserversForDomainCorrelation = int(n)
+			case int:
+				corr.MinNameserversForDomainCorrelation = n
+			}
+		}
+		config.Correlation = corr
+	}
+
 	return config, nil
 }
 
@@ -1087,6 +1134,24 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		}
 	}
 
+	// Default correlation config — disabled by default for backward compatibility.
+	if c.Correlation == nil {
+		c.Correlation = &CorrelationConfig{Enabled: false}
+	} else {
+		if c.Correlation.MinConfidence <= 0 {
+			c.Correlation.MinConfidence = 0.7
+		}
+		if c.Correlation.WindowMinutes <= 0 {
+			c.Correlation.WindowMinutes = 5
+		}
+		if c.Correlation.NameserverFailureThreshold <= 0 {
+			c.Correlation.NameserverFailureThreshold = 0.5
+		}
+		if c.Correlation.MinNameserversForDomainCorrelation <= 0 {
+			c.Correlation.MinNameserversForDomainCorrelation = 2
+		}
+	}
+
 	return nil
 }
 
@@ -1094,6 +1159,11 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 // Guards against tests that construct DNSMonitor directly without applyDefaults.
 func (m *DNSMonitor) healthScoringEnabled() bool {
 	return m.config.HealthScoring != nil && m.config.HealthScoring.Enabled
+}
+
+// correlationEnabled returns true when correlation analysis is configured and enabled.
+func (m *DNSMonitor) correlationEnabled() bool {
+	return m.config.Correlation != nil && m.config.Correlation.Enabled && m.correlationEngine != nil
 }
 
 // checkDNS performs the DNS health check.
@@ -1122,7 +1192,8 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	// Update failure counters and conditions
 	m.updateFailureTracking(clusterOK, externalOK, status)
 
-	// Compute per-nameserver health scores and attach to status metadata
+	// Compute per-nameserver health scores and attach to status metadata; run
+	// correlation analysis while holding the lock so we get a consistent snapshot.
 	m.mu.Lock()
 	latencyMetrics := &types.LatencyMetrics{
 		DNS: m.latencyMetrics,
@@ -1132,6 +1203,9 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	}
 	if len(latencyMetrics.DNS) > 0 || len(latencyMetrics.NameserverHealthScores) > 0 {
 		status.SetLatencyMetrics(latencyMetrics)
+	}
+	if m.correlationEnabled() {
+		m.runCorrelationAnalysis(status)
 	}
 	m.mu.Unlock()
 
@@ -1716,6 +1790,51 @@ func (m *DNSMonitor) recordNameserverCheck(nameserver string, success bool, late
 		Latency:   latency,
 		ErrType:   errType,
 	})
+}
+
+// runCorrelationAnalysis runs the correlation engine against the current in-memory
+// snapshots and adds status conditions for any patterns that meet the confidence threshold.
+// Caller must hold m.mu.
+func (m *DNSMonitor) runCorrelationAnalysis(status *types.Status) {
+	results := m.correlationEngine.Analyze(m.nameserverStats, m.nameserverDomainStatus)
+	if len(results) == 0 {
+		return
+	}
+
+	// Group results by type and emit one condition per type with a combined message.
+	type group struct {
+		causes   []string
+		evidence []string
+	}
+	groups := make(map[string]*group)
+	for _, r := range results {
+		g := groups[r.Type]
+		if g == nil {
+			g = &group{}
+			groups[r.Type] = g
+		}
+		g.causes = append(g.causes, r.RootCause)
+		g.evidence = append(g.evidence, r.Evidence...)
+	}
+
+	conditionType := map[string]string{
+		"nameserver":     "DNSNameserverCorrelation",
+		"domain_pattern": "DNSDomainPatternCorrelation",
+		"temporal":       "DNSTemporalCorrelation",
+	}
+	for typ, g := range groups {
+		cType, ok := conditionType[typ]
+		if !ok {
+			cType = "DNSCorrelation"
+		}
+		msg := strings.Join(g.causes, "; ")
+		status.AddCondition(types.NewCondition(
+			cType,
+			types.ConditionTrue,
+			"CorrelatedDNSFailure",
+			msg,
+		))
+	}
 }
 
 // computeNameserverHealthScores computes and returns health scores for all tracked nameservers.
