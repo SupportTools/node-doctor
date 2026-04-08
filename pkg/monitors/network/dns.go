@@ -263,7 +263,46 @@ func (ns *NameserverStats) Len() int {
 	return ns.count
 }
 
-// snapshot returns a copy of valid results under lock, safe for computation.
+// snapshot returns a copy of the valid results in the sliding window, safe for
+// concurrent access. The returned slice always has length ns.count.
+//
+// # Slot-ordering behavior
+//
+// The backing array is a ring buffer. Results are stored in physical slot order,
+// not necessarily in chronological (insertion) order:
+//
+//   - Before wrap-around (fewer entries added than window capacity):
+//     Slots 0..count-1 are in chronological order (oldest at index 0, most
+//     recent at index count-1). snapshot() returns them oldest-first.
+//
+//   - After wrap-around (window is full and wIdx has looped back to 0):
+//     The oldest surviving entry lives at slot wIdx, not slot 0. snapshot()
+//     still copies slots 0..count-1, so the returned slice is in slot order,
+//     NOT chronological order. Example with capacity=3:
+//
+//       add(r0) → slots: [r0, _, _]
+//       add(r1) → slots: [r0, r1, _]
+//       add(r2) → slots: [r0, r1, r2]   snapshot → [r0, r1, r2]  (ordered)
+//       add(r3) → slots: [r3, r1, r2]   snapshot → [r3, r1, r2]  (slot order!)
+//       add(r4) → slots: [r3, r4, r2]   snapshot → [r3, r4, r2]  (slot order!)
+//
+// # Callers must not assume chronological order
+//
+// All current callers (computeHealthScore, success-rate trackers) compute
+// aggregate statistics (counts, sums, averages) over the window, so slot order
+// vs. chronological order does not affect their results.
+//
+// Any future caller that needs chronological ordering must reconstruct it:
+//
+//	raw := ns.snapshot()
+//	start := 0
+//	if ns.Len() == cap(ns.results) {
+//	    start = (ns.wIdx) % cap(ns.results)  // requires holding ns.mu — use carefully
+//	}
+//	// rotate raw[start:] ++ raw[:start] for oldest-first order.
+//
+// Because wIdx is unexported and not exposed, callers outside this package that
+// need ordered results should sort by NameserverCheckResult.Timestamp instead.
 func (ns *NameserverStats) snapshot() []*NameserverCheckResult {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
