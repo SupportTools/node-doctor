@@ -305,7 +305,10 @@ func (pd *ProblemDetector) Start() error {
 	}()
 
 	pd.started = true
-	log.Printf("[INFO] Problem detector started successfully with %d monitors", len(pd.monitorHandles))
+	pd.handlesMu.Lock()
+	monitorCount := len(pd.monitorHandles)
+	pd.handlesMu.Unlock()
+	log.Printf("[INFO] Problem detector started successfully with %d monitors", monitorCount)
 
 	return nil
 }
