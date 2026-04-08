@@ -105,6 +105,7 @@ type ProblemDetector struct {
 	remediatorRegistry RemediationExecutor
 	configIndexMu      sync.RWMutex                  // Protects monitorConfigIndex (separate from pd.mu to avoid deadlock in addMonitor callers)
 	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
+	handlesMu          sync.Mutex                    // Protects monitorHandles slice (inner lock; never held when acquiring pd.mu or reloadMutex)
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -323,8 +324,16 @@ func (pd *ProblemDetector) Stop() error {
 	// Stop config watcher
 	pd.configWatcher.Stop()
 
+	// Snapshot handles under handlesMu, then stop outside the lock.
+	// handle.Stop() blocks up to 5 s — holding handlesMu during it would
+	// prevent concurrent addMonitor/stopMonitorByName callers from proceeding.
+	pd.handlesMu.Lock()
+	snapshot := make([]*MonitorHandle, len(pd.monitorHandles))
+	copy(snapshot, pd.monitorHandles)
+	pd.handlesMu.Unlock()
+
 	// Stop all monitors
-	for _, handle := range pd.monitorHandles {
+	for _, handle := range snapshot {
 		if err := handle.Stop(); err != nil {
 			log.Printf("[WARN] Error stopping monitor %s: %v", handle.GetName(), err)
 		}
@@ -522,6 +531,18 @@ func (pd *ProblemDetector) watchConfigChanges() {
 
 // handleConfigReload handles configuration reload requests
 func (pd *ProblemDetector) handleConfigReload(ctx context.Context, newConfig *types.NodeDoctorConfig, diff *reload.ConfigDiff) error {
+	// Guard against reloads that fire during the startup window — between when the
+	// config-watcher goroutine is launched in Start() and when pd.started is set to true.
+	// Without this guard, a rapid on-disk change can trigger applyConfigReload concurrently
+	// with Start()'s own addMonitor calls, racing on pd.monitorHandles.
+	pd.mu.RLock()
+	started := pd.started
+	pd.mu.RUnlock()
+	if !started {
+		log.Printf("[DEBUG] Ignoring config reload: detector not yet started")
+		return nil
+	}
+
 	log.Printf("[INFO] Applying configuration reload")
 
 	// Log summary of changes
@@ -681,25 +702,37 @@ func (pd *ProblemDetector) getExporterType(exporter types.Exporter) string {
 	return strings.ToLower(typeName)
 }
 
-// stopMonitorByName stops a monitor by its name and removes it from the handles list
+// stopMonitorByName stops a monitor by its name and removes it from the handles list.
+// The slice mutation is done under handlesMu; handle.Stop() (which can block up to 5 s)
+// is called after releasing the lock so it does not delay concurrent addMonitor callers.
 func (pd *ProblemDetector) stopMonitorByName(name string) error {
+	// Find and splice out under handlesMu.
+	pd.handlesMu.Lock()
+	var found *MonitorHandle
 	for i, handle := range pd.monitorHandles {
 		if handle.GetName() == name {
-			if err := handle.Stop(); err != nil {
-				return err
-			}
-
-			// Remove from handles list and config index
+			found = handle
 			pd.monitorHandles = append(pd.monitorHandles[:i], pd.monitorHandles[i+1:]...)
-			pd.configIndexMu.Lock()
-			delete(pd.monitorConfigIndex, name)
-			pd.configIndexMu.Unlock()
-			log.Printf("[INFO] Stopped and removed monitor: %s", name)
-			return nil
+			break
 		}
 	}
+	pd.handlesMu.Unlock()
 
-	return fmt.Errorf("monitor %s not found", name)
+	if found == nil {
+		return fmt.Errorf("monitor %s not found", name)
+	}
+
+	// Remove from config index (configIndexMu is independent of handlesMu).
+	pd.configIndexMu.Lock()
+	delete(pd.monitorConfigIndex, name)
+	pd.configIndexMu.Unlock()
+
+	// Stop outside handlesMu — can block up to 5 s per MonitorHandle.Stop().
+	if err := found.Stop(); err != nil {
+		return err
+	}
+	log.Printf("[INFO] Stopped and removed monitor: %s", name)
+	return nil
 }
 
 // addMonitor adds a new monitor with its handle and starts it
@@ -732,8 +765,12 @@ func (pd *ProblemDetector) addMonitor(ctx context.Context, monitor types.Monitor
 		pd.fanInFromMonitor(handle.ctx, handle.statusCh, handle.GetName())
 	}()
 
-	// Add to handles list
+	// Add to handles list under handlesMu to prevent concurrent slice mutation
+	// (Start holds pd.mu; applyConfigReload holds reloadMutex — different locks,
+	// so addMonitor can be called concurrently from both paths).
+	pd.handlesMu.Lock()
 	pd.monitorHandles = append(pd.monitorHandles, handle)
+	pd.handlesMu.Unlock()
 
 	// Index by name so evaluateRemediation can look up MonitorConfig from status.Source
 	pd.configIndexMu.Lock()
