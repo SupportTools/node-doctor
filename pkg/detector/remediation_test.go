@@ -97,11 +97,11 @@ func TestEvaluateRemediation_GlobalDisabledSkips(t *testing.T) {
 	monCfg := makeRemediationConfig("my-monitor", "node-reboot")
 
 	cfg := &types.NodeDoctorConfig{
-		APIVersion: "v1",
-		Kind:       "NodeDoctorConfig",
-		Metadata:   types.ConfigMetadata{Name: "test"},
-		Settings:   types.GlobalSettings{NodeName: "test-node"},
-		Monitors:   []types.MonitorConfig{monCfg},
+		APIVersion:  "v1",
+		Kind:        "NodeDoctorConfig",
+		Metadata:    types.ConfigMetadata{Name: "test"},
+		Settings:    types.GlobalSettings{NodeName: "test-node"},
+		Monitors:    []types.MonitorConfig{monCfg},
 		Remediation: types.RemediationConfig{Enabled: false},
 	}
 	cfg.ApplyDefaults()

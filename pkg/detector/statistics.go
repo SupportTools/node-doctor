@@ -255,12 +255,12 @@ func (s *Statistics) Summary() map[string]interface{} {
 		"problems_detected":       s.problemsDetected,
 		"problems_deduplicated":   s.problemsDeduplicated,
 		"exports_succeeded":       s.exportsSucceeded,
-		"exports_failed":            s.exportsFailed,
-		"total_exports":             s.exportsSucceeded + s.exportsFailed,
-		"export_success_rate_pct":   s.getExportSuccessRateUnsafe(),
-		"deduplication_rate_pct":    s.getDeduplicationRateUnsafe(),
-		"remediations_triggered":    s.remediationsTriggered,
-		"remediations_failed":       s.remediationsFailed,
+		"exports_failed":          s.exportsFailed,
+		"total_exports":           s.exportsSucceeded + s.exportsFailed,
+		"export_success_rate_pct": s.getExportSuccessRateUnsafe(),
+		"deduplication_rate_pct":  s.getDeduplicationRateUnsafe(),
+		"remediations_triggered":  s.remediationsTriggered,
+		"remediations_failed":     s.remediationsFailed,
 	}
 }
 

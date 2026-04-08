@@ -251,11 +251,11 @@ func TestDNSMonitorHealthScoring_Integration(t *testing.T) {
 	monitor := &DNSMonitor{
 		name: "test-dns-health-scoring",
 		config: &DNSMonitorConfig{
-			ClusterDomains:        []string{},
-			ExternalDomains:       []string{},
-			LatencyThreshold:      1 * time.Second,
-			FailureCountThreshold: 3,
-			ResolverPath:          resolverFile,
+			ClusterDomains:         []string{},
+			ExternalDomains:        []string{},
+			LatencyThreshold:       1 * time.Second,
+			FailureCountThreshold:  3,
+			ResolverPath:           resolverFile,
 			NameserverCheckEnabled: false,
 			SuccessRateTracking: &SuccessRateConfig{
 				Enabled:    false,

@@ -103,9 +103,9 @@ type ProblemDetector struct {
 
 	// Remediation
 	remediatorRegistry RemediationExecutor
-	configIndexMu      sync.RWMutex                  // Protects monitorConfigIndex (separate from pd.mu to avoid deadlock in addMonitor callers)
+	configIndexMu      sync.RWMutex                   // Protects monitorConfigIndex (separate from pd.mu to avoid deadlock in addMonitor callers)
 	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
-	handlesMu          sync.Mutex                    // Protects monitorHandles slice (inner lock; never held when acquiring pd.mu or reloadMutex)
+	handlesMu          sync.Mutex                     // Protects monitorHandles slice (inner lock; never held when acquiring pd.mu or reloadMutex)
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload

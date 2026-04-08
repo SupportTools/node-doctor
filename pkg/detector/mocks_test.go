@@ -275,10 +275,10 @@ func (m *MockExporter) GetExportCounts() (statusCount, problemCount int) {
 
 // MockRemediationExecutor implements RemediationExecutor for testing.
 type MockRemediationExecutor struct {
-	mu         sync.Mutex
-	dryRun     bool
-	returnErr  error // if non-nil, Remediate returns this error
-	calls      []remediateCall
+	mu        sync.Mutex
+	dryRun    bool
+	returnErr error // if non-nil, Remediate returns this error
+	calls     []remediateCall
 }
 
 type remediateCall struct {

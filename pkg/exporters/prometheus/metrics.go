@@ -25,15 +25,15 @@ type Metrics struct {
 	UptimeSeconds    *prometheus.GaugeVec
 
 	// Network latency gauge metrics
-	GatewayLatencySeconds   *prometheus.GaugeVec
-	PeerLatencySeconds      *prometheus.GaugeVec
-	PeerLatencyAvgSeconds   *prometheus.GaugeVec
-	PeerReachable           *prometheus.GaugeVec
-	PeersTotal              *prometheus.GaugeVec
-	PeersReachableTotal     *prometheus.GaugeVec
-	DNSLatencySeconds            *prometheus.GaugeVec
-	DNSNameserverHealthScore     *prometheus.GaugeVec
-	APIServerLatencySeconds      *prometheus.GaugeVec
+	GatewayLatencySeconds    *prometheus.GaugeVec
+	PeerLatencySeconds       *prometheus.GaugeVec
+	PeerLatencyAvgSeconds    *prometheus.GaugeVec
+	PeerReachable            *prometheus.GaugeVec
+	PeersTotal               *prometheus.GaugeVec
+	PeersReachableTotal      *prometheus.GaugeVec
+	DNSLatencySeconds        *prometheus.GaugeVec
+	DNSNameserverHealthScore *prometheus.GaugeVec
+	APIServerLatencySeconds  *prometheus.GaugeVec
 
 	// Histogram metrics
 	MonitorCheckDuration      *prometheus.HistogramVec
