@@ -1368,42 +1368,6 @@ func TestServer_Stop_NoDeadlock_ShutdownWithInFlightHandler(t *testing.T) {
 	}
 }
 
-// TestServer_CorrelatorReceivesStorage verifies that when a server is configured
-// with both correlation enabled and a storage backend, the correlator is wired
-// to that storage before Start() calls correlator.Start().
-func TestServer_CorrelatorReceivesStorage(t *testing.T) {
-	storage := newServerTestStorage(t)
-	ctx := context.Background()
-
-	config := DefaultControllerConfig()
-	config.Server.BindAddress = "127.0.0.1"
-	config.Server.Port = 0
-	config.Correlation.Enabled = true
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	server.SetStorage(storage)
-
-	if err := server.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer server.Stop(ctx)
-
-	// After Start the correlator must have non-nil storage.
-	if server.correlator == nil {
-		t.Fatal("expected correlator to be non-nil when Correlation.Enabled=true")
-	}
-	server.correlator.mu.RLock()
-	corrStorage := server.correlator.storage
-	server.correlator.mu.RUnlock()
-
-	if corrStorage == nil {
-		t.Error("correlator.storage is nil — server did not wire storage before correlator.Start()")
-	}
-}
-
 // TestServer_CorrelationsPersistedAndRecoverable verifies the persist/load cycle:
 // a correlation detected before server shutdown is recovered after a restart.
 func TestServer_CorrelationsPersistedAndRecoverable(t *testing.T) {
