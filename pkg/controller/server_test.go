@@ -984,3 +984,51 @@ func TestServer_RehydratedStateVisibleViaAPI(t *testing.T) {
 		t.Errorf("expected overall health %q, got %v", HealthStatusCritical, data["overallHealth"])
 	}
 }
+
+// TestServer_Stop_NoDeadlockWithCleanup is a regression test for the deadlock where
+// Stop() held s.mu.Lock() while calling leaseCleanupWg.Wait(), and the cleanup goroutine
+// was blocked trying to acquire s.mu.Lock() inside cleanupExpiredLeases — circular wait.
+func TestServer_Stop_NoDeadlockWithCleanup(t *testing.T) {
+	config := DefaultControllerConfig()
+	config.Server.Port = 0
+	config.Server.BindAddress = "127.0.0.1"
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	// Race Stop() against a direct call to cleanupExpiredLeases to reproduce the
+	// deadlock scenario: Stop holds the write lock while waiting for the goroutine
+	// that is itself blocked on acquiring that same lock.
+	cleanupDone := make(chan struct{})
+	go func() {
+		server.cleanupExpiredLeases(ctx)
+		close(cleanupDone)
+	}()
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- server.Stop(ctx)
+	}()
+
+	timeout := time.After(5 * time.Second)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+		select {
+		case <-cleanupDone:
+		case <-time.After(3 * time.Second):
+			t.Fatal("cleanupExpiredLeases did not return after Stop() completed")
+		}
+	case <-timeout:
+		t.Fatal("Stop() deadlocked with concurrent cleanupExpiredLeases — lock not released before Wait()")
+	}
+}

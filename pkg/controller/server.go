@@ -154,19 +154,29 @@ func (s *Server) Start(ctx context.Context) error {
 // Stop gracefully stops the HTTP server
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if !s.started {
+		s.mu.Unlock()
 		return nil
 	}
 
 	log.Printf("[INFO] Stopping controller server...")
 
-	// Stop lease cleanup goroutine
+	// Mark as stopped now (while holding the lock) so a concurrent Stop() call
+	// sees !s.started and returns early, avoiding a double-close of the channel.
+	s.started = false
+
+	// Signal the cleanup goroutine to stop.
 	if s.leaseCleanupStopCh != nil {
 		close(s.leaseCleanupStopCh)
-		s.leaseCleanupWg.Wait()
 	}
+
+	// Release lock before waiting: cleanupExpiredLeases() also acquires s.mu.Lock(),
+	// so holding it here while waiting causes a deadlock if a cleanup tick is in flight.
+	s.mu.Unlock()
+	s.leaseCleanupWg.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Stop correlator
 	if s.correlator != nil {
@@ -187,7 +197,6 @@ func (s *Server) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to shutdown server: %w", err)
 	}
 
-	s.started = false
 	s.ready = false
 
 	log.Printf("[INFO] Controller server stopped")
