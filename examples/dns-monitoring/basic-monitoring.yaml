@@ -1,0 +1,39 @@
+# Basic DNS Monitoring Example
+# Enables core DNS health tracking with success-rate-based alerting.
+# No advanced features are activated here; see advanced-monitoring.yaml for those.
+
+apiVersion: v1
+kind: NodeDoctorConfig
+metadata:
+  name: dns-basic
+
+monitors:
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      # Domains to test for cluster-internal DNS resolution.
+      # These are resolved via the cluster's CoreDNS service IP.
+      clusterDomains:
+        - kubernetes.default.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+
+      # Domains to test for external DNS resolution.
+      # Checks that nodes can reach the internet via CoreDNS forwarding.
+      externalDomains:
+        - google.com
+        - cloudflare.com
+
+      # Track success rate over a sliding window to catch intermittent failures.
+      successRateTracking:
+        enabled: true
+        windowSize: 50             # Retain last 50 check results
+        failureRateThreshold: 0.1  # Alert when failure rate exceeds 10%
+        minSamplesRequired: 20     # Require 20 samples before alerting
+
+      # Conditions emitted (all prefixed with Cluster or External):
+      # - ClusterDNSDegraded    : failure rate > failureRateThreshold
+      # - ClusterDNSIntermittent: some failures, below threshold
+      # - ExternalDNSDegraded   : same for external domains

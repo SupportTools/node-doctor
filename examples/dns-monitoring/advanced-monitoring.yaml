@@ -1,0 +1,90 @@
+# Advanced DNS Monitoring Example
+# Enables all four analytical layers on top of basic DNS health tracking.
+# Each layer is independently opt-in; remove any block to disable that layer.
+#
+# For a full description of each layer, see:
+#   docs/monitors/dns-advanced.md
+#
+# For troubleshooting guidance, see:
+#   docs/monitors/dns-troubleshooting.md
+
+apiVersion: v1
+kind: NodeDoctorConfig
+metadata:
+  name: dns-advanced
+
+monitors:
+  - name: dns-health
+    type: network-dns-check
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    config:
+      clusterDomains:
+        - kubernetes.default.svc.cluster.local
+        - kube-dns.kube-system.svc.cluster.local
+
+      externalDomains:
+        - google.com
+        - cloudflare.com
+
+      # Base success-rate tracking (required for predictiveAlerting)
+      successRateTracking:
+        enabled: true
+        windowSize: 50
+        failureRateThreshold: 0.1
+        minSamplesRequired: 20
+
+      # ── Layer 1: Per-nameserver composite health scoring ────────────────────
+      # Computes a 0–100 score per nameserver based on success rate, latency,
+      # error diversity, and consistency. Emits DNSNameserverUnhealthy /
+      # DNSNameserverDegraded conditions.
+      healthScoring:
+        enabled: true
+        degradedThreshold: 70       # Score < 70 → DNSNameserverDegraded
+        unhealthyThreshold: 40      # Score < 40 → DNSNameserverUnhealthy
+        windowSize: 20              # Checks retained per nameserver
+        latencyBaseline: 50ms       # p95 latency for score of 100
+        latencyMax: 2s              # p95 latency for score of 0
+        successRateWeight: 0.40     # Weights must sum to 1.0
+        latencyWeight: 0.25
+        errorDiversityWeight: 0.15
+        consistencyWeight: 0.20
+
+      # ── Layer 2: Cross-domain and cross-nameserver correlation ──────────────
+      # Detects shared failure patterns: multiple nameservers failing together,
+      # a single domain failing across many nameservers, or failure bursts.
+      # Emits DNSNameserverCorrelation and DNSCorrelation conditions.
+      correlation:
+        enabled: true
+        minConfidence: 0.75         # Only report correlations above this confidence
+        windowMinutes: 5            # Temporal detector look-back window
+        nameserverFailureThreshold: 0.5   # Below this success rate → nameserver "failing"
+        minNameserversForDomainCorrelation: 2  # Minimum nameservers that must fail a domain
+
+      # ── Layer 3: Predictive breach alerting ─────────────────────────────────
+      # Fits a linear regression to the success-rate ring buffer and alerts
+      # when the projected trend will breach the failure threshold within
+      # predictionWindow. Emits DNSPredictedDegradation conditions.
+      predictiveAlerting:
+        enabled: true
+        predictionWindow: 30m       # Alert when breach projected within 30 minutes
+        warningLeadTime: 15m        # Escalate urgency if breach within 15 minutes
+        minDataPoints: 15           # Minimum samples for a reliable regression
+        confidenceThreshold: 0.85   # Minimum R² (goodness of fit)
+
+      # ── Layer 4: Statistical trend detection ────────────────────────────────
+      # Uses Welford's algorithm for long-term baseline and OLS slope over a
+      # circular buffer for gradual degradation. Emits ClusterDNSDegrading,
+      # ClusterDNSAnomalous, ExternalDNSDegrading, ExternalDNSAnomalous,
+      # ClusterDNSFlapping, and ExternalDNSFlapping conditions.
+      trendDetection:
+        enabled: true
+        windowSize: 20              # Circular buffer size for slope calculation
+        degradationThreshold: -0.05 # OLS slope more negative than this → Degrading
+                                    # (units: success-rate change per sample)
+        anomalyZScore: 2.5          # |z-score| above this → Anomalous
+        flapDetection:
+          enabled: true
+          minOscillations: 3        # Transitions needed to trigger Flapping
+          windowMinutes: 10         # Rolling window for counting transitions

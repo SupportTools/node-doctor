@@ -1,0 +1,174 @@
+{
+  "title": "Node Doctor - DNS Health",
+  "uid": "node-doctor-dns",
+  "schemaVersion": 38,
+  "description": "DNS health monitoring from Node Doctor advanced analytics",
+  "tags": ["node-doctor", "dns", "kubernetes"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "DNS Nameserver Health Score",
+      "type": "heatmap",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "node_doctor_dns_nameserver_health_score",
+          "legendFormat": "{{node}} / {{nameserver}}"
+        }
+      ],
+      "description": "Composite health score (0-100) per nameserver per node. Scores below 70 indicate degradation."
+    },
+    {
+      "id": 2,
+      "title": "DNS Success Rate (Cluster)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "node_doctor_dns_success_rate{type=\"cluster\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 0.9},
+              {"color": "green", "value": 0.99}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "DNS Success Rate (External)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "node_doctor_dns_success_rate{type=\"external\"}",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "DNS Latency p95 by Nameserver",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "node_doctor_dns_latency_p95_seconds * 1000",
+          "legendFormat": "{{node}} / {{nameserver}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 100},
+              {"color": "red", "value": 500}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Active DNS Conditions",
+      "type": "table",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "kube_node_status_condition{condition=~\"DNS.*\", status=\"True\"} == 1",
+          "legendFormat": "{{node}} / {{condition}}"
+        }
+      ],
+      "description": "All active DNS conditions across the cluster. A value of 1 means the condition is True (active problem)."
+    },
+    {
+      "id": 6,
+      "title": "Predicted DNS Breaches",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 26},
+      "targets": [
+        {
+          "expr": "count(kube_node_status_condition{condition=\"DNSPredictedDegradation\", status=\"True\"} == 1) or vector(0)",
+          "legendFormat": "Nodes with predicted breach"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 3}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Flapping DNS Nodes",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 26},
+      "targets": [
+        {
+          "expr": "count(kube_node_status_condition{condition=~\".*DNSFlapping\", status=\"True\"} == 1) or vector(0)",
+          "legendFormat": "Nodes with DNS flapping"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 3}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Predictive 30-Minute Forecast",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "description": "Linear extrapolation of cluster DNS success rate 30 minutes into the future. If this crosses 0.9, predictive alerting will fire.",
+      "targets": [
+        {
+          "expr": "predict_linear(node_doctor_dns_success_rate{type=\"cluster\"}[10m], 1800)",
+          "legendFormat": "{{node}} (30m forecast)"
+        },
+        {
+          "expr": "node_doctor_dns_success_rate{type=\"cluster\"}",
+          "legendFormat": "{{node}} (current)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit"
+        }
+      }
+    }
+  ]
+}
