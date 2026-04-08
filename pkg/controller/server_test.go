@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1509,4 +1510,49 @@ func TestServer_RemediationCoordinatedEvent_MultipleLeases(t *testing.T) {
 	// Second lease of the same type: coordinatedNodes will have 2 entries;
 	// RecordRemediationCoordinated should be called without panic.
 	grant("node-beta")
+}
+
+// TestServer_Start_BlockedDuringStopping is a regression test for the race window where
+// Stop() releases s.mu after marking s.started=false but before leaseCleanupWg.Wait()
+// completes. A concurrent Start() would see s.started=false and proceed to restart
+// the server while the old one was still draining.
+func TestServer_Start_BlockedDuringStopping(t *testing.T) {
+	config := DefaultControllerConfig()
+	config.Server.Port = 0
+	config.Server.BindAddress = "127.0.0.1"
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	// Manually set stopping=true with the lock held to simulate Stop() having
+	// released the lock mid-drain. This exercises the guard in Start() directly
+	// without needing a real timing race.
+	server.mu.Lock()
+	server.started = false
+	server.stopping = true
+	server.mu.Unlock()
+
+	// Restore state so we can Stop() cleanly afterward (httpServer still running).
+	defer func() {
+		server.mu.Lock()
+		server.started = true
+		server.stopping = false
+		server.mu.Unlock()
+		server.Stop(ctx) //nolint:errcheck
+	}()
+
+	err = server.Start(ctx)
+	if err == nil {
+		t.Fatal("Start() during stop should return an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "stopping") {
+		t.Errorf("Start() error should mention 'stopping', got: %v", err)
+	}
 }

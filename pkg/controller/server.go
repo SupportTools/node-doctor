@@ -33,6 +33,7 @@ type Server struct {
 	// State
 	mu        sync.RWMutex
 	started   bool
+	stopping  bool // true while Stop() is draining; prevents concurrent Start()
 	ready     bool
 	startTime time.Time
 
@@ -117,6 +118,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.started {
 		return fmt.Errorf("server already started")
 	}
+	if s.stopping {
+		return fmt.Errorf("server is stopping; wait for Stop() to complete before calling Start()")
+	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.Port)
 
@@ -188,7 +192,9 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	// Mark as stopped now (while holding the lock) so a concurrent Stop() call
 	// sees !s.started and returns early, avoiding a double-close of the channel.
+	// Also set stopping=true so a concurrent Start() call blocks until we fully drain.
 	s.started = false
+	s.stopping = true
 
 	// Signal the cleanup goroutine to stop.
 	if s.leaseCleanupStopCh != nil {
@@ -227,6 +233,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.ready = false
+	s.stopping = false
 	s.mu.Unlock()
 
 	log.Printf("[INFO] Controller server stopped")
