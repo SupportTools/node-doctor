@@ -121,7 +121,7 @@ func (e *PrometheusExporter) Start(ctx context.Context) error {
 	e.started = true
 
 	log.Printf("[INFO] Prometheus exporter started successfully on %s%s",
-		addr, e.config.Path)
+		server.Addr, e.config.Path)
 
 	return nil
 }
@@ -438,7 +438,7 @@ func (e *PrometheusExporter) Reload(config interface{}) error {
 			}
 			e.server = server
 
-			log.Printf("[INFO] Prometheus server restarted on %s%s", addr, prometheusConfig.Path)
+			log.Printf("[INFO] Prometheus server restarted on %s%s", server.Addr, prometheusConfig.Path)
 		}
 	}
 
