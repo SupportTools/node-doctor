@@ -157,7 +157,7 @@ func TestPrometheusExporterLifecycle(t *testing.T) {
 		t.Fatalf("server never became ready: %v", err)
 	}
 
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err != nil {
 		t.Fatalf("failed to connect to metrics server: %v", err)
 	}
@@ -1086,7 +1086,7 @@ func TestShutdownServer(t *testing.T) {
 	}
 
 	// Verify server is running
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
 	if err != nil {
 		t.Fatalf("failed to connect to server: %v", err)
 	}

@@ -42,7 +42,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 
 	// Test metrics endpoint
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 
 	// Test health endpoint
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
 	if err != nil {
 		t.Fatalf("failed to get health: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestPrometheusFormat(t *testing.T) {
 	exporter.ExportProblem(ctx, problem)
 
 	// Get metrics
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestConditionStatusGauge(t *testing.T) {
 // scrapeMetrics fetches the /metrics endpoint and returns the body as a string.
 func scrapeMetrics(t *testing.T, port int, path string) string {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", port, path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, path))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestConcurrentScrapes(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < numScrapes; j++ {
-				resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+				resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 				if err != nil {
 					errCh <- fmt.Errorf("scrape %d-%d failed: %w", id, j, err)
 					return
@@ -470,7 +470,7 @@ func TestServerShutdown(t *testing.T) {
 	}
 
 	// Verify server is running
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err != nil {
 		t.Fatalf("failed to connect before shutdown: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestServerShutdown(t *testing.T) {
 	}
 
 	// Verify server is no longer running
-	_, err = http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	_, err = newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err == nil {
 		t.Error("expected connection to fail after shutdown")
 	}
@@ -543,7 +543,7 @@ func TestMetricValues(t *testing.T) {
 	}
 
 	// Get metrics
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}

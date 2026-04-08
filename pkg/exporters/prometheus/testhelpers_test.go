@@ -3,6 +3,7 @@ package prometheus
 import (
 	"context"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -64,5 +65,15 @@ func waitForPortClosed(addr string, timeout time.Duration) error {
 			}
 			conn.Close()
 		}
+	}
+}
+
+// newTestHTTPClient returns an *http.Client with a fresh, per-test Transport so
+// that idle connections from previous test runs do not bleed across test cases.
+// Using http.DefaultTransport (as bare http.Get does) can cause spurious 5-second
+// dial timeouts when a stale idle connection was cached for an old port.
+func newTestHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{},
 	}
 }
