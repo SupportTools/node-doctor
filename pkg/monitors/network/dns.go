@@ -184,6 +184,261 @@ func classifyDNSError(err error) DNSErrorType {
 	}
 }
 
+// NameserverHealthScoringConfig configures the composite health scoring system for DNS nameservers.
+// Each check cycle produces a 0-100 score per nameserver from four weighted components.
+type NameserverHealthScoringConfig struct {
+	Enabled bool `json:"enabled"`
+
+	// DegradedThreshold is the score below which a nameserver is considered degraded (default: 70).
+	DegradedThreshold float64 `json:"degradedThreshold"`
+
+	// UnhealthyThreshold is the score below which a nameserver is considered unhealthy (default: 40).
+	UnhealthyThreshold float64 `json:"unhealthyThreshold"`
+
+	// Weights for each scoring component. Must sum to 1.0.
+	SuccessRateWeight    float64 `json:"successRateWeight"`    // default: 0.40
+	LatencyWeight        float64 `json:"latencyWeight"`        // default: 0.25
+	ErrorDiversityWeight float64 `json:"errorDiversityWeight"` // default: 0.15
+	ConsistencyWeight    float64 `json:"consistencyWeight"`    // default: 0.20
+
+	// WindowSize is the number of checks to retain per nameserver (default: 20).
+	WindowSize int `json:"windowSize"`
+
+	// LatencyBaseline is the expected healthy p95 latency (default: 50ms).
+	// Scores 100 at or below this value.
+	LatencyBaseline time.Duration `json:"latencyBaseline"`
+
+	// LatencyMax is the latency at which the latency score hits 0 (default: 2s).
+	LatencyMax time.Duration `json:"latencyMax"`
+}
+
+// NameserverCheckResult is a single DNS check result recorded in a nameserver's stats window.
+type NameserverCheckResult struct {
+	Timestamp time.Time
+	Success   bool
+	Latency   time.Duration
+	ErrType   DNSErrorType
+}
+
+// NameserverStats maintains a sliding window of check results for a single nameserver.
+// It is used to compute composite health scores each cycle.
+type NameserverStats struct {
+	mu      sync.Mutex
+	results []*NameserverCheckResult
+	wIdx    int // next write index
+	count   int // valid entries (up to len(results))
+}
+
+func newNameserverStats(windowSize int) *NameserverStats {
+	if windowSize <= 0 {
+		windowSize = 20
+	}
+	return &NameserverStats{
+		results: make([]*NameserverCheckResult, windowSize),
+	}
+}
+
+// add records a new check result into the sliding window.
+func (ns *NameserverStats) add(r *NameserverCheckResult) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.results[ns.wIdx] = r
+	ns.wIdx = (ns.wIdx + 1) % len(ns.results)
+	if ns.count < len(ns.results) {
+		ns.count++
+	}
+}
+
+// snapshot returns a copy of valid results under lock, safe for computation.
+func (ns *NameserverStats) snapshot() []*NameserverCheckResult {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	out := make([]*NameserverCheckResult, ns.count)
+	copy(out, ns.results[:ns.count])
+	return out
+}
+
+// computeHealthScore calculates a composite 0-100 health score from the stats window.
+// Requires at least minSamples valid entries; returns "insufficient_data" status otherwise.
+func computeHealthScore(ns *NameserverStats, cfg *NameserverHealthScoringConfig, nameserver string) types.NameserverHealthScore {
+	const minSamples = 3
+
+	results := ns.snapshot()
+	score := types.NameserverHealthScore{
+		Nameserver:  nameserver,
+		SampleCount: len(results),
+	}
+
+	if len(results) < minSamples {
+		score.Status = "insufficient_data"
+		return score
+	}
+
+	// --- Success Rate Score (0-100) ---
+	successes := 0
+	var successLatencies []float64
+	errorSeverityTotal := 0
+	for _, r := range results {
+		if r.Success {
+			successes++
+			successLatencies = append(successLatencies, float64(r.Latency))
+		} else {
+			errorSeverityTotal += errorSeverity(r.ErrType)
+		}
+	}
+	successRate := float64(successes) / float64(len(results))
+	score.SuccessScore = successRate * 100
+
+	// --- Latency Score (0-100) based on p95 of successful queries ---
+	// If no successful checks exist, score 0 (unknown latency is treated as worst-case).
+	score.LatencyScore = 0.0
+	if len(successLatencies) >= 2 {
+		p95 := percentile95(successLatencies)
+		baseline := float64(cfg.LatencyBaseline)
+		latMax := float64(cfg.LatencyMax)
+		if p95 <= baseline {
+			score.LatencyScore = 100
+		} else if p95 >= latMax {
+			score.LatencyScore = 0
+		} else {
+			score.LatencyScore = 100 * (latMax - p95) / (latMax - baseline)
+		}
+	}
+
+	// --- Error Diversity Score (0-100) ---
+	// Higher severity errors reduce score more. Max severity per check = 3 (Timeout).
+	maxSeverity := len(results) * 3
+	if maxSeverity > 0 {
+		score.ErrorScore = (1.0 - float64(errorSeverityTotal)/float64(maxSeverity)) * 100
+	} else {
+		score.ErrorScore = 100
+	}
+	if score.ErrorScore < 0 {
+		score.ErrorScore = 0
+	}
+
+	// --- Consistency Score (0-100) based on coefficient of variation of latencies ---
+	// If no successful checks, score 0. If 1-2 points, score 100 (can't measure variance yet).
+	score.ConsistencyScore = 0.0
+	if len(successLatencies) == 1 || len(successLatencies) == 2 {
+		score.ConsistencyScore = 100.0 // insufficient data for variance, assume consistent
+	}
+	if len(successLatencies) >= 3 {
+		mean := mean64(successLatencies)
+		if mean > 0 {
+			stddev := stddev64(successLatencies, mean)
+			cv := stddev / mean
+			// cv in [0, 0.1] → 100; cv >= 2.0 → 0; linear in between
+			const cvMin, cvMax = 0.1, 2.0
+			if cv <= cvMin {
+				score.ConsistencyScore = 100
+			} else if cv >= cvMax {
+				score.ConsistencyScore = 0
+			} else {
+				score.ConsistencyScore = 100 * (cvMax - cv) / (cvMax - cvMin)
+			}
+		}
+	}
+
+	// --- Composite Score ---
+	score.Score = score.SuccessScore*cfg.SuccessRateWeight +
+		score.LatencyScore*cfg.LatencyWeight +
+		score.ErrorScore*cfg.ErrorDiversityWeight +
+		score.ConsistencyScore*cfg.ConsistencyWeight
+
+	switch {
+	case score.Score < cfg.UnhealthyThreshold:
+		score.Status = "unhealthy"
+	case score.Score < cfg.DegradedThreshold:
+		score.Status = "degraded"
+	default:
+		score.Status = "healthy"
+	}
+
+	return score
+}
+
+// errorSeverity maps a DNS error type to a severity weight used in the error diversity score.
+// Higher values represent more impactful error types.
+func errorSeverity(e DNSErrorType) int {
+	switch e {
+	case DNSErrorTimeout:
+		return 3
+	case DNSErrorSERVFAIL, DNSErrorRefused, DNSErrorNXDOMAIN:
+		return 2
+	default: // Temporary, Unknown
+		return 1
+	}
+}
+
+// percentile95 returns the 95th percentile of a float64 slice using linear interpolation.
+// Input need not be sorted; a copy is made internally.
+func percentile95(data []float64) float64 {
+	if len(data) == 0 {
+		return 0
+	}
+	sorted := make([]float64, len(data))
+	copy(sorted, data)
+	sortFloat64s(sorted)
+	idx := 0.95 * float64(len(sorted)-1)
+	lo := int(idx)
+	hi := lo + 1
+	if hi >= len(sorted) {
+		return sorted[lo]
+	}
+	frac := idx - float64(lo)
+	return sorted[lo]*(1-frac) + sorted[hi]*frac
+}
+
+// sortFloat64s sorts in ascending order (insertion sort; n is small).
+func sortFloat64s(a []float64) {
+	for i := 1; i < len(a); i++ {
+		key := a[i]
+		j := i - 1
+		for j >= 0 && a[j] > key {
+			a[j+1] = a[j]
+			j--
+		}
+		a[j+1] = key
+	}
+}
+
+func mean64(a []float64) float64 {
+	if len(a) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range a {
+		sum += v
+	}
+	return sum / float64(len(a))
+}
+
+func stddev64(a []float64, mean float64) float64 {
+	if len(a) < 2 {
+		return 0
+	}
+	variance := 0.0
+	for _, v := range a {
+		d := v - mean
+		variance += d * d
+	}
+	variance /= float64(len(a) - 1)
+	// Integer sqrt via Newton's method (avoid math import dependency)
+	if variance <= 0 {
+		return 0
+	}
+	x := variance
+	for i := 0; i < 50; i++ {
+		xn := (x + variance/x) / 2
+		if xn >= x {
+			break
+		}
+		x = xn
+	}
+	return x
+}
+
 // DNSMonitorConfig holds the configuration for the DNS monitor.
 type DNSMonitorConfig struct {
 	// ClusterDomains are Kubernetes cluster internal domains to test
@@ -212,6 +467,9 @@ type DNSMonitorConfig struct {
 
 	// ConsistencyChecking configures DNS consistency verification via multiple rapid queries
 	ConsistencyChecking *ConsistencyCheckConfig `json:"consistencyChecking"`
+
+	// HealthScoring configures the per-nameserver composite health scoring system.
+	HealthScoring *NameserverHealthScoringConfig `json:"healthScoring"`
 }
 
 // DNSMonitor monitors DNS resolution health.
@@ -234,6 +492,10 @@ type DNSMonitor struct {
 
 	// Latency metrics collected during each check cycle (for Prometheus export)
 	latencyMetrics []types.DNSLatency
+
+	// Per-nameserver sliding-window stats for composite health scoring.
+	// Keyed by nameserver IP string. Populated by checkNameservers when HealthScoring is enabled.
+	nameserverStats map[string]*NameserverStats
 
 	// BaseMonitor for lifecycle management
 	*monitors.BaseMonitor
@@ -291,6 +553,7 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 		nameserverDomainStatus: make(map[string]*NameserverDomainStatus),
 		clusterSuccessTracker:  NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
 		externalSuccessTracker: NewRingBuffer(dnsConfig.SuccessRateTracking.WindowSize),
+		nameserverStats:        make(map[string]*NameserverStats),
 		BaseMonitor:            baseMonitor,
 	}
 
@@ -629,6 +892,63 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 		config.ConsistencyChecking = cc
 	}
 
+	// Parse HealthScoring
+	if val, ok := configMap["healthScoring"]; ok {
+		hsMap, ok := val.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("healthScoring must be an object")
+		}
+
+		hs := &NameserverHealthScoringConfig{}
+
+		if enabled, ok := hsMap["enabled"].(bool); ok {
+			hs.Enabled = enabled
+		}
+
+		if v, ok := hsMap["degradedThreshold"].(float64); ok {
+			hs.DegradedThreshold = v
+		}
+		if v, ok := hsMap["unhealthyThreshold"].(float64); ok {
+			hs.UnhealthyThreshold = v
+		}
+		if v, ok := hsMap["successRateWeight"].(float64); ok {
+			hs.SuccessRateWeight = v
+		}
+		if v, ok := hsMap["latencyWeight"].(float64); ok {
+			hs.LatencyWeight = v
+		}
+		if v, ok := hsMap["errorDiversityWeight"].(float64); ok {
+			hs.ErrorDiversityWeight = v
+		}
+		if v, ok := hsMap["consistencyWeight"].(float64); ok {
+			hs.ConsistencyWeight = v
+		}
+		if v, ok := hsMap["windowSize"]; ok {
+			switch n := v.(type) {
+			case float64:
+				hs.WindowSize = int(n)
+			case int:
+				hs.WindowSize = n
+			}
+		}
+		if v, ok := hsMap["latencyBaseline"].(string); ok {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid healthScoring.latencyBaseline: %w", err)
+			}
+			hs.LatencyBaseline = d
+		}
+		if v, ok := hsMap["latencyMax"].(string); ok {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid healthScoring.latencyMax: %w", err)
+			}
+			hs.LatencyMax = d
+		}
+
+		config.HealthScoring = hs
+	}
+
 	return config, nil
 }
 
@@ -697,7 +1017,52 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 		}
 	}
 
+	// Default health scoring config
+	if c.HealthScoring == nil {
+		c.HealthScoring = &NameserverHealthScoringConfig{
+			Enabled:              false, // Disabled by default for backward compatibility
+			DegradedThreshold:    70,
+			UnhealthyThreshold:   40,
+			SuccessRateWeight:    0.40,
+			LatencyWeight:        0.25,
+			ErrorDiversityWeight: 0.15,
+			ConsistencyWeight:    0.20,
+			WindowSize:           20,
+			LatencyBaseline:      50 * time.Millisecond,
+			LatencyMax:           2 * time.Second,
+		}
+	} else {
+		if c.HealthScoring.DegradedThreshold <= 0 {
+			c.HealthScoring.DegradedThreshold = 70
+		}
+		if c.HealthScoring.UnhealthyThreshold <= 0 {
+			c.HealthScoring.UnhealthyThreshold = 40
+		}
+		if c.HealthScoring.SuccessRateWeight == 0 && c.HealthScoring.LatencyWeight == 0 &&
+			c.HealthScoring.ErrorDiversityWeight == 0 && c.HealthScoring.ConsistencyWeight == 0 {
+			c.HealthScoring.SuccessRateWeight = 0.40
+			c.HealthScoring.LatencyWeight = 0.25
+			c.HealthScoring.ErrorDiversityWeight = 0.15
+			c.HealthScoring.ConsistencyWeight = 0.20
+		}
+		if c.HealthScoring.WindowSize <= 0 {
+			c.HealthScoring.WindowSize = 20
+		}
+		if c.HealthScoring.LatencyBaseline <= 0 {
+			c.HealthScoring.LatencyBaseline = 50 * time.Millisecond
+		}
+		if c.HealthScoring.LatencyMax <= 0 {
+			c.HealthScoring.LatencyMax = 2 * time.Second
+		}
+	}
+
 	return nil
+}
+
+// healthScoringEnabled returns true when health scoring config is non-nil and enabled.
+// Guards against tests that construct DNSMonitor directly without applyDefaults.
+func (m *DNSMonitor) healthScoringEnabled() bool {
+	return m.config.HealthScoring != nil && m.config.HealthScoring.Enabled
 }
 
 // checkDNS performs the DNS health check.
@@ -718,20 +1083,24 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	// Check custom queries
 	m.checkCustomQueries(ctx, status)
 
-	// Check nameservers
-	if m.config.NameserverCheckEnabled {
+	// Check nameservers (also feeds health scoring stats when enabled)
+	if m.config.NameserverCheckEnabled || m.healthScoringEnabled() {
 		m.checkNameservers(ctx, status)
 	}
 
 	// Update failure counters and conditions
 	m.updateFailureTracking(clusterOK, externalOK, status)
 
-	// Set DNS latency metrics for Prometheus export
+	// Compute per-nameserver health scores and attach to status metadata
 	m.mu.Lock()
-	if len(m.latencyMetrics) > 0 {
-		status.SetLatencyMetrics(&types.LatencyMetrics{
-			DNS: m.latencyMetrics,
-		})
+	latencyMetrics := &types.LatencyMetrics{
+		DNS: m.latencyMetrics,
+	}
+	if m.healthScoringEnabled() {
+		latencyMetrics.NameserverHealthScores = m.computeNameserverHealthScores(status)
+	}
+	if len(latencyMetrics.DNS) > 0 || len(latencyMetrics.NameserverHealthScores) > 0 {
+		status.SetLatencyMetrics(latencyMetrics)
 	}
 	m.mu.Unlock()
 
@@ -1242,7 +1611,7 @@ func (m *DNSMonitor) getOrCreateNameserverStatus(key, nameserver, domain string)
 	return status
 }
 
-// checkNameservers verifies nameserver reachability.
+// checkNameservers verifies nameserver reachability and records results for health scoring.
 func (m *DNSMonitor) checkNameservers(ctx context.Context, status *types.Status) {
 	nameservers, err := m.parseResolverConfig()
 	if err != nil {
@@ -1273,17 +1642,96 @@ func (m *DNSMonitor) checkNameservers(ctx context.Context, status *types.Status)
 
 		// Try to resolve using this nameserver
 		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := resolver.LookupHost(queryCtx, testDomain)
+		start := time.Now()
+		_, lookupErr := resolver.LookupHost(queryCtx, testDomain)
+		latency := time.Since(start)
 		cancel()
 
-		if err != nil {
-			status.AddEvent(types.NewEvent(
-				types.EventWarning,
-				"NameserverUnreachable",
-				fmt.Sprintf("Nameserver %s is unreachable: %v", ns, err),
-			))
+		if lookupErr != nil {
+			if m.config.NameserverCheckEnabled {
+				status.AddEvent(types.NewEvent(
+					types.EventWarning,
+					"NameserverUnreachable",
+					fmt.Sprintf("Nameserver %s is unreachable: %v", ns, lookupErr),
+				))
+			}
+		}
+
+		// Feed result into health scoring stats (if enabled)
+		if m.healthScoringEnabled() {
+			m.recordNameserverCheck(ns, lookupErr == nil, latency, classifyDNSError(lookupErr))
 		}
 	}
+}
+
+// recordNameserverCheck records a single check result for a nameserver into its stats window.
+// This is called under the main mutex-free path; NameserverStats has its own lock.
+func (m *DNSMonitor) recordNameserverCheck(nameserver string, success bool, latency time.Duration, errType DNSErrorType) {
+	m.mu.Lock()
+	stats, ok := m.nameserverStats[nameserver]
+	if !ok {
+		windowSize := 20
+		if m.config.HealthScoring != nil && m.config.HealthScoring.WindowSize > 0 {
+			windowSize = m.config.HealthScoring.WindowSize
+		}
+		stats = newNameserverStats(windowSize)
+		m.nameserverStats[nameserver] = stats
+	}
+	m.mu.Unlock()
+
+	stats.add(&NameserverCheckResult{
+		Timestamp: time.Now(),
+		Success:   success,
+		Latency:   latency,
+		ErrType:   errType,
+	})
+}
+
+// computeNameserverHealthScores computes and returns health scores for all tracked nameservers.
+// It also adds conditions to status for any degraded or unhealthy nameservers.
+// Caller must hold m.mu.
+func (m *DNSMonitor) computeNameserverHealthScores(status *types.Status) []types.NameserverHealthScore {
+	if len(m.nameserverStats) == 0 {
+		return nil
+	}
+
+	cfg := m.config.HealthScoring
+	scores := make([]types.NameserverHealthScore, 0, len(m.nameserverStats))
+	var unhealthyList, degradedList []string
+
+	for ns, stats := range m.nameserverStats {
+		score := computeHealthScore(stats, cfg, ns)
+		scores = append(scores, score)
+
+		switch score.Status {
+		case "unhealthy":
+			unhealthyList = append(unhealthyList, fmt.Sprintf("%s(%.0f)", ns, score.Score))
+		case "degraded":
+			degradedList = append(degradedList, fmt.Sprintf("%s(%.0f)", ns, score.Score))
+		}
+	}
+
+	if len(unhealthyList) > 0 {
+		status.AddCondition(types.NewCondition(
+			"DNSNameserverUnhealthy",
+			types.ConditionTrue,
+			"LowHealthScore",
+			fmt.Sprintf("Unhealthy nameservers (score < %.0f): %s",
+				cfg.UnhealthyThreshold, strings.Join(unhealthyList, ", ")),
+		))
+	}
+
+	if len(degradedList) > 0 {
+		status.AddCondition(types.NewCondition(
+			"DNSNameserverDegraded",
+			types.ConditionTrue,
+			"DegradedHealthScore",
+			fmt.Sprintf("Degraded nameservers (score < %.0f): %s",
+				cfg.DegradedThreshold, strings.Join(degradedList, ", ")),
+		))
+	}
+
+	return scores
 }
 
 // parseResolverConfig parses /etc/resolv.conf to extract nameservers.

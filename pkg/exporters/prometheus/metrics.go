@@ -31,8 +31,9 @@ type Metrics struct {
 	PeerReachable           *prometheus.GaugeVec
 	PeersTotal              *prometheus.GaugeVec
 	PeersReachableTotal     *prometheus.GaugeVec
-	DNSLatencySeconds       *prometheus.GaugeVec
-	APIServerLatencySeconds *prometheus.GaugeVec
+	DNSLatencySeconds            *prometheus.GaugeVec
+	DNSNameserverHealthScore     *prometheus.GaugeVec
+	APIServerLatencySeconds      *prometheus.GaugeVec
 
 	// Histogram metrics
 	MonitorCheckDuration      *prometheus.HistogramVec
@@ -271,6 +272,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node", "dns_server", "domain", "record_type"},
 		),
 
+		DNSNameserverHealthScore: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "dns_nameserver_health_score",
+				Help:        "Composite health score (0-100) for each DNS nameserver. 100 = fully healthy.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "nameserver"},
+		),
+
 		APIServerLatencySeconds: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace:   namespace,
@@ -384,6 +396,7 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.PeersTotal,
 		m.PeersReachableTotal,
 		m.DNSLatencySeconds,
+		m.DNSNameserverHealthScore,
 		m.APIServerLatencySeconds,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
@@ -425,6 +438,7 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.PeersTotal,
 		m.PeersReachableTotal,
 		m.DNSLatencySeconds,
+		m.DNSNameserverHealthScore,
 		m.APIServerLatencySeconds,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,

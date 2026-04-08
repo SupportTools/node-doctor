@@ -270,6 +270,14 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 			e.nodeName, dns.DomainType).Observe(latencySeconds)
 	}
 
+	// Record per-nameserver composite health scores
+	for _, hs := range latencyMetrics.NameserverHealthScores {
+		if hs.Status != "insufficient_data" {
+			e.metrics.DNSNameserverHealthScore.WithLabelValues(
+				e.nodeName, hs.Nameserver).Set(hs.Score)
+		}
+	}
+
 	// Record API server latency metrics
 	if latencyMetrics.APIServer != nil {
 		latencySeconds := latencyMetrics.APIServer.LatencyMs / 1000.0

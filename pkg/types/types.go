@@ -400,6 +400,23 @@ type LatencyMetrics struct {
 
 	// API server latency
 	APIServer *APIServerLatency `json:"apiserver,omitempty"`
+
+	// NameserverHealthScores holds per-nameserver composite health scores (0-100).
+	NameserverHealthScores []NameserverHealthScore `json:"nameserver_health_scores,omitempty"`
+}
+
+// NameserverHealthScore is the computed composite health score for a single DNS nameserver.
+// Score is 0-100 where 100 is fully healthy. Components are weighted sub-scores.
+type NameserverHealthScore struct {
+	Nameserver       string  `json:"nameserver"`
+	Score            float64 `json:"score"`             // 0-100 composite
+	SuccessScore     float64 `json:"success_score"`     // success-rate component (0-100)
+	LatencyScore     float64 `json:"latency_score"`     // p95-latency component (0-100)
+	ErrorScore       float64 `json:"error_score"`       // error-diversity component (0-100)
+	ConsistencyScore float64 `json:"consistency_score"` // latency-variance component (0-100)
+	// Status is "healthy", "degraded", "unhealthy", or "insufficient_data"
+	Status      string `json:"status"`
+	SampleCount int    `json:"sample_count"`
 }
 
 // GatewayLatency represents latency to the default gateway.
