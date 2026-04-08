@@ -487,6 +487,11 @@ controller:
       maxConcurrentRemediations: 3
       defaultLeaseDuration: 5m
       cooldownPeriod: 10m
+      # fallbackOnUnreachable: when true, agents proceed with remediations
+      # if the controller is unreachable (e.g., during upgrades).
+      # false = safer (blocks remediations if controller is down).
+      # true  = higher availability (agents act independently when unreachable).
+      fallbackOnUnreachable: false
 
   # Node affinity - prefer control-plane nodes
   preferControlPlane: true

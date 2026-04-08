@@ -187,7 +187,7 @@ data:
         enabled: true
         controllerURL: {{ include "node-doctor.controller.serviceURL" . | quote }}
         leaseTimeout: {{ .Values.controller.config.coordination.defaultLeaseDuration }}
-        fallbackOnUnreachable: false
+        fallbackOnUnreachable: {{ .Values.controller.config.coordination.fallbackOnUnreachable }}
       {{- end }}
 
     features:

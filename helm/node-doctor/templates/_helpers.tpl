@@ -115,3 +115,14 @@ Controller service URL (for use in agent config)
 {{- define "node-doctor.controller.serviceURL" -}}
 {{- printf "http://%s.%s:%d" (include "node-doctor.controller.name" .) .Release.Namespace (.Values.controller.service.port | int) }}
 {{- end }}
+
+{{/*
+Controller service account name
+*/}}
+{{- define "node-doctor.controller.serviceAccountName" -}}
+{{- if .Values.controller.serviceAccount.create }}
+{{- default (include "node-doctor.controller.name" .) .Values.controller.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.controller.serviceAccount.name }}
+{{- end }}
+{{- end }}

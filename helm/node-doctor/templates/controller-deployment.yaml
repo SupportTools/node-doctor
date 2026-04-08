@@ -24,7 +24,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "node-doctor.controller.name" . }}
+      serviceAccountName: {{ include "node-doctor.controller.serviceAccountName" . }}
       {{- with .Values.controller.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
