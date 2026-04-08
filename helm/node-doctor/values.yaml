@@ -499,11 +499,9 @@ controller:
   # Additional tolerations (control-plane tolerations always included)
   tolerations: []
 
-  # Additional pod annotations
-  podAnnotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8080"
-    prometheus.io/path: "/metrics"
+  # Additional pod annotations (prometheus.io/scrape, /port, /path are managed by
+  # the chart template — do not set them here; they will be overridden by the template)
+  podAnnotations: {}
 
   # SecurityContext for the controller pod (non-root)
   podSecurityContext:
