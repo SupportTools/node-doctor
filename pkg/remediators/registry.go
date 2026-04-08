@@ -27,6 +27,7 @@ package remediators
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -122,6 +123,30 @@ type RemediationRecord struct {
 
 	// Error contains the error message if the remediation failed
 	Error string
+}
+
+// MarshalJSON serializes RemediationRecord with camelCase field names and a
+// human-readable duration string (e.g. "1.5s") as required by the
+// /remediation/history HTTP API contract.
+func (r RemediationRecord) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		RemediatorType string        `json:"remediatorType"`
+		Problem        types.Problem `json:"problem"`
+		StartTime      time.Time     `json:"startTime"`
+		EndTime        time.Time     `json:"endTime"`
+		Duration       string        `json:"duration"`
+		Success        bool          `json:"success"`
+		Error          string        `json:"error,omitempty"`
+	}
+	return json.Marshal(wire{
+		RemediatorType: r.RemediatorType,
+		Problem:        r.Problem,
+		StartTime:      r.StartTime,
+		EndTime:        r.EndTime,
+		Duration:       r.Duration.String(),
+		Success:        r.Success,
+		Error:          r.Error,
+	})
 }
 
 // CircuitBreakerConfig contains configuration for the circuit breaker.

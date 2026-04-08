@@ -157,7 +157,7 @@ func TestCreateExporters_Current(t *testing.T) {
 			},
 		}
 
-		exporters, interfaces, err := createExporters(ctx, config)
+		exporters, interfaces, err := createExporters(ctx, config, nil)
 		if err != nil {
 			t.Errorf("createExporters() error = %v, want nil", err)
 		}
@@ -198,7 +198,7 @@ func TestCreateExporters_Current(t *testing.T) {
 			},
 		}
 
-		exporters, _, err := createExporters(ctx, config)
+		exporters, _, err := createExporters(ctx, config, nil)
 		if err != nil {
 			t.Errorf("createExporters() error = %v, want nil", err)
 		}
@@ -348,7 +348,7 @@ func TestCreateExporters_HTTPExporterEnabled(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -391,7 +391,7 @@ func TestCreateExporters_PrometheusExporterEnabled(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -435,7 +435,7 @@ func TestCreateExporters_KubernetesExporterEnabled(t *testing.T) {
 
 	// This should not panic even without valid kubeconfig
 	// It will log a warning but continue
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -484,7 +484,7 @@ func TestCreateExporters_AllExportersEnabled(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -524,7 +524,7 @@ func TestCreateExporters_HealthServerCreation(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -558,7 +558,7 @@ func TestCreateExporters_NoopFallbackVerification(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -629,7 +629,7 @@ func TestCreateExporters_HTTPExporterWithValidConfig(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -677,7 +677,7 @@ func TestCreateExporters_KubernetesExporterWithValidConfig(t *testing.T) {
 	}
 
 	// This will fail without kubeconfig but should exercise the validation path
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}
@@ -742,7 +742,7 @@ func TestCreateExporters_MultipleExportersWithValidConfig(t *testing.T) {
 		},
 	}
 
-	exporters, interfaces, err := createExporters(ctx, config)
+	exporters, interfaces, err := createExporters(ctx, config, nil)
 	if err != nil {
 		t.Errorf("createExporters() error = %v, want nil", err)
 	}

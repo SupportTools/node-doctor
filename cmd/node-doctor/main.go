@@ -187,9 +187,31 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Create exporters
+	// Create remediator registry before exporters so the health server can serve
+	// /remediation/history immediately on start (no race window).
+	var remediatorRegistry *remediators.RemediatorRegistry
+	if config.Remediation.Enabled {
+		maxPerHour := config.Remediation.MaxRemediationsPerHour
+		if maxPerHour == 0 {
+			maxPerHour = 10 // sensible default
+		}
+		historySize := config.Remediation.HistorySize
+		if historySize == 0 {
+			historySize = 100
+		}
+		remediatorRegistry = remediators.NewRegistry(maxPerHour, historySize)
+		remediatorRegistry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
+		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d)",
+			remediatorRegistry.IsDryRun(), maxPerHour)
+	}
+
+	// Create exporters (health server is wired with the history provider before Start).
 	log.Printf("[INFO] Creating exporters...")
-	exporters, exporterInterfaces, err := createExporters(ctx, config)
+	var historyProvider health.RemediationHistoryProvider
+	if remediatorRegistry != nil {
+		historyProvider = &remediationHistoryAdapter{registry: remediatorRegistry}
+	}
+	exporters, exporterInterfaces, err := createExporters(ctx, config, historyProvider)
 	if err != nil {
 		log.Fatalf("Failed to create exporters: %v", err)
 	}
@@ -208,21 +230,9 @@ func main() {
 		log.Fatalf("Failed to create detector: %v", err)
 	}
 
-	// Wire up the remediator registry if remediation is enabled in config
-	if config.Remediation.Enabled {
-		maxPerHour := config.Remediation.MaxRemediationsPerHour
-		if maxPerHour == 0 {
-			maxPerHour = 10 // sensible default
-		}
-		historySize := config.Remediation.HistorySize
-		if historySize == 0 {
-			historySize = 100
-		}
-		registry := remediators.NewRegistry(maxPerHour, historySize)
-		registry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
-		det.SetRemediatorRegistry(registry)
-		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d)",
-			registry.IsDryRun(), maxPerHour)
+	// Wire the registry to the detector (registry was already created above).
+	if remediatorRegistry != nil {
+		det.SetRemediatorRegistry(remediatorRegistry)
 	}
 
 	// Start the detector
@@ -295,8 +305,21 @@ func createMonitors(ctx context.Context, monitorConfigs []types.MonitorConfig) (
 	return monitorInstances, nil
 }
 
-// createExporters creates and configures all exporters from the configuration
-func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]ExporterLifecycle, []types.Exporter, error) {
+// remediationHistoryAdapter adapts *remediators.RemediatorRegistry to health.RemediationHistoryProvider.
+// The registry's GetHistory returns a concrete []RemediationRecord; the health interface requires
+// interface{} so the server can marshal it without importing the remediators package.
+type remediationHistoryAdapter struct {
+	registry *remediators.RemediatorRegistry
+}
+
+func (a *remediationHistoryAdapter) GetHistory(limit int) interface{} {
+	return a.registry.GetHistory(limit)
+}
+
+// createExporters creates and configures all exporters from the configuration.
+// remediationProvider is optional; when non-nil it is wired to the health server
+// before Start() so /remediation/history is available immediately on first request.
+func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider) ([]ExporterLifecycle, []types.Exporter, error) {
 	var exporters []ExporterLifecycle
 	var exporterInterfaces []types.Exporter
 
@@ -352,6 +375,12 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]Exp
 	if err != nil {
 		log.Printf("[WARN] Failed to create health server: %v", err)
 	} else {
+		// Wire the remediation history provider before Start so the endpoint is
+		// available immediately when the listener opens (no race window).
+		if remediationProvider != nil {
+			healthServer.SetRemediationHistory(remediationProvider)
+			log.Printf("[INFO] Remediation history wired to /remediation/history endpoint")
+		}
 		if err := healthServer.Start(ctx); err != nil {
 			log.Printf("[WARN] Failed to start health server: %v", err)
 		} else {

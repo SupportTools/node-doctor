@@ -267,7 +267,7 @@ func TestCreateExporters_TableDriven(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			exporters, interfaces, err := createExporters(ctx, tt.config)
+			exporters, interfaces, err := createExporters(ctx, tt.config, nil)
 			if err != nil {
 				t.Errorf("createExporters() error = %v", err)
 				return
