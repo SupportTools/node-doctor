@@ -20,20 +20,20 @@ func TestNameserverStatsAdd(t *testing.T) {
 	r4 := &NameserverCheckResult{Success: true, Latency: 15 * time.Millisecond}
 
 	ns.add(r1)
-	if ns.count != 1 {
-		t.Fatalf("expected count 1, got %d", ns.count)
+	if ns.Len() != 1 {
+		t.Fatalf("expected count 1, got %d", ns.Len())
 	}
 
 	ns.add(r2)
 	ns.add(r3)
-	if ns.count != 3 {
-		t.Fatalf("expected count 3, got %d", ns.count)
+	if ns.Len() != 3 {
+		t.Fatalf("expected count 3, got %d", ns.Len())
 	}
 
 	// Adding a 4th overwrites oldest; count stays at capacity
 	ns.add(r4)
-	if ns.count != 3 {
-		t.Fatalf("expected count 3 after overflow, got %d", ns.count)
+	if ns.Len() != 3 {
+		t.Fatalf("expected count 3 after overflow, got %d", ns.Len())
 	}
 
 	snap := ns.snapshot()

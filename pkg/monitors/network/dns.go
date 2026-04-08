@@ -255,6 +255,14 @@ func (ns *NameserverStats) add(r *NameserverCheckResult) {
 	}
 }
 
+// Len returns the number of valid entries currently in the sliding window.
+// It is safe to call concurrently.
+func (ns *NameserverStats) Len() int {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	return ns.count
+}
+
 // snapshot returns a copy of valid results under lock, safe for computation.
 func (ns *NameserverStats) snapshot() []*NameserverCheckResult {
 	ns.mu.Lock()
