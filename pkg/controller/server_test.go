@@ -798,3 +798,189 @@ func TestServer_StartBindFailure(t *testing.T) {
 		t.Error("server should not be ready after a bind failure")
 	}
 }
+
+// =====================
+// Rehydration Tests
+// =====================
+
+// newServerTestStorage creates an in-memory SQLite storage for testing.
+func newServerTestStorage(t *testing.T) *SQLiteStorage {
+	t.Helper()
+	storage, err := NewSQLiteStorage(&StorageConfig{Path: ":memory:", Retention: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage: %v", err)
+	}
+	if err := storage.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Cleanup(func() { storage.Close() })
+	return storage
+}
+
+func TestServer_RehydratesStateOnStart(t *testing.T) {
+	storage := newServerTestStorage(t)
+	ctx := context.Background()
+
+	// Seed a node report into storage before the server starts.
+	seedReport := &NodeReport{
+		NodeName:      "rehydrated-node",
+		NodeUID:       "uid-rehydrate",
+		Timestamp:     time.Now().Add(-5 * time.Minute),
+		OverallHealth: HealthStatusDegraded,
+		ActiveProblems: []ProblemSummary{
+			{Type: "disk", Severity: "warning", Message: "disk nearly full"},
+		},
+	}
+	if err := storage.SaveNodeReport(ctx, seedReport); err != nil {
+		t.Fatalf("SaveNodeReport: %v", err)
+	}
+
+	// Seed an active lease into storage.
+	seedLease := &Lease{
+		ID:              "rehydrate-lease-1",
+		NodeName:        "rehydrated-node",
+		RemediationType: "restart-kubelet",
+		GrantedAt:       time.Now().Add(-2 * time.Minute),
+		ExpiresAt:       time.Now().Add(3 * time.Minute),
+		Status:          "active",
+	}
+	if err := storage.SaveLease(ctx, seedLease); err != nil {
+		t.Fatalf("SaveLease: %v", err)
+	}
+
+	// Create a server, attach storage, and start it.
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0 // random port
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	server.SetStorage(storage)
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	// Verify node report was rehydrated into the in-memory map.
+	server.mu.RLock()
+	report, exists := server.nodeReports["rehydrated-node"]
+	server.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("expected 'rehydrated-node' to be in nodeReports after Start")
+	}
+	if report.OverallHealth != HealthStatusDegraded {
+		t.Errorf("expected health %q, got %q", HealthStatusDegraded, report.OverallHealth)
+	}
+	if len(report.ActiveProblems) != 1 {
+		t.Errorf("expected 1 active problem, got %d", len(report.ActiveProblems))
+	}
+
+	// Verify lease was rehydrated into the in-memory map.
+	server.mu.RLock()
+	lease, leaseExists := server.leases["rehydrate-lease-1"]
+	server.mu.RUnlock()
+
+	if !leaseExists {
+		t.Fatal("expected 'rehydrate-lease-1' to be in leases after Start")
+	}
+	if lease.NodeName != "rehydrated-node" {
+		t.Errorf("expected lease NodeName 'rehydrated-node', got %q", lease.NodeName)
+	}
+	if lease.Status != "active" {
+		t.Errorf("expected lease Status 'active', got %q", lease.Status)
+	}
+}
+
+func TestServer_ColdStart_EmptyStorage(t *testing.T) {
+	storage := newServerTestStorage(t)
+	ctx := context.Background()
+
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	server.SetStorage(storage)
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	server.mu.RLock()
+	reportCount := len(server.nodeReports)
+	leaseCount := len(server.leases)
+	server.mu.RUnlock()
+
+	if reportCount != 0 {
+		t.Errorf("expected 0 node reports on cold start, got %d", reportCount)
+	}
+	if leaseCount != 0 {
+		t.Errorf("expected 0 leases on cold start, got %d", leaseCount)
+	}
+}
+
+func TestServer_RehydratedStateVisibleViaAPI(t *testing.T) {
+	storage := newServerTestStorage(t)
+	ctx := context.Background()
+
+	// Seed two nodes with different health states.
+	for _, node := range []struct {
+		name   string
+		health HealthStatus
+	}{
+		{"node-alpha", HealthStatusHealthy},
+		{"node-beta", HealthStatusCritical},
+	} {
+		if err := storage.SaveNodeReport(ctx, &NodeReport{
+			NodeName:      node.name,
+			Timestamp:     time.Now(),
+			OverallHealth: node.health,
+		}); err != nil {
+			t.Fatalf("SaveNodeReport %s: %v", node.name, err)
+		}
+	}
+
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = 0
+	config.Correlation.Enabled = false
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	server.SetStorage(storage)
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	// Cluster status should reflect the two seeded nodes.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cluster/status", nil)
+	w := httptest.NewRecorder()
+	server.handleClusterStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	data := resp.Data.(map[string]interface{})
+
+	if int(data["totalNodes"].(float64)) != 2 {
+		t.Errorf("expected 2 total nodes, got %v", data["totalNodes"])
+	}
+	if int(data["criticalNodes"].(float64)) != 1 {
+		t.Errorf("expected 1 critical node, got %v", data["criticalNodes"])
+	}
+	if data["overallHealth"] != string(HealthStatusCritical) {
+		t.Errorf("expected overall health %q, got %v", HealthStatusCritical, data["overallHealth"])
+	}
+}

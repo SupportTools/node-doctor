@@ -121,10 +121,21 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Rehydrate in-memory state from storage before going live.
+	// This runs while the write lock is held, so no concurrent request can
+	// observe the empty-state window between boot and first report delivery.
+	if s.storage != nil {
+		s.rehydrateFromStorage(ctx)
+	}
+
 	// Start correlator if available
 	if s.correlator != nil {
 		if err := s.correlator.Start(ctx); err != nil {
 			log.Printf("[WARN] Failed to start correlator: %v", err)
+		}
+		// Feed rehydrated reports so correlator has cluster state immediately.
+		for _, report := range s.nodeReports {
+			s.correlator.UpdateNodeReport(report)
 		}
 	}
 
@@ -930,6 +941,34 @@ func (s *Server) SetReady(ready bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ready = ready
+}
+
+// rehydrateFromStorage loads persisted node reports and active leases into the
+// in-memory caches. It must be called with s.mu already held (as it is inside
+// Start). Errors are non-fatal: the server continues with whatever state was
+// successfully loaded.
+func (s *Server) rehydrateFromStorage(ctx context.Context) {
+	log.Printf("[INFO] Rehydrating in-memory state from storage...")
+
+	reports, err := s.storage.GetAllLatestReports(ctx)
+	if err != nil {
+		log.Printf("[WARN] Failed to rehydrate node reports from storage: %v", err)
+	} else {
+		for nodeName, report := range reports {
+			s.nodeReports[nodeName] = report
+		}
+		log.Printf("[INFO] Rehydrated %d node report(s) from storage", len(reports))
+	}
+
+	leases, err := s.storage.GetActiveLeases(ctx)
+	if err != nil {
+		log.Printf("[WARN] Failed to rehydrate leases from storage: %v", err)
+	} else {
+		for _, lease := range leases {
+			s.leases[lease.ID] = lease
+		}
+		log.Printf("[INFO] Rehydrated %d active lease(s) from storage", len(leases))
+	}
 }
 
 // SetStorage sets the storage backend for the server
