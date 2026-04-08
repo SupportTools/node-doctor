@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -98,23 +99,27 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.config.Server.BindAddress, s.config.Server.Port)
+
+	// Eagerly bind the listener so bind failures propagate synchronously.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("controller server failed to bind %s: %w", addr, err)
+	}
+
 	s.httpServer = &http.Server{
-		Addr:         addr,
+		Addr:         ln.Addr().String(),
 		Handler:      s.loggingMiddleware(s.mux),
 		ReadTimeout:  s.config.Server.ReadTimeout,
 		WriteTimeout: s.config.Server.WriteTimeout,
 	}
 
-	// Start HTTP server in background
+	// Start HTTP server using the already-bound listener
 	go func() {
-		log.Printf("[INFO] Starting controller server on %s", addr)
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("[INFO] Starting controller server on %s", ln.Addr())
+		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("[ERROR] Controller server failed: %v", err)
 		}
 	}()
-
-	// Give server a moment to start
-	time.Sleep(100 * time.Millisecond)
 
 	// Start correlator if available
 	if s.correlator != nil {
@@ -131,7 +136,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.ready = true
 	s.startTime = time.Now()
 
-	log.Printf("[INFO] Controller server started on %s", addr)
+	log.Printf("[INFO] Controller server started on %s", ln.Addr())
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -148,26 +149,32 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/remediation/history", s.handleRemediationHistory)
 
 	addr := fmt.Sprintf("%s:%d", s.config.BindAddress, s.config.Port)
+
+	// Eagerly bind the listener so bind failures propagate synchronously.
+	// Using net.Listen + Serve instead of ListenAndServe avoids the race where
+	// a goroutine fails silently after Start() returns success.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("health server failed to bind %s: %w", addr, err)
+	}
+
 	s.httpServer = &http.Server{
-		Addr:         addr,
+		Addr:         ln.Addr().String(),
 		Handler:      mux,
 		ReadTimeout:  s.config.ReadTimeout,
 		WriteTimeout: s.config.WriteTimeout,
 	}
 
-	// Start HTTP server in background
+	// Start HTTP server using the already-bound listener
 	go func() {
-		log.Printf("[INFO] Starting health server on %s", addr)
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("[INFO] Starting health server on %s", ln.Addr())
+		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("[ERROR] Health server failed: %v", err)
 		}
 	}()
 
-	// Wait a moment for server to start
-	time.Sleep(100 * time.Millisecond)
-
 	s.started = true
-	log.Printf("[INFO] Health server started successfully on %s", addr)
+	log.Printf("[INFO] Health server started successfully on %s", ln.Addr())
 
 	return nil
 }

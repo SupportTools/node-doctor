@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -35,25 +36,28 @@ func startHTTPServer(ctx context.Context, addr, path string, registry *prometheu
 		w.Write([]byte(`{"status":"healthy","service":"prometheus-exporter"}`))
 	})
 
+	// Eagerly bind the listener so bind failures propagate synchronously.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("prometheus server failed to bind %s: %w", addr, err)
+	}
+
 	// Create HTTP server
 	server := &http.Server{
-		Addr:         addr,
+		Addr:         ln.Addr().String(),
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
+	// Start server using the already-bound listener
 	go func() {
-		log.Printf("[INFO] Starting Prometheus metrics server on %s%s", addr, path)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("[INFO] Starting Prometheus metrics server on %s%s", ln.Addr(), path)
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("[ERROR] Prometheus metrics server error: %v", err)
 		}
 	}()
-
-	// Wait a moment to ensure server starts
-	time.Sleep(100 * time.Millisecond)
 
 	return server, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -765,4 +766,35 @@ func TestServer_WithInitializedStorage(t *testing.T) {
 			t.Errorf("expected NodeName 'storage-test-node', got %q", saved.NodeName)
 		}
 	})
+}
+
+func TestServer_StartBindFailure(t *testing.T) {
+	// Occupy a port so the controller server cannot bind to it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to grab a free port: %v", err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	config := DefaultControllerConfig()
+	config.Server.BindAddress = "127.0.0.1"
+	config.Server.Port = port
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err == nil {
+		server.Stop(ctx)
+		t.Fatal("Start() should fail when port is already in use")
+	}
+
+	// Server must not be marked as started after a bind failure.
+	if server.IsReady() {
+		t.Error("server should not be ready after a bind failure")
+	}
 }

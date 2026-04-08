@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -467,10 +468,18 @@ func TestServer_handleRemediationHistory_WithProvider(t *testing.T) {
 }
 
 func TestServer_StartStop(t *testing.T) {
+	// Grab a free port then release it for the server to bind.
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to get free port: %v", err)
+	}
+	freePort := tmp.Addr().(*net.TCPAddr).Port
+	tmp.Close()
+
 	config := &Config{
 		Enabled:     true,
 		BindAddress: "127.0.0.1",
-		Port:        0, // Use port 0 to let OS assign random port
+		Port:        freePort,
 	}
 	server, err := NewServer(config)
 	if err != nil {
@@ -516,5 +525,37 @@ func TestServer_Name(t *testing.T) {
 
 	if server.Name() != "health-server" {
 		t.Errorf("Expected name 'health-server', got '%s'", server.Name())
+	}
+}
+
+func TestServer_StartBindFailure(t *testing.T) {
+	// Occupy a port with a raw listener so the health server cannot bind to it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to grab a free port: %v", err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	config := &Config{
+		Enabled:     true,
+		BindAddress: "127.0.0.1",
+		Port:        port,
+	}
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err == nil {
+		server.Stop()
+		t.Fatal("Start() should fail when port is already in use")
+	}
+
+	// Server must not be marked as started after a bind failure.
+	if server.started {
+		t.Error("server.started should be false after a bind failure")
 	}
 }

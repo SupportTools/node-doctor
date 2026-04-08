@@ -1150,3 +1150,38 @@ func TestExportProblemBeforeStart(t *testing.T) {
 		t.Errorf("expected error to contain 'not started', got: %v", err)
 	}
 }
+
+func TestPrometheusExporter_StartBindFailure(t *testing.T) {
+	// Occupy a port so the exporter cannot bind to it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to grab a free port: %v", err)
+	}
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      port,
+		Path:      "/metrics",
+		Namespace: "test",
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("NewPrometheusExporter() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if err := exporter.Start(ctx); err == nil {
+		exporter.Stop()
+		t.Fatal("Start() should fail when port is already in use")
+	}
+
+	// Exporter must not be marked as started after a bind failure.
+	if exporter.started {
+		t.Error("exporter.started should be false after a bind failure")
+	}
+}
