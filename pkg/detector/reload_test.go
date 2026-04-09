@@ -1009,6 +1009,69 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 			t.Errorf("pd.dependents[dep-monitor] = %v, want child removed despite stopMonitorByName failure", pd.dependents["dep-monitor"])
 		}
 	})
+
+	t.Run("dependents map cleaned for removed monitor with multiple DependsOn entries", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		// Start with dep-a, dep-b, and child-1 which depends on both.
+		depA := helper.CreateTestMonitorConfig("dep-a", "test")
+		depB := helper.CreateTestMonitorConfig("dep-b", "test")
+		child1 := types.MonitorConfig{
+			Name:      "child-1",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-a", "dep-b"},
+		}
+		config.Monitors = []types.MonitorConfig{depA, depB, child1}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+		if err := pd.Start(); err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		defer pd.Stop()
+		time.Sleep(50 * time.Millisecond)
+
+		// Pre-condition: both dep-a and dep-b must list child-1 as a dependent.
+		if !slices.Contains(pd.dependents["dep-a"], "child-1") {
+			t.Fatalf("pre-condition: pd.dependents[dep-a] = %v, want child-1", pd.dependents["dep-a"])
+		}
+		if !slices.Contains(pd.dependents["dep-b"], "child-1") {
+			t.Fatalf("pre-condition: pd.dependents[dep-b] = %v, want child-1", pd.dependents["dep-b"])
+		}
+
+		// Hot-reload removes child-1 entirely.
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{depA, depB}
+
+		diff := &reload.ConfigDiff{
+			MonitorsRemoved: []types.MonitorConfig{child1},
+		}
+
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		// child-1 must be evicted from every dependency key it declared.
+		if slices.Contains(pd.dependents["dep-a"], "child-1") {
+			t.Errorf("pd.dependents[dep-a] = %v, want child-1 removed after monitor removal", pd.dependents["dep-a"])
+		}
+		if slices.Contains(pd.dependents["dep-b"], "child-1") {
+			t.Errorf("pd.dependents[dep-b] = %v, want child-1 removed after monitor removal", pd.dependents["dep-b"])
+		}
+	})
 }
 
 // Helper function to check if string contains substring
