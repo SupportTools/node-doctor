@@ -665,6 +665,22 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 		if err := pd.addMonitor(ctx, monitor, newConfig); err != nil {
 			log.Printf("[ERROR] Failed to start modified monitor %s: %v", newConfig.Name, err)
 			criticalErrors = append(criticalErrors, fmt.Errorf("failed to start modified monitor %s: %w", newConfig.Name, err))
+			continue
+		}
+
+		// Update the reverse-dependency index: remove stale entries from the old
+		// DependsOn list, then add entries for the new DependsOn list.
+		for _, dep := range modifiedChange.Old.DependsOn {
+			updated := make([]string, 0, len(pd.dependents[dep]))
+			for _, m := range pd.dependents[dep] {
+				if m != newConfig.Name {
+					updated = append(updated, m)
+				}
+			}
+			pd.dependents[dep] = updated
+		}
+		for _, dep := range newConfig.DependsOn {
+			pd.dependents[dep] = append(pd.dependents[dep], newConfig.Name)
 		}
 	}
 

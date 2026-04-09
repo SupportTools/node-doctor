@@ -606,6 +606,77 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 			t.Error("applyConfigReload() expected critical error for dependency cycle, got nil")
 		}
 	})
+
+	t.Run("dependents map updated for modified monitor DependsOn change", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		// Start with "child" depending on "dep-a".
+		depA := helper.CreateTestMonitorConfig("dep-a", "test")
+		depB := helper.CreateTestMonitorConfig("dep-b", "test")
+		child := types.MonitorConfig{
+			Name:      "child",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-a"},
+		}
+		config.Monitors = []types.MonitorConfig{depA, depB, child}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+		if err := pd.Start(); err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		defer pd.Stop()
+		time.Sleep(50 * time.Millisecond)
+
+		// Sanity: dep-a's dependents should include child before reload.
+		if !slices.Contains(pd.dependents["dep-a"], "child") {
+			t.Fatalf("pre-condition: pd.dependents[dep-a] = %v, want child", pd.dependents["dep-a"])
+		}
+
+		// Hot-reload changes child's DependsOn from [dep-a] to [dep-b].
+		modifiedChild := types.MonitorConfig{
+			Name:      "child",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-b"},
+		}
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{depA, depB, modifiedChild}
+
+		diff := &reload.ConfigDiff{
+			MonitorsModified: []reload.MonitorChange{
+				{Old: child, New: modifiedChild},
+			},
+		}
+
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		// dep-a must no longer list child as a dependent.
+		if slices.Contains(pd.dependents["dep-a"], "child") {
+			t.Errorf("pd.dependents[dep-a] = %v, want child removed after DependsOn change", pd.dependents["dep-a"])
+		}
+		// dep-b must now list child as a dependent.
+		if !slices.Contains(pd.dependents["dep-b"], "child") {
+			t.Errorf("pd.dependents[dep-b] = %v, want child added after DependsOn change", pd.dependents["dep-b"])
+		}
+	})
 }
 
 // Helper function to check if string contains substring
