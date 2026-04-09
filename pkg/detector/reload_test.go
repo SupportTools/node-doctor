@@ -760,15 +760,16 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 		defer pd.Stop()
 		time.Sleep(50 * time.Millisecond)
 
+		// Pre-condition: dep-monitor has no dependents yet (child was never started).
+		if slices.Contains(pd.dependents["dep-monitor"], "child") {
+			t.Fatalf("pre-condition: pd.dependents[dep-monitor] already contains child — unexpected state")
+		}
+
 		// Inject "child" into pd.dependents as if it had declared DependsOn:
 		// ["dep-monitor"] when it was originally started.  Because we never
 		// added a MonitorHandle for "child", stopMonitorByName("child") will
 		// return "monitor child not found" — simulating a failed stop.
 		pd.dependents["dep-monitor"] = []string{"child"}
-
-		if !slices.Contains(pd.dependents["dep-monitor"], "child") {
-			t.Fatalf("pre-condition: pd.dependents[dep-monitor] = %v, want child", pd.dependents["dep-monitor"])
-		}
 
 		child := types.MonitorConfig{
 			Name:      "child",
