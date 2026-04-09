@@ -134,10 +134,15 @@ type GlobalSettings struct {
 	// Logging configuration
 	LogLevel  string `json:"logLevel,omitempty" yaml:"logLevel,omitempty"`
 	LogFormat string `json:"logFormat,omitempty" yaml:"logFormat,omitempty"`
+	// LogOutput and LogFile are parsed and validated but not yet consumed by the
+	// agent bootstrap; logging routing is currently configured via environment
+	// variables. Reserved for a future structured-logging refactor.
 	LogOutput string `json:"logOutput,omitempty" yaml:"logOutput,omitempty"`
 	LogFile   string `json:"logFile,omitempty" yaml:"logFile,omitempty"`
 
-	// Update intervals (stored as strings, parsed to time.Duration)
+	// Update intervals — parsed into the Duration fields below but not yet consumed
+	// by the detector loop; the detector currently uses hard-coded check cadence.
+	// Reserved for a future configurable-interval feature.
 	UpdateIntervalString    string `json:"updateInterval,omitempty" yaml:"updateInterval,omitempty"`
 	ResyncIntervalString    string `json:"resyncInterval,omitempty" yaml:"resyncInterval,omitempty"`
 	HeartbeatIntervalString string `json:"heartbeatInterval,omitempty" yaml:"heartbeatInterval,omitempty"`
@@ -147,7 +152,9 @@ type GlobalSettings struct {
 	ResyncInterval    time.Duration `json:"-" yaml:"-"`
 	HeartbeatInterval time.Duration `json:"-" yaml:"-"`
 
-	// Remediation master switches
+	// Remediation master switches.
+	// EnableRemediation is parsed but not read at runtime; the effective gate is
+	// config.Remediation.Enabled in main.go. Reserved to unify these two flags.
 	EnableRemediation bool `json:"enableRemediation,omitempty" yaml:"enableRemediation,omitempty"`
 	DryRunMode        bool `json:"dryRunMode,omitempty" yaml:"dryRunMode,omitempty"`
 
@@ -388,8 +395,11 @@ type RemediationConfig struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
 	DryRun  bool `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
 
-	// Safety limits
-	MaxRemediationsPerHour   int `json:"maxRemediationsPerHour,omitempty" yaml:"maxRemediationsPerHour,omitempty"`
+	// Safety limits.
+	MaxRemediationsPerHour int `json:"maxRemediationsPerHour,omitempty" yaml:"maxRemediationsPerHour,omitempty"`
+	// MaxRemediationsPerMinute is parsed but not enforced at runtime; only the
+	// per-hour bucket (maxPerHour) is wired to RemediatorRegistry. Reserved for
+	// a future fine-grained burst-limiting feature.
 	MaxRemediationsPerMinute int `json:"maxRemediationsPerMinute,omitempty" yaml:"maxRemediationsPerMinute,omitempty"`
 
 	// Cooldown configuration

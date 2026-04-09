@@ -106,8 +106,18 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/v1/leases", s.handleLeases)
 	s.mux.HandleFunc("/api/v1/leases/", s.handleLeaseDetail)
 
-	// Prometheus metrics (placeholder - will be implemented in metrics.go)
-	s.mux.HandleFunc("/metrics", s.handleMetrics)
+	// Prometheus metrics — only registered when enabled via config.
+	if s.config.Prometheus.Enabled {
+		path := s.config.Prometheus.Path
+		if path == "" {
+			path = "/metrics"
+		}
+		// ServeMux requires patterns to begin with '/'; guard against misconfigured values.
+		if path[0] != '/' {
+			path = "/" + path
+		}
+		s.mux.HandleFunc(path, s.handleMetrics)
+	}
 }
 
 // Start starts the HTTP server
@@ -130,9 +140,16 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("controller server failed to bind %s: %w", addr, err)
 	}
 
+	// Build middleware chain: logging wraps the mux; CORS wraps logging when enabled.
+	var handler http.Handler = s.mux
+	handler = s.loggingMiddleware(handler)
+	if s.config.Server.EnableCORS {
+		handler = s.corsMiddleware(handler)
+	}
+
 	s.httpServer = &http.Server{
 		Addr:         ln.Addr().String(),
-		Handler:      s.loggingMiddleware(s.mux),
+		Handler:      handler,
 		ReadTimeout:  s.config.Server.ReadTimeout,
 		WriteTimeout: s.config.Server.WriteTimeout,
 	}
@@ -244,6 +261,26 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	log.Printf("[INFO] Controller server stopped")
 	return nil
+}
+
+
+// corsMiddleware adds CORS headers when enabled in server config.
+// It allows all origins — this is intentional for an internal metrics/status API
+// that runs in a cluster and is not exposed to the public internet.
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		// Note: credentialed requests (Authorization header) are incompatible with
+		// wildcard Allow-Origin per the CORS spec. This API is internal and does not
+		// require credential forwarding; omit Authorization from Allow-Headers.
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // loggingMiddleware adds request logging

@@ -1455,3 +1455,183 @@ func TestServer_Start_BlockedDuringStopping(t *testing.T) {
 		t.Errorf("Start() error should mention 'stopping', got: %v", err)
 	}
 }
+
+// ── Config parity regression tests ──────────────────────────────────────────
+
+// TestSetupRoutes_PrometheusDisabled verifies that /metrics is NOT registered
+// when Prometheus.Enabled is false.
+func TestSetupRoutes_PrometheusDisabled(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.Prometheus.Enabled = false
+
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /metrics when Prometheus disabled, got %d", w.Code)
+	}
+}
+
+// TestSetupRoutes_PrometheusEnabled verifies that /metrics IS registered
+// when Prometheus.Enabled is true.
+func TestSetupRoutes_PrometheusEnabled(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.Prometheus.Enabled = true
+	cfg.Prometheus.Path = "/metrics"
+
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Errorf("expected non-404 for /metrics when Prometheus enabled, got 404")
+	}
+}
+
+// TestSetupRoutes_PrometheusCustomPath verifies that a non-default Prometheus
+// path is honoured and the default /metrics path returns 404.
+func TestSetupRoutes_PrometheusCustomPath(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.Prometheus.Enabled = true
+	cfg.Prometheus.Path = "/custom-metrics"
+
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	// Custom path should be registered.
+	req := httptest.NewRequest(http.MethodGet, "/custom-metrics", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code == http.StatusNotFound {
+		t.Errorf("expected non-404 for /custom-metrics, got 404")
+	}
+
+	// Default /metrics path should NOT be registered.
+	req2 := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w2 := httptest.NewRecorder()
+	s.mux.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /metrics when custom path set, got %d", w2.Code)
+	}
+}
+
+// TestCORSMiddleware_AddsHeaders verifies that CORS headers are present on
+// responses when EnableCORS is true.
+func TestCORSMiddleware_AddsHeaders(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.Server.EnableCORS = true
+
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	// Build the same middleware chain that Start() would build.
+	handler := s.corsMiddleware(s.mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got %q", got)
+	}
+}
+
+// TestCORSMiddleware_PreflightReturns204 verifies that OPTIONS preflight
+// requests are terminated with 204 No Content and correct CORS headers,
+// including DELETE in Allow-Methods (required for /api/v1/leases/{id}).
+func TestCORSMiddleware_PreflightReturns204(t *testing.T) {
+	cfg := DefaultControllerConfig()
+
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	handler := s.corsMiddleware(s.mux)
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/leases/some-lease-id", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204 for OPTIONS preflight, got %d", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got %q", got)
+	}
+	// DELETE must be present so cross-origin lease-release calls are not blocked.
+	allowMethods := w.Header().Get("Access-Control-Allow-Methods")
+	for _, method := range []string{"GET", "POST", "DELETE", "OPTIONS"} {
+		if !strings.Contains(allowMethods, method) {
+			t.Errorf("expected %s in Access-Control-Allow-Methods, got %q", method, allowMethods)
+		}
+	}
+}
+
+// TestSetupRoutes_PrometheusEmptyPath verifies that an empty Prometheus path
+// falls back to /metrics (the default).
+func TestSetupRoutes_PrometheusEmptyPath(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.Prometheus.Enabled = true
+	cfg.Prometheus.Path = ""
+
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		t.Errorf("expected /metrics to be registered with empty path config, got 404")
+	}
+}
+
+// TestSetupRoutes_PrometheusPathWithoutLeadingSlash verifies that a config
+// value like "metrics" (missing the leading "/") is corrected and does not
+// panic http.ServeMux.
+func TestSetupRoutes_PrometheusPathWithoutLeadingSlash(t *testing.T) {
+	cfg := DefaultControllerConfig()
+	cfg.Prometheus.Enabled = true
+	cfg.Prometheus.Path = "metrics" // missing leading "/"
+
+	// NewServer panics (via ServeMux) if the slash-guard is absent.
+	var s *Server
+	var newErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				newErr = errors.New("NewServer panicked: leading-slash guard is missing")
+			}
+		}()
+		s, newErr = NewServer(cfg)
+	}()
+	if newErr != nil {
+		t.Fatalf("NewServer() panicked or errored: %v", newErr)
+	}
+
+	// The corrected path "/metrics" should be reachable.
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	if w.Code == http.StatusNotFound {
+		t.Errorf("expected /metrics to be registered after slash correction, got 404")
+	}
+}
