@@ -1082,7 +1082,10 @@ All of the following are handled by `applyConfigReload` (`pkg/detector/detector.
 - Removing monitors — stopped and cleaned up; associated conditions are cleared
 - Modifying monitors (any field including type, interval, timeout, config) — stopped and restarted with new config
 - Exporter configuration (enable/disable, port, path, webhook URLs)
-- Remediation configuration (enabled, dryRun, rate limits, circuit breaker thresholds)
+
+#### Requires Restart
+
+- **Remediation configuration** (enabled, dryRun, maxRemediationsPerHour, circuit breaker thresholds) — The diff is computed and an event is logged (`buildReloadStats` reports "remediation config updated"), but `applyConfigReload` has no step that propagates new values into the live `RemediatorRegistry`. The registry retains the configuration from its construction time. A pod restart is required for remediation config changes to take effect.
 
 #### Reload Safety Guarantees
 
