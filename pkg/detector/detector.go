@@ -107,13 +107,18 @@ type ProblemDetector struct {
 	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
 	handlesMu          sync.Mutex                     // Protects monitorHandles slice (inner lock; never held when acquiring pd.mu or reloadMutex)
 
-	// Dependency scheduling: populated in Start() and read-only thereafter.
-	// lastStatus caches each monitor's most recent *types.Status for blocked-state evaluation.
+	// Dependency scheduling.
+	// lastStatus caches each monitor's most recent *effective* *types.Status for blocked-state
+	// evaluation. It is written on every processStatus call (continuously at runtime) and is
+	// therefore NOT read-only after Start(). Access is protected by lastStatusMu.
 	// dependents is a reverse-lookup from dependency name → monitors that declared it in DependsOn.
-	// Invariant: both maps are written exactly once in Start() before any goroutine reads them.
+	// It is written once during Start() and is effectively read-only thereafter (no mutex needed).
+	// Reserved: currently unused at runtime. Intended for a future push-notification model where
+	// a dependency state-change immediately re-evaluates its declared dependents rather than
+	// waiting for the dependent's next scheduled status emission.
 	lastStatusMu sync.RWMutex
-	lastStatus   map[string]*types.Status // monitor name -> most recent status
-	dependents   map[string][]string      // dependency name -> monitors that depend on it
+	lastStatus   map[string]*types.Status // monitor name -> most recent effective status (protected by lastStatusMu)
+	dependents   map[string][]string      // dependency name -> monitors that depend on it (written once in Start; reserved for future push model)
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -293,8 +298,9 @@ func (pd *ProblemDetector) Start() error {
 		return fmt.Errorf("monitor dependency cycle detected, cannot start: %w", sortErr)
 	}
 
-	// Build the reverse-dependency index (dependency name → dependents) so
-	// processStatus can efficiently evaluate blocked state for each status update.
+	// Build the reverse-dependency index (dependency name → dependents).
+	// Reserved for a future push-notification model. processStatus currently evaluates
+	// blocked state via lastStatus (pull model) and does not consult this index.
 	for _, mc := range sortedMonitors {
 		for _, dep := range mc.DependsOn {
 			pd.dependents[dep] = append(pd.dependents[dep], mc.Name)
@@ -846,7 +852,8 @@ func topologicalSortMonitors(monitors []types.MonitorConfig) ([]types.MonitorCon
 // isMonitorBlocked reports whether any of the named monitor's declared dependencies
 // currently reports an unhealthy condition (ConditionFalse). Returns the first
 // blocking dependency name or "" when unblocked.
-// Invariant: pd.lastStatus and pd.monitorConfigIndex are read-only after Start().
+// Uses lastStatusMu for concurrent-safe reads of lastStatus (which is written continuously
+// by processStatus) and configIndexMu for reads of monitorConfigIndex.
 func (pd *ProblemDetector) isMonitorBlocked(name string) (blocked bool, blockedBy string) {
 	pd.configIndexMu.RLock()
 	cfg, ok := pd.monitorConfigIndex[name]
