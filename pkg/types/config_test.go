@@ -2550,3 +2550,554 @@ func TestMonitorConfigValidation_WithThresholds(t *testing.T) {
 		})
 	}
 }
+
+// ── Validation coverage: ControllerWebhookConfig ─────────────────────────────
+
+func TestControllerWebhookConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   ControllerWebhookConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "disabled webhook is always valid",
+			input:   ControllerWebhookConfig{Enabled: false},
+			wantErr: false,
+		},
+		{
+			name: "valid enabled webhook",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "https://controller.example.com/api",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing URL",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+			},
+			wantErr: true,
+			errMsg:  "url is required",
+		},
+		{
+			name: "URL without http scheme",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "ftp://controller.example.com",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+			},
+			wantErr: true,
+			errMsg:  "must start with http",
+		},
+		{
+			name: "zero interval",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "https://controller.example.com",
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+			},
+			wantErr: true,
+			errMsg:  "interval must be positive",
+		},
+		{
+			name: "zero timeout",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "https://controller.example.com",
+				Interval: 30 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+			},
+			wantErr: true,
+			errMsg:  "timeout must be positive",
+		},
+		{
+			name: "invalid auth type",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "https://controller.example.com",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "oauth"},
+			},
+			wantErr: true,
+			errMsg:  "invalid auth type",
+		},
+		{
+			name: "valid retry config",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "https://controller.example.com",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+				Retry: &RetryConfig{
+					MaxAttempts: 3,
+					BaseDelay:   1 * time.Second,
+					MaxDelay:    10 * time.Second,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid retry: baseDelay exceeds maxDelay",
+			input: ControllerWebhookConfig{
+				Enabled:  true,
+				URL:      "https://controller.example.com",
+				Interval: 30 * time.Second,
+				Timeout:  10 * time.Second,
+				Auth:     AuthConfig{Type: "none"},
+				Retry: &RetryConfig{
+					MaxAttempts: 3,
+					BaseDelay:   30 * time.Second,
+					MaxDelay:    1 * time.Second,
+				},
+			},
+			wantErr: true,
+			errMsg:  "baseDelay",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// ── Validation coverage: RemediationCoordinationConfig ───────────────────────
+
+func TestRemediationCoordinationConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   RemediationCoordinationConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "disabled config is always valid",
+			input:   RemediationCoordinationConfig{Enabled: false},
+			wantErr: false,
+		},
+		{
+			name: "valid enabled config",
+			input: RemediationCoordinationConfig{
+				Enabled:        true,
+				ControllerURL:  "https://node-doctor-controller:8080",
+				LeaseTimeout:   5 * time.Minute,
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+				RetryInterval:  10 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing controllerURL",
+			input: RemediationCoordinationConfig{
+				Enabled:        true,
+				LeaseTimeout:   5 * time.Minute,
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+				RetryInterval:  10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "controllerURL is required",
+		},
+		{
+			name: "controllerURL without http scheme",
+			input: RemediationCoordinationConfig{
+				Enabled:        true,
+				ControllerURL:  "controller:8080",
+				LeaseTimeout:   5 * time.Minute,
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+				RetryInterval:  10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "controllerURL must start with http",
+		},
+		{
+			name: "zero leaseTimeout",
+			input: RemediationCoordinationConfig{
+				Enabled:        true,
+				ControllerURL:  "https://controller:8080",
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+				RetryInterval:  10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "leaseTimeout must be positive",
+		},
+		{
+			name: "zero requestTimeout",
+			input: RemediationCoordinationConfig{
+				Enabled:       true,
+				ControllerURL: "https://controller:8080",
+				LeaseTimeout:  5 * time.Minute,
+				MaxRetries:    3,
+				RetryInterval: 10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "requestTimeout must be positive",
+		},
+		{
+			name: "negative maxRetries",
+			input: RemediationCoordinationConfig{
+				Enabled:        true,
+				ControllerURL:  "https://controller:8080",
+				LeaseTimeout:   5 * time.Minute,
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     -1,
+				RetryInterval:  10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "maxRetries must be non-negative",
+		},
+		{
+			name: "zero retryInterval",
+			input: RemediationCoordinationConfig{
+				Enabled:        true,
+				ControllerURL:  "https://controller:8080",
+				LeaseTimeout:   5 * time.Minute,
+				RequestTimeout: 30 * time.Second,
+				MaxRetries:     3,
+			},
+			wantErr: true,
+			errMsg:  "retryInterval must be positive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// ── Validation coverage: AuthConfig ──────────────────────────────────────────
+
+func TestAuthConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   AuthConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "none auth is always valid",
+			input:   AuthConfig{Type: "none"},
+			wantErr: false,
+		},
+		{
+			name: "valid bearer auth",
+			input: AuthConfig{
+				Type:  "bearer",
+				Token: "my-secret-token",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "bearer auth with missing token",
+			input:   AuthConfig{Type: "bearer"},
+			wantErr: true,
+			errMsg:  "token is required for bearer auth",
+		},
+		{
+			name: "valid basic auth",
+			input: AuthConfig{
+				Type:     "basic",
+				Username: "admin",
+				Password: "s3cr3t",
+			},
+			wantErr: false,
+		},
+		{
+			name: "basic auth missing username",
+			input: AuthConfig{
+				Type:     "basic",
+				Password: "s3cr3t",
+			},
+			wantErr: true,
+			errMsg:  "username is required",
+		},
+		{
+			name: "basic auth missing password",
+			input: AuthConfig{
+				Type:     "basic",
+				Username: "admin",
+			},
+			wantErr: true,
+			errMsg:  "password is required",
+		},
+		{
+			name:    "unknown auth type",
+			input:   AuthConfig{Type: "oauth2"},
+			wantErr: true,
+			errMsg:  "invalid auth type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// ── Validation coverage: RetryConfig ─────────────────────────────────────────
+
+func TestRetryConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   RetryConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid retry config",
+			input: RetryConfig{
+				MaxAttempts: 3,
+				BaseDelay:   1 * time.Second,
+				MaxDelay:    30 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero maxAttempts is valid (unlimited)",
+			input: RetryConfig{
+				MaxAttempts: 0,
+				BaseDelay:   1 * time.Second,
+				MaxDelay:    10 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "negative maxAttempts",
+			input: RetryConfig{
+				MaxAttempts: -1,
+				BaseDelay:   1 * time.Second,
+				MaxDelay:    10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "maxAttempts must be non-negative",
+		},
+		{
+			name: "zero baseDelay",
+			input: RetryConfig{
+				MaxAttempts: 3,
+				MaxDelay:    10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "baseDelay must be positive",
+		},
+		{
+			name: "zero maxDelay",
+			input: RetryConfig{
+				MaxAttempts: 3,
+				BaseDelay:   1 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "maxDelay must be positive",
+		},
+		{
+			name: "baseDelay exceeds maxDelay",
+			input: RetryConfig{
+				MaxAttempts: 3,
+				BaseDelay:   60 * time.Second,
+				MaxDelay:    10 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "baseDelay",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.input.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %q", err, tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// ── Validation coverage: MonitorConfig timeout vs interval edge cases ────────
+
+// TestMonitorConfigValidation_TimeoutIntervalEdgeCases covers the boundary
+// condition where timeout == interval (must fail) and timeout just below
+// interval (must pass).
+func TestMonitorConfigValidation_TimeoutIntervalEdgeCases(t *testing.T) {
+	base := MonitorConfig{
+		Name:     "test-monitor",
+		Type:     "test-type",
+		Interval: 30 * time.Second,
+	}
+
+	t.Run("timeout equal to interval is rejected", func(t *testing.T) {
+		m := base
+		m.Timeout = 30 * time.Second
+		err := m.Validate()
+		if err == nil {
+			t.Error("expected error when timeout == interval, got nil")
+		}
+		if err != nil && !strings.Contains(err.Error(), "timeout") {
+			t.Errorf("error should mention timeout, got: %v", err)
+		}
+	})
+
+	t.Run("timeout one nanosecond below interval is accepted", func(t *testing.T) {
+		m := base
+		m.Timeout = 30*time.Second - time.Nanosecond
+		err := m.Validate()
+		if err != nil {
+			t.Errorf("expected no error when timeout < interval by 1ns, got: %v", err)
+		}
+	})
+
+	t.Run("timeout greater than interval is rejected", func(t *testing.T) {
+		m := base
+		m.Timeout = 60 * time.Second // > 30s interval
+		err := m.Validate()
+		if err == nil {
+			t.Error("expected error when timeout > interval, got nil")
+		}
+	})
+}
+
+// ── ValidateWithRegistry: dependsOn cross-validation ─────────────────────────
+
+// TestValidateWithRegistry_DependsOnCrossValidation tests that dependsOn
+// references are validated against the registry-known monitor names.
+func TestValidateWithRegistry_DependsOnCrossValidation(t *testing.T) {
+	registry := &mockMonitorRegistry{
+		registeredTypes: map[string]bool{
+			"system-cpu-check":  true,
+			"system-disk-check": true,
+		},
+	}
+
+	t.Run("dependsOn pointing to existing monitor passes", func(t *testing.T) {
+		cfg := &NodeDoctorConfig{
+			APIVersion: "v1",
+			Kind:       "NodeDoctorConfig",
+			Metadata:   ConfigMetadata{Name: "test-config"},
+			Settings: GlobalSettings{
+				NodeName:          "test-node",
+				LogLevel:          "info",
+				LogFormat:         "json",
+				LogOutput:         "stdout",
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 5 * time.Minute,
+				QPS:               50,
+				Burst:             100,
+			},
+			Monitors: []MonitorConfig{
+				{
+					Name:     "cpu-monitor",
+					Type:     "system-cpu-check",
+					Interval: 30 * time.Second,
+					Timeout:  10 * time.Second,
+				},
+				{
+					Name:      "disk-monitor",
+					Type:      "system-disk-check",
+					Interval:  30 * time.Second,
+					Timeout:   10 * time.Second,
+					DependsOn: []string{"cpu-monitor"},
+				},
+			},
+			Remediation: RemediationConfig{
+				CooldownPeriod:         5 * time.Minute,
+				MaxAttemptsGlobal:      3,
+				MaxRemediationsPerHour: 10,
+				HistorySize:            100,
+			},
+		}
+		err := cfg.ValidateWithRegistry(registry)
+		if err != nil {
+			t.Errorf("expected no error for valid dependsOn, got: %v", err)
+		}
+	})
+
+	t.Run("dependsOn pointing to non-existent monitor is rejected", func(t *testing.T) {
+		cfg := &NodeDoctorConfig{
+			APIVersion: "v1",
+			Kind:       "NodeDoctorConfig",
+			Metadata:   ConfigMetadata{Name: "test-config"},
+			Settings: GlobalSettings{
+				NodeName:          "test-node",
+				LogLevel:          "info",
+				LogFormat:         "json",
+				LogOutput:         "stdout",
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 5 * time.Minute,
+				QPS:               50,
+				Burst:             100,
+			},
+			Monitors: []MonitorConfig{
+				{
+					Name:      "disk-monitor",
+					Type:      "system-disk-check",
+					Interval:  30 * time.Second,
+					Timeout:   10 * time.Second,
+					DependsOn: []string{"nonexistent-monitor"},
+				},
+			},
+			Remediation: RemediationConfig{
+				CooldownPeriod:         5 * time.Minute,
+				MaxAttemptsGlobal:      3,
+				MaxRemediationsPerHour: 10,
+				HistorySize:            100,
+			},
+		}
+		err := cfg.ValidateWithRegistry(registry)
+		if err == nil {
+			t.Error("expected error for dependsOn referencing non-existent monitor")
+		}
+	})
+}
