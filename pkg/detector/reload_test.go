@@ -3,6 +3,7 @@ package detector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -450,6 +451,160 @@ func TestConfigReloadCriticalErrorHandling(t *testing.T) {
 			t.Error("Config was not updated despite successful reload")
 		}
 		pd.mu.RUnlock()
+	})
+}
+
+// TestApplyConfigReload_DependsOnSemantics verifies that blocked-state semantics are
+// preserved across a hot-reload that adds monitors with DependsOn declarations:
+//  1. Newly-added monitors are sorted topologically (dependency starts first).
+//  2. pd.dependents is updated so the reverse-lookup map reflects new monitors.
+//  3. A dependency cycle among newly-added monitors is rejected as a critical error.
+func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
+	t.Run("dependents map updated for newly-added monitor with DependsOn", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		config.Monitors = []types.MonitorConfig{
+			helper.CreateTestMonitorConfig("dep-monitor", "test"),
+		}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+		if err := pd.Start(); err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		defer pd.Stop()
+		time.Sleep(50 * time.Millisecond)
+
+		// Hot-reload adds dep-child which declares DependsOn: [dep-monitor].
+		depChild := types.MonitorConfig{
+			Name:      "dep-child",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-monitor"},
+		}
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = append(newConfig.Monitors, depChild)
+
+		diff := &reload.ConfigDiff{
+			MonitorsAdded: []types.MonitorConfig{depChild},
+		}
+
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		// pd.dependents["dep-monitor"] must include "dep-child".
+		dependents := pd.dependents["dep-monitor"]
+		if !slices.Contains(dependents, "dep-child") {
+			t.Errorf("pd.dependents[%q] = %v, want it to contain %q", "dep-monitor", dependents, "dep-child")
+		}
+	})
+
+	t.Run("topological order preserved among newly-added monitors with inter-dependencies", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		config.Monitors = []types.MonitorConfig{}
+
+		var startOrder []string
+		factory := NewMockMonitorFactory().SetCreateFunc(func(mc types.MonitorConfig) (types.Monitor, error) {
+			startOrder = append(startOrder, mc.Name)
+			return NewMockMonitor(mc.Name), nil
+		})
+
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+
+		// Add parent and child together; child depends on parent.
+		parent := types.MonitorConfig{
+			Name: "parent", Type: "test", Enabled: true,
+			Interval: 30 * time.Second, Timeout: 10 * time.Second,
+		}
+		child := types.MonitorConfig{
+			Name: "child", Type: "test", Enabled: true,
+			Interval: 30 * time.Second, Timeout: 10 * time.Second,
+			DependsOn: []string{"parent"},
+		}
+
+		// Deliberately pass child before parent to confirm sort fixes the order.
+		diff := &reload.ConfigDiff{
+			MonitorsAdded: []types.MonitorConfig{child, parent},
+		}
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{parent, child}
+
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		if len(startOrder) != 2 {
+			t.Fatalf("expected 2 monitors started, got %d (%v)", len(startOrder), startOrder)
+		}
+		if startOrder[0] != "parent" || startOrder[1] != "child" {
+			t.Errorf("start order = %v, want [parent child]", startOrder)
+		}
+	})
+
+	t.Run("dependency cycle among newly-added monitors returns critical error", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		config.Monitors = []types.MonitorConfig{}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+
+		// a depends on b, b depends on a — cycle.
+		a := types.MonitorConfig{
+			Name: "cycle-a", Type: "test", Enabled: true,
+			Interval: 30 * time.Second, Timeout: 10 * time.Second,
+			DependsOn: []string{"cycle-b"},
+		}
+		b := types.MonitorConfig{
+			Name: "cycle-b", Type: "test", Enabled: true,
+			Interval: 30 * time.Second, Timeout: 10 * time.Second,
+			DependsOn: []string{"cycle-a"},
+		}
+
+		diff := &reload.ConfigDiff{
+			MonitorsAdded: []types.MonitorConfig{a, b},
+		}
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{a, b}
+
+		err = pd.applyConfigReload(context.Background(), newConfig, diff)
+		if err == nil {
+			t.Error("applyConfigReload() expected critical error for dependency cycle, got nil")
+		}
 	})
 }
 

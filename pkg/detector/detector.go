@@ -112,13 +112,14 @@ type ProblemDetector struct {
 	// evaluation. It is written on every processStatus call (continuously at runtime) and is
 	// therefore NOT read-only after Start(). Access is protected by lastStatusMu.
 	// dependents is a reverse-lookup from dependency name → monitors that declared it in DependsOn.
-	// It is written once during Start() and is effectively read-only thereafter (no mutex needed).
+	// Written during Start() and also updated (under reloadMutex) when new monitors are added via
+	// applyConfigReload. Runtime code never writes to it, so no additional mutex is needed.
 	// Reserved: currently unused at runtime. Intended for a future push-notification model where
 	// a dependency state-change immediately re-evaluates its declared dependents rather than
 	// waiting for the dependent's next scheduled status emission.
 	lastStatusMu sync.RWMutex
 	lastStatus   map[string]*types.Status // monitor name -> most recent effective status (protected by lastStatusMu)
-	dependents   map[string][]string      // dependency name -> monitors that depend on it (written once in Start; reserved for future push model)
+	dependents   map[string][]string      // dependency name -> monitors that depend on it (written in Start and applyConfigReload; reserved for future push model)
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -668,18 +669,33 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 	}
 
 	// Step 3: Start new monitors
+	// Sort newly-added monitors topologically so that inter-dependencies among the new set
+	// are started in dependency-first order. Dependencies on already-running monitors are
+	// satisfied implicitly — topologicalSortMonitors skips entries not present in the input.
 	log.Printf("[INFO] Starting %d new monitors", len(diff.MonitorsAdded))
-	for _, addedConfig := range diff.MonitorsAdded {
-		monitor, err := pd.createMonitor(addedConfig)
-		if err != nil {
-			log.Printf("[ERROR] Failed to create new monitor %s: %v", addedConfig.Name, err)
-			criticalErrors = append(criticalErrors, fmt.Errorf("failed to create new monitor %s: %w", addedConfig.Name, err))
-			continue
-		}
+	sortedAdded, sortErr := topologicalSortMonitors(diff.MonitorsAdded)
+	if sortErr != nil {
+		log.Printf("[ERROR] Dependency cycle detected among newly-added monitors, skipping all adds: %v", sortErr)
+		criticalErrors = append(criticalErrors, fmt.Errorf("dependency cycle in newly-added monitors: %w", sortErr))
+	} else {
+		for _, addedConfig := range sortedAdded {
+			monitor, err := pd.createMonitor(addedConfig)
+			if err != nil {
+				log.Printf("[ERROR] Failed to create new monitor %s: %v", addedConfig.Name, err)
+				criticalErrors = append(criticalErrors, fmt.Errorf("failed to create new monitor %s: %w", addedConfig.Name, err))
+				continue
+			}
 
-		if err := pd.addMonitor(ctx, monitor, addedConfig); err != nil {
-			log.Printf("[ERROR] Failed to start new monitor %s: %v", addedConfig.Name, err)
-			criticalErrors = append(criticalErrors, fmt.Errorf("failed to start new monitor %s: %w", addedConfig.Name, err))
+			if err := pd.addMonitor(ctx, monitor, addedConfig); err != nil {
+				log.Printf("[ERROR] Failed to start new monitor %s: %v", addedConfig.Name, err)
+				criticalErrors = append(criticalErrors, fmt.Errorf("failed to start new monitor %s: %w", addedConfig.Name, err))
+				continue
+			}
+
+			// Update the reverse-dependency index for the newly started monitor.
+			for _, dep := range addedConfig.DependsOn {
+				pd.dependents[dep] = append(pd.dependents[dep], addedConfig.Name)
+			}
 		}
 	}
 
