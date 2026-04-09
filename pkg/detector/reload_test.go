@@ -733,6 +733,70 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 			t.Errorf("pd.dependents[dep-monitor] = %v, want child removed after monitor removal", pd.dependents["dep-monitor"])
 		}
 	})
+
+	t.Run("dependents map cleaned when stopMonitorByName fails for removed monitor", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		// Start with only dep-monitor running; "child" is intentionally absent
+		// from the handles list so stopMonitorByName("child") will return an error.
+		dep := helper.CreateTestMonitorConfig("dep-monitor", "test")
+		config.Monitors = []types.MonitorConfig{dep}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+		if err := pd.Start(); err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		defer pd.Stop()
+		time.Sleep(50 * time.Millisecond)
+
+		// Inject "child" into pd.dependents as if it had declared DependsOn:
+		// ["dep-monitor"] when it was originally started.  Because we never
+		// added a MonitorHandle for "child", stopMonitorByName("child") will
+		// return "monitor child not found" — simulating a failed stop.
+		pd.dependents["dep-monitor"] = []string{"child"}
+
+		if !slices.Contains(pd.dependents["dep-monitor"], "child") {
+			t.Fatalf("pre-condition: pd.dependents[dep-monitor] = %v, want child", pd.dependents["dep-monitor"])
+		}
+
+		child := types.MonitorConfig{
+			Name:      "child",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-monitor"},
+		}
+
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{dep}
+
+		diff := &reload.ConfigDiff{
+			MonitorsRemoved: []types.MonitorConfig{child},
+		}
+
+		// stopMonitorByName errors for removed monitors are non-critical (only
+		// logged); applyConfigReload must still succeed overall.
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		// pd.dependents must be cleaned up even though stopMonitorByName failed.
+		if slices.Contains(pd.dependents["dep-monitor"], "child") {
+			t.Errorf("pd.dependents[dep-monitor] = %v, want child removed despite stopMonitorByName failure", pd.dependents["dep-monitor"])
+		}
+	})
 }
 
 // Helper function to check if string contains substring
