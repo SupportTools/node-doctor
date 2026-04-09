@@ -734,6 +734,76 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 		}
 	})
 
+	t.Run("dependents map cleaned when two monitors sharing a dependency are removed", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		dep := helper.CreateTestMonitorConfig("dep-monitor", "test")
+		child1 := types.MonitorConfig{
+			Name:      "child-1",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-monitor"},
+		}
+		child2 := types.MonitorConfig{
+			Name:      "child-2",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-monitor"},
+		}
+		config.Monitors = []types.MonitorConfig{dep, child1, child2}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+		if err := pd.Start(); err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		defer pd.Stop()
+		time.Sleep(50 * time.Millisecond)
+
+		// Pre-condition: dep-monitor's dependents must contain both children.
+		if !slices.Contains(pd.dependents["dep-monitor"], "child-1") {
+			t.Fatalf("pre-condition: pd.dependents[dep-monitor] = %v, want child-1", pd.dependents["dep-monitor"])
+		}
+		if !slices.Contains(pd.dependents["dep-monitor"], "child-2") {
+			t.Fatalf("pre-condition: pd.dependents[dep-monitor] = %v, want child-2", pd.dependents["dep-monitor"])
+		}
+
+		// Hot-reload removes both children in a single diff. The filter loop in
+		// applyConfigReload runs twice over pd.dependents["dep-monitor"] (once per
+		// removed monitor), each time producing a fresh slice — both must be purged.
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{dep}
+
+		diff := &reload.ConfigDiff{
+			MonitorsRemoved: []types.MonitorConfig{child1, child2},
+		}
+
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		if slices.Contains(pd.dependents["dep-monitor"], "child-1") {
+			t.Errorf("pd.dependents[dep-monitor] = %v, want child-1 removed", pd.dependents["dep-monitor"])
+		}
+		if slices.Contains(pd.dependents["dep-monitor"], "child-2") {
+			t.Errorf("pd.dependents[dep-monitor] = %v, want child-2 removed", pd.dependents["dep-monitor"])
+		}
+	})
+
 	t.Run("dependents map cleaned when stopMonitorByName fails for removed monitor", func(t *testing.T) {
 		helper := NewTestHelper()
 		config := helper.CreateTestConfig()
