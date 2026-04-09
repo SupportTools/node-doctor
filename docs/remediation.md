@@ -68,6 +68,10 @@ Problem Detected
       |
    Within Limit
       v
+[Phase 2.5: Controller Lease Check] --Denied--> Skip (only when coordination enabled)
+      |
+   Granted / No Coordinator
+      v
 [Phase 3: Get/Create Remediator] --Not Found--> Error
       |
     Found
@@ -85,7 +89,7 @@ Problem Detected
 [Phase 5: Execute Remediation]
       |
       v
-[Phase 6: Record in History]
+[Phase 6: Record in History]  ← deferred; always runs
       |
       v
 [Phase 7: Update Circuit Breaker]
@@ -94,7 +98,11 @@ Problem Detected
 [Phase 8: Record Rate Limit Entry]
 ```
 
-**Source**: `pkg/remediators/registry.go:433-521`
+**Source**: `pkg/remediators/registry.go:Remediate`
+
+**Phase 2.5 — Controller Lease Check** (conditional): When a `leaseClient` is configured for multi-node controller coordination, the registry requests a lease before acquiring a remediator. If the controller denies the lease (e.g., another node is already being remediated), the attempt is skipped and a circuit-breaker failure is recorded. This phase is skipped entirely when no lease client is configured (the common single-node case).
+
+**History recording** (Phase 6) is deferred at function entry, so it captures the final `success` and `error` state regardless of which phase caused a skip or failure.
 
 ---
 

@@ -194,6 +194,22 @@ monitors:
 
 Error message: `circular dependency detected in monitors: monitor-a → monitor-b → monitor-c → monitor-a`
 
+#### Dependency Runtime Semantics
+
+**Source**: `pkg/detector/detector.go:isMonitorBlocked`, `pkg/detector/detector.go:processStatus`
+
+Dependency enforcement is a **pull model** evaluated at status-emission time, not a push from the dependency monitor. When a monitor emits a status, the detector checks `isMonitorBlocked` before forwarding the status to exporters:
+
+1. All monitors start regardless of their dependency state (start order is topologically sorted, but all start).
+2. When monitor B emits a status, the detector checks whether any monitor in `B.dependsOn` has `ConditionFalse` on any condition **or** is itself in a `MonitorBlocked` state.
+3. If blocked, B's real status is **replaced** with a synthetic `MonitorBlocked` condition before reaching exporters. The real status is discarded.
+4. The effective (possibly replaced) status is cached in `lastStatus[B]`, so downstream monitors that depend on B see the blocked state — enabling **transitive blocking**: if A fails, B (depends on A) is blocked, and C (depends on B) is also blocked.
+
+**Key caveats**:
+- A dependency that has **not yet emitted any status** is treated as **unknown, not blocked**. B runs freely until A reports.
+- The `dependents` reverse-index (dependency → monitors that declared it) is built at startup and reserved for a future push model; it is not used for blocking in the current implementation.
+- `dependsOn` only affects **status forwarding**, not monitor execution. B's check logic always runs; only its reported status is suppressed when blocked.
+
 ### Monitor Configuration Defaults
 
 **Source:** `pkg/types/config.go:26-27`
@@ -1054,22 +1070,32 @@ exporters:
 
 ### Hot Reload Support
 
-**Not fully implemented** - The configuration structure supports hot reload, but implementation may require restart for some changes.
+**Fully implemented** — Node Doctor detects changes to the configuration file using `fsnotify` (watching the config directory, not the file directly, to handle Kubernetes ConfigMap atomic-rename updates). When a change is detected, a 500 ms debounce timer fires and the coordinator validates, diffs, then applies changes in-process without restarting the pod.
+
+**Source**: `pkg/reload/watcher.go`, `pkg/reload/coordinator.go`, `pkg/detector/detector.go:handleConfigReload`
 
 #### Reloadable Without Restart
 
-- Monitor intervals and timeouts
-- Logging levels and formats
-- Rate limits and thresholds
-- Cooldown periods
+All of the following are handled by `applyConfigReload` (`pkg/detector/detector.go:~624`):
 
-#### Requires Restart
+- Adding new monitors — started immediately
+- Removing monitors — stopped and cleaned up; associated conditions are cleared
+- Modifying monitors (any field including type, interval, timeout, config) — stopped and restarted with new config
+- Exporter configuration (enable/disable, port, path, webhook URLs)
+- Remediation configuration (enabled, dryRun, rate limits, circuit breaker thresholds)
 
-- Adding/removing monitors
-- Changing monitor types
-- Exporter enable/disable
-- Authentication credentials
-- Webhook URLs
+#### Reload Safety Guarantees
+
+- **Guard window**: Reloads that arrive before `pd.started` is set are silently dropped to prevent races with the initial `Start()` setup.
+- **Serialized reloads**: Only one reload runs at a time (`reloadInProgress` flag); a second concurrent trigger returns `"reload already in progress"`.
+- **Fail-fast on critical errors**: If a monitor cannot be created or an exporter cannot be reloaded, the config pointer is NOT updated — the old config remains live.
+- **Non-critical errors** (e.g., stop failure for a removed monitor) are logged as warnings; the reload still completes.
+- **No-op on no changes**: If the diff has no changes, the reload completes immediately with an informational event.
+
+#### Caveats
+
+- **Dependency graph is not re-sorted on reload**: Monitors added via hot reload are appended but the topological start order used at initial `Start()` is not re-evaluated. Dependencies still function correctly (blocking is checked at status-emission time, not at start order), but a newly added monitor that other monitors depend on should be added in a config applied before the dependents, not simultaneously.
+- **Reload is not triggered while the watcher is not running**: If the config file is updated before `Start()` is called, or after `Stop()`, no reload fires. Kubernetes rolling upgrades restart the pod, so this is generally not a concern in production.
 
 ### ConfigMap Updates
 
