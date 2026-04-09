@@ -677,6 +677,62 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 			t.Errorf("pd.dependents[dep-b] = %v, want child added after DependsOn change", pd.dependents["dep-b"])
 		}
 	})
+
+	t.Run("dependents map cleaned up for removed monitor with DependsOn", func(t *testing.T) {
+		helper := NewTestHelper()
+		config := helper.CreateTestConfig()
+		// Start with "child" depending on "dep-monitor".
+		dep := helper.CreateTestMonitorConfig("dep-monitor", "test")
+		child := types.MonitorConfig{
+			Name:      "child",
+			Type:      "test",
+			Enabled:   true,
+			Interval:  30 * time.Second,
+			Timeout:   10 * time.Second,
+			DependsOn: []string{"dep-monitor"},
+		}
+		config.Monitors = []types.MonitorConfig{dep, child}
+
+		factory := NewMockMonitorFactory()
+		pd, err := NewProblemDetector(
+			config,
+			[]types.Monitor{},
+			[]types.Exporter{NewMockExporter("test-exporter")},
+			"/tmp/test-config.yaml",
+			factory,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("NewProblemDetector() error = %v", err)
+		}
+		if err := pd.Start(); err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		defer pd.Stop()
+		time.Sleep(50 * time.Millisecond)
+
+		// Pre-condition: dep-monitor's dependents must contain child.
+		if !slices.Contains(pd.dependents["dep-monitor"], "child") {
+			t.Fatalf("pre-condition: pd.dependents[dep-monitor] = %v, want child", pd.dependents["dep-monitor"])
+		}
+
+		// Hot-reload removes child entirely.
+		newConfig := helper.CreateTestConfig()
+		newConfig.Monitors = []types.MonitorConfig{dep}
+
+		diff := &reload.ConfigDiff{
+			MonitorsRemoved: []types.MonitorConfig{child},
+		}
+
+		if err := pd.applyConfigReload(context.Background(), newConfig, diff); err != nil {
+			t.Fatalf("applyConfigReload() unexpected error = %v", err)
+		}
+
+		// dep-monitor must no longer list child as a dependent.
+		if slices.Contains(pd.dependents["dep-monitor"], "child") {
+			t.Errorf("pd.dependents[dep-monitor] = %v, want child removed after monitor removal", pd.dependents["dep-monitor"])
+		}
+	})
 }
 
 // Helper function to check if string contains substring

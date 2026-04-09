@@ -639,6 +639,20 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 		}
 		// Clean up conditions associated with this monitor type
 		pd.cleanupMonitorConditions(removedConfig.Type)
+
+		// Remove this monitor from the reverse-dependency index.
+		// When removedConfig was started, its name was added to pd.dependents[dep]
+		// for each dep it declared in its own DependsOn list. Now that it is gone,
+		// those entries are stale and must be purged.
+		for _, dep := range removedConfig.DependsOn {
+			updated := make([]string, 0, len(pd.dependents[dep]))
+			for _, m := range pd.dependents[dep] {
+				if m != removedConfig.Name {
+					updated = append(updated, m)
+				}
+			}
+			pd.dependents[dep] = updated
+		}
 	}
 
 	// Step 2: Restart modified monitors
