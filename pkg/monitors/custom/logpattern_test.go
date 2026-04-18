@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
@@ -1698,9 +1699,261 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 					t.Errorf("unexpected error: %v", err)
 				}
 				if cfg == nil {
-					t.Error("expected non-nil config")
+				t.Error("expected non-nil config")
 				}
+				}
+				})
+				}
+}
+
+// TestConditionFalseOnNoMatch verifies that error-severity patterns emit ConditionFalse
+// when no log lines match during a check cycle, clearing any prior stale True conditions.
+func TestConditionFalseOnNoMatch(t *testing.T) {
+	mockKmsg := newMockKmsgReader()
+	mockKmsg.setContent("/dev/kmsg", createTestKmsgContent(testNormalLog))
+
+	pattern := LogPatternConfig{Name: "vmxnet3-tx-hang", Regex: "vmxnet3.*tx.*hang", Severity: "error", Source: "kmsg"}
+	compiled, err := regexp.Compile(pattern.Regex)
+	if err != nil {
+		t.Fatalf("failed to compile regex: %v", err)
+	}
+	pattern.compiled = compiled
+
+	base, err := monitors.NewBaseMonitor("test-monitor", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create base monitor: %v", err)
+	}
+
+	monitor := &LogPatternMonitor{
+		BaseMonitor: base,
+		name: "test-monitor",
+		config: &LogPatternMonitorConfig{
+			CheckKmsg:           true,
+			KmsgPath:            "/dev/kmsg",
+			Patterns:            []LogPatternConfig{pattern},
+			MaxEventsPerPattern: 10,
+			DedupWindow:         5 * time.Minute,
+		},
+		fileReader:        newMockFileReader(),
+		kmsgReader:        mockKmsg,
+		patternEventCount: make(map[string]int),
+		patternLastEvent:  make(map[string]time.Time),
+		metrics: LogPatternMetrics{
+			PatternsMatched:        make(map[string]int),
+			PatternsSuppressed:     make(map[string]int),
+			JournalCheckDurationMs: make(map[string]float64),
+		},
+	}
+
+	status, err := monitor.checkLogPatterns(context.Background())
+	if err != nil {
+		t.Fatalf("checkLogPatterns returned error: %v", err)
+	}
+
+	if len(status.Conditions) != 1 {
+		t.Fatalf("expected 1 condition, got %d", len(status.Conditions))
+	}
+	if status.Conditions[0].Type != "vmxnet3-tx-hang" {
+		t.Errorf("expected condition type 'vmxnet3-tx-hang', got %q", status.Conditions[0].Type)
+	}
+	if status.Conditions[0].Status != types.ConditionFalse {
+		t.Errorf("expected ConditionFalse, got %q", status.Conditions[0].Status)
+	}
+}
+
+// TestConditionTrueOnMatch verifies that error-severity patterns emit ConditionTrue
+// when log lines match during a check cycle.
+func TestConditionTrueOnMatch(t *testing.T) {
+	mockKmsg := newMockKmsgReader()
+	mockKmsg.setContent("/dev/kmsg", createTestKmsgContent("vmxnet3 0000:0b:00.0 eth0: tx timeout"))
+
+	pattern := LogPatternConfig{Name: "vmxnet3-tx-hang", Regex: "vmxnet3.*tx", Severity: "error", Source: "kmsg"}
+	compiled, err := regexp.Compile(pattern.Regex)
+	if err != nil {
+		t.Fatalf("failed to compile regex: %v", err)
+	}
+	pattern.compiled = compiled
+
+	base, err := monitors.NewBaseMonitor("test-monitor", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create base monitor: %v", err)
+	}
+
+	monitor := &LogPatternMonitor{
+		BaseMonitor: base,
+		name: "test-monitor",
+		config: &LogPatternMonitorConfig{
+			CheckKmsg:           true,
+			KmsgPath:            "/dev/kmsg",
+			Patterns:            []LogPatternConfig{pattern},
+			MaxEventsPerPattern: 10,
+			DedupWindow:         5 * time.Minute,
+		},
+		fileReader:        newMockFileReader(),
+		kmsgReader:        mockKmsg,
+		patternEventCount: make(map[string]int),
+		patternLastEvent:  make(map[string]time.Time),
+		metrics: LogPatternMetrics{
+			PatternsMatched:        make(map[string]int),
+			PatternsSuppressed:     make(map[string]int),
+			JournalCheckDurationMs: make(map[string]float64),
+		},
+	}
+
+	status, err := monitor.checkLogPatterns(context.Background())
+	if err != nil {
+		t.Fatalf("checkLogPatterns returned error: %v", err)
+	}
+
+	if len(status.Events) == 0 {
+		t.Fatal("expected at least one event for matching pattern")
+	}
+
+	// Pattern matched → ConditionTrue emitted by matchPatterns, NOT ConditionFalse
+	foundTrue := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "vmxnet3-tx-hang" {
+			if cond.Status == types.ConditionFalse {
+				t.Error("ConditionFalse must not be emitted when pattern matched")
 			}
-		})
+			if cond.Status == types.ConditionTrue {
+				foundTrue = true
+			}
+		}
+	}
+	if !foundTrue {
+		t.Error("expected ConditionTrue for matching error-severity pattern")
+	}
+}
+
+// TestConditionTransitionAcrossCycles verifies the full lifecycle:
+// cycle 1 with a match emits ConditionTrue; cycle 2 with no match emits ConditionFalse.
+func TestConditionTransitionAcrossCycles(t *testing.T) {
+	mockKmsg := newMockKmsgReader()
+
+	pattern := LogPatternConfig{Name: "vmxnet3-tx-hang", Regex: "vmxnet3.*tx", Severity: "error", Source: "kmsg"}
+	compiled, err := regexp.Compile(pattern.Regex)
+	if err != nil {
+		t.Fatalf("failed to compile regex: %v", err)
+	}
+	pattern.compiled = compiled
+
+	base, err := monitors.NewBaseMonitor("test-monitor", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create base monitor: %v", err)
+	}
+
+	monitor := &LogPatternMonitor{
+		BaseMonitor: base,
+		name: "test-monitor",
+		config: &LogPatternMonitorConfig{
+			CheckKmsg:           true,
+			KmsgPath:            "/dev/kmsg",
+			Patterns:            []LogPatternConfig{pattern},
+			MaxEventsPerPattern: 10,
+			DedupWindow:         5 * time.Minute,
+		},
+		fileReader:        newMockFileReader(),
+		kmsgReader:        mockKmsg,
+		patternEventCount: make(map[string]int),
+		patternLastEvent:  make(map[string]time.Time),
+		metrics: LogPatternMetrics{
+			PatternsMatched:        make(map[string]int),
+			PatternsSuppressed:     make(map[string]int),
+			JournalCheckDurationMs: make(map[string]float64),
+		},
+	}
+
+	// Cycle 1: log line matches → ConditionTrue via event, no ConditionFalse
+	mockKmsg.setContent("/dev/kmsg", createTestKmsgContent("vmxnet3 0000:0b:00.0 eth0: tx timeout"))
+	status1, err := monitor.checkLogPatterns(context.Background())
+	if err != nil {
+		t.Fatalf("cycle 1 error: %v", err)
+	}
+	if len(status1.Events) == 0 {
+		t.Fatal("cycle 1: expected matching event")
+	}
+	for _, cond := range status1.Conditions {
+		if cond.Type == "vmxnet3-tx-hang" && cond.Status == types.ConditionFalse {
+			t.Error("cycle 1: ConditionFalse must not be emitted when pattern matched")
+		}
+	}
+
+	// Cycle 2: no matching lines → ConditionFalse clears stale condition
+	mockKmsg.setContent("/dev/kmsg", createTestKmsgContent(testNormalLog))
+	status2, err := monitor.checkLogPatterns(context.Background())
+	if err != nil {
+		t.Fatalf("cycle 2 error: %v", err)
+	}
+	foundFalse := false
+	for _, cond := range status2.Conditions {
+		if cond.Type == "vmxnet3-tx-hang" && cond.Status == types.ConditionFalse {
+			foundFalse = true
+		}
+	}
+	if !foundFalse {
+		t.Error("cycle 2: expected ConditionFalse for pattern with no matches")
+	}
+}
+
+// TestConditionFalseNotEmittedWhenSuppressed verifies that ConditionFalse is NOT emitted
+// when a pattern matches but all events are suppressed by rate limiting. A suppressed match
+// still means the underlying condition is active — the monitor is just throttling notifications.
+func TestConditionFalseNotEmittedWhenSuppressed(t *testing.T) {
+	mockKmsg := newMockKmsgReader()
+	// Log contains a matching line
+	mockKmsg.setContent("/dev/kmsg", createTestKmsgContent("vmxnet3 0000:0b:00.0 eth0: tx timeout"))
+
+	pattern := LogPatternConfig{Name: "vmxnet3-tx-hang", Regex: "vmxnet3.*tx", Severity: "error", Source: "kmsg"}
+	compiled, err := regexp.Compile(pattern.Regex)
+	if err != nil {
+		t.Fatalf("failed to compile regex: %v", err)
+	}
+	pattern.compiled = compiled
+
+	base, err := monitors.NewBaseMonitor("test-monitor", 100*time.Millisecond, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to create base monitor: %v", err)
+	}
+
+	const maxEvents = 5
+	monitor := &LogPatternMonitor{
+		BaseMonitor: base,
+		name:        "test-monitor",
+		config: &LogPatternMonitorConfig{
+			CheckKmsg:           true,
+			KmsgPath:            "/dev/kmsg",
+			Patterns:            []LogPatternConfig{pattern},
+			MaxEventsPerPattern: maxEvents,
+			DedupWindow:         5 * time.Minute,
+		},
+		fileReader: newMockFileReader(),
+		kmsgReader: mockKmsg,
+		// Pre-populate rate-limit state: at the limit, within the dedup window.
+		// shouldReportEvent will return (false, true) → suppressed.
+		patternEventCount: map[string]int{"vmxnet3-tx-hang": maxEvents},
+		patternLastEvent:  map[string]time.Time{"vmxnet3-tx-hang": time.Now()},
+		metrics: LogPatternMetrics{
+			PatternsMatched:        make(map[string]int),
+			PatternsSuppressed:     make(map[string]int),
+			JournalCheckDurationMs: make(map[string]float64),
+		},
+	}
+
+	status, err := monitor.checkLogPatterns(context.Background())
+	if err != nil {
+		t.Fatalf("checkLogPatterns returned error: %v", err)
+	}
+
+	// The match was suppressed — no events should be emitted
+	if len(status.Events) != 0 {
+		t.Errorf("expected 0 events for suppressed pattern, got %d", len(status.Events))
+	}
+
+	// ConditionFalse must NOT be emitted — the pattern is still active
+	for _, cond := range status.Conditions {
+		if cond.Type == "vmxnet3-tx-hang" && cond.Status == types.ConditionFalse {
+			t.Error("ConditionFalse must not be emitted when pattern match is suppressed by rate limiting")
+		}
 	}
 }

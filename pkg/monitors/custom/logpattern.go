@@ -850,6 +850,34 @@ func (m *LogPatternMonitor) checkLogPatterns(ctx context.Context) (*types.Status
 		}
 	}
 
+	// Emit ConditionFalse for error-severity patterns with no matches this cycle.
+	// This clears stale True conditions when the underlying issue resolves.
+	// Deep-copy both maps under RLock to avoid holding the lock during iteration.
+	// Suppressed entries (rate-limited matches) count as active — don't clear those.
+	m.mu.RLock()
+	matchedThisCycle := make(map[string]int, len(m.metrics.PatternsMatched))
+	for k, v := range m.metrics.PatternsMatched {
+		matchedThisCycle[k] = v
+	}
+	suppressedThisCycle := make(map[string]int, len(m.metrics.PatternsSuppressed))
+	for k, v := range m.metrics.PatternsSuppressed {
+		suppressedThisCycle[k] = v
+	}
+	m.mu.RUnlock()
+	for i := range m.config.Patterns {
+		pattern := &m.config.Patterns[i]
+		if m.parseSeverity(pattern.Severity) == types.EventError {
+			if matchedThisCycle[pattern.Name] == 0 && suppressedThisCycle[pattern.Name] == 0 {
+				status.AddCondition(types.NewCondition(
+					pattern.Name,
+					types.ConditionFalse,
+					"LogPatternNotMatched",
+					fmt.Sprintf("Pattern '%s' not found in logs", pattern.Name),
+				))
+			}
+		}
+	}
+
 	// Calculate total check duration
 	m.mu.Lock()
 	m.metrics.CheckDurationMs = float64(time.Since(checkStart).Microseconds()) / 1000.0
