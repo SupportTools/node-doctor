@@ -4,7 +4,9 @@ package network
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -17,8 +19,20 @@ import (
 )
 
 const (
-	// procNetRoute is the path to the Linux routing table
+	// procNetRoute is the path to the Linux IPv4 routing table.
 	procNetRoute = "/proc/net/route"
+
+	// procNetIPv6Route is the path to the Linux IPv6 routing table.
+	procNetIPv6Route = "/proc/net/ipv6_route"
+
+	// ipv6RouteHexLen is the number of hex chars representing a 16-byte
+	// IPv6 address as written by the kernel in /proc/net/ipv6_route.
+	ipv6RouteHexLen = 32
+
+	// ipv6RouteAllZero is the all-zero hex representation used by the kernel
+	// for the unspecified IPv6 address (::), e.g. the destination of the
+	// default route or a link-scoped on-link route's next-hop.
+	ipv6RouteAllZero = "00000000000000000000000000000000"
 
 	// Default configuration values
 	defaultPingCount             = 3
@@ -332,15 +346,29 @@ func (m *GatewayMonitor) getGatewayIP() (string, error) {
 	return "", fmt.Errorf("no gateway configured and auto-detection is disabled")
 }
 
-// detectDefaultGateway detects the default gateway from /proc/net/route.
+// detectDefaultGateway detects the default IPv4 gateway from /proc/net/route.
 func detectDefaultGateway() (string, error) {
-	file, err := os.Open(procNetRoute)
+	return detectDefaultGatewayFromFile(procNetRoute)
+}
+
+// detectDefaultGatewayFromFile opens the given path and parses it as a Linux
+// IPv4 route table. Exposed primarily so unit tests can supply a fixture file
+// instead of relying on the host's /proc/net/route.
+func detectDefaultGatewayFromFile(path string) (string, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("failed to open %s: %w", procNetRoute, err)
+		return "", fmt.Errorf("failed to open %s: %w", path, err)
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	return detectDefaultGatewayFromReader(file)
+}
+
+// detectDefaultGatewayFromReader parses /proc/net/route content and returns
+// the first default gateway it finds. The reader must include the header line
+// the kernel emits first; that line is skipped before route entries are read.
+func detectDefaultGatewayFromReader(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
 
 	// Skip header line
 	if !scanner.Scan() {
@@ -379,6 +407,75 @@ func detectDefaultGateway() (string, error) {
 	return "", fmt.Errorf("no default gateway found in route table")
 }
 
+// detectDefaultIPv6Gateway detects the default IPv6 gateway from
+// /proc/net/ipv6_route.
+func detectDefaultIPv6Gateway() (string, error) {
+	return detectDefaultIPv6GatewayFromFile(procNetIPv6Route)
+}
+
+// detectDefaultIPv6GatewayFromFile opens the given path and parses it as a
+// Linux IPv6 route table. Exposed primarily so unit tests can supply a fixture
+// file instead of relying on the host's /proc/net/ipv6_route.
+func detectDefaultIPv6GatewayFromFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open %s: %w", path, err)
+	}
+	defer file.Close()
+
+	return detectDefaultIPv6GatewayFromReader(file)
+}
+
+// detectDefaultIPv6GatewayFromReader parses /proc/net/ipv6_route content and
+// returns the first default route's next-hop. Unlike /proc/net/route, the
+// IPv6 route table does NOT begin with a header line — every line is a route
+// entry. The kernel format is space-separated:
+//
+//	dest(32 hex)  prefix(2)  src(32)  src_prefix(2)  next_hop(32)  metric(8)
+//	ref(8)        use(8)     flags(8)  iface
+//
+// A default route has destination = all-zero and prefix = 0x00. Lines whose
+// next-hop is all-zero are link-scoped on-link routes (no gateway) and are
+// skipped.
+func detectDefaultIPv6GatewayFromReader(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+
+		// Need at least dest, prefix, src, src_prefix, next_hop
+		if len(fields) < 5 {
+			continue
+		}
+
+		destination := fields[0]
+		prefixLen := fields[1]
+		nextHop := fields[4]
+
+		if destination != ipv6RouteAllZero || prefixLen != "00" {
+			continue
+		}
+
+		// Skip link-scoped routes that have no gateway.
+		if nextHop == ipv6RouteAllZero {
+			continue
+		}
+
+		gatewayIP, err := hexToIPv6(nextHop)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse IPv6 gateway hex %s: %w", nextHop, err)
+		}
+		return gatewayIP, nil
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("error reading IPv6 route table: %w", err)
+	}
+
+	return "", fmt.Errorf("no default IPv6 gateway found in IPv6 route table")
+}
+
 // hexToIP converts a hex string (little-endian) to an IP address string.
 // Example: "0100007F" -> "127.0.0.1"
 func hexToIP(hexStr string) (string, error) {
@@ -401,6 +498,24 @@ func hexToIP(hexStr string) (string, error) {
 	)
 
 	return ip.String(), nil
+}
+
+// hexToIPv6 converts the 32-character network-byte-order hex string the
+// kernel emits in /proc/net/ipv6_route into a canonical IPv6 string.
+// Example: "fe800000000000000000000000000001" -> "fe80::1".
+func hexToIPv6(hexStr string) (string, error) {
+	if len(hexStr) != ipv6RouteHexLen {
+		return "", fmt.Errorf("invalid hex IPv6 length: %d (expected %d)", len(hexStr), ipv6RouteHexLen)
+	}
+
+	raw, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse IPv6 hex: %w", err)
+	}
+
+	// raw is guaranteed to be 16 bytes here (length gate + valid hex), so
+	// net.IP(raw).String() always yields a canonical IPv6 string.
+	return net.IP(raw).String(), nil
 }
 
 // trackGatewayChange logs when the gateway IP changes.

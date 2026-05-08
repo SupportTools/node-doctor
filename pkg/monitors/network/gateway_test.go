@@ -290,7 +290,6 @@ func TestHexToIP(t *testing.T) {
 }
 
 func TestDetectDefaultGateway(t *testing.T) {
-	// Create temporary route file for testing
 	tmpDir := t.TempDir()
 	routeFile := filepath.Join(tmpDir, "route")
 
@@ -303,29 +302,29 @@ func TestDetectDefaultGateway(t *testing.T) {
 	}{
 		{
 			name: "valid route with default gateway",
-			routeData: `Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
-eth0	00000000	0101A8C0	0003	0	0	100	00000000	0	0	0
-eth0	0000A8C0	00000000	0001	0	0	100	00FFFFFF	0	0	0`,
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+				"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
+				"eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n",
 			want:    "192.168.1.1",
 			wantErr: false,
 		},
 		{
 			name: "multiple interfaces - first default gateway",
-			routeData: `Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
-eth0	00000000	0101A8C0	0003	0	0	100	00000000	0	0	0
-wlan0	00000000	0A0AA8C0	0003	0	0	200	00000000	0	0	0`,
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+				"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
+				"wlan0\t00000000\t0A0AA8C0\t0003\t0\t0\t200\t00000000\t0\t0\t0\n",
 			want:    "192.168.1.1",
 			wantErr: false,
 		},
 		{
 			name: "no default gateway",
-			routeData: `Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
-eth0	0000A8C0	00000000	0001	0	0	100	00FFFFFF	0	0	0`,
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+				"eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n",
 			wantErr: true,
 		},
 		{
 			name:      "empty route table",
-			routeData: `Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT`,
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
 			wantErr:   true,
 		},
 		{
@@ -337,19 +336,205 @@ eth0	0000A8C0	00000000	0001	0	0	100	00FFFFFF	0	0	0`,
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !tt.skipCleanup {
-				// Write test route data
-				err := os.WriteFile(routeFile, []byte(tt.routeData), 0644)
-				if err != nil {
-					t.Fatalf("Failed to write test route file: %v", err)
+			if tt.skipCleanup {
+				missing := filepath.Join(tmpDir, "does-not-exist")
+				_, err := detectDefaultGatewayFromFile(missing)
+				if err == nil {
+					t.Errorf("detectDefaultGatewayFromFile(%q) expected error for missing file, got nil", missing)
 				}
+				return
 			}
 
-			// For unit testing, we should refactor detectDefaultGateway to accept a reader
-			// But for now, let's just test the hex conversion and validation logic
-			t.Skip("Skipping route detection test - requires refactoring to accept custom route file")
+			if err := os.WriteFile(routeFile, []byte(tt.routeData), 0o644); err != nil {
+				t.Fatalf("Failed to write test route file: %v", err)
+			}
+
+			got, err := detectDefaultGatewayFromFile(routeFile)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("detectDefaultGatewayFromFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("detectDefaultGatewayFromFile() = %q, want %q", got, tt.want)
+			}
 		})
 	}
+}
+
+func TestHexToIPv6(t *testing.T) {
+	tests := []struct {
+		name    string
+		hexStr  string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:   "link-local with low bits",
+			hexStr: "fe800000000000000000000000000001",
+			want:   "fe80::1",
+		},
+		{
+			name:   "loopback",
+			hexStr: "00000000000000000000000000000001",
+			want:   "::1",
+		},
+		{
+			name:   "unspecified address",
+			hexStr: "00000000000000000000000000000000",
+			want:   "::",
+		},
+		{
+			name:   "global unicast doc address",
+			hexStr: "20010db8000000000000000000000001",
+			want:   "2001:db8::1",
+		},
+		{
+			name:   "uppercase hex accepted",
+			hexStr: "FE800000000000000000000000000001",
+			want:   "fe80::1",
+		},
+		{
+			name:    "too short",
+			hexStr:  "fe80",
+			wantErr: true,
+		},
+		{
+			name:    "too long",
+			hexStr:  "fe800000000000000000000000000001ff",
+			wantErr: true,
+		},
+		{
+			name:    "invalid hex characters",
+			hexStr:  "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := hexToIPv6(tt.hexStr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("hexToIPv6() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("hexToIPv6() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectDefaultIPv6Gateway(t *testing.T) {
+	t.Run("fixture file with default route", func(t *testing.T) {
+		got, err := detectDefaultIPv6GatewayFromFile("testdata/proc/net/ipv6_route")
+		if err != nil {
+			t.Fatalf("detectDefaultIPv6GatewayFromFile() error = %v", err)
+		}
+		if want := "fe80::1"; got != want {
+			t.Errorf("detectDefaultIPv6GatewayFromFile() = %q, want %q", got, want)
+		}
+	})
+
+	tests := []struct {
+		name    string
+		content string
+		want    string
+		wantErr bool
+		errFrag string
+	}{
+		{
+			name: "default route via global next-hop",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"20010db8000000000000000000000001 00000400 00000003 00000000 00000003     eth0\n",
+			want: "2001:db8::1",
+		},
+		{
+			name: "link-scoped on-link route is skipped, no default exists",
+			content: "fe800000000000000000000000000000 40 00000000000000000000000000000000 00 " +
+				"00000000000000000000000000000000 00000100 00000007 00000000 00000001     eth0\n",
+			wantErr: true,
+			errFrag: "no default IPv6 gateway",
+		},
+		{
+			name: "default destination but on-link next-hop is rejected",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"00000000000000000000000000000000 00000400 00000003 00000000 00000003     eth0\n",
+			wantErr: true,
+			errFrag: "in IPv6 route table",
+		},
+		{
+			name: "prefix len other than 00 is not a default route",
+			content: "00000000000000000000000000000000 80 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 00000400 00000003 00000000 00000003     eth0\n",
+			wantErr: true,
+			errFrag: "in IPv6 route table",
+		},
+		{
+			name: "first default route wins",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 00000400 00000003 00000000 00000003     eth0\n" +
+				"00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"20010db800000000000000000000beef 00000800 00000001 00000000 00000003     eth1\n",
+			want: "fe80::1",
+		},
+		{
+			name: "non-default route precedes default route",
+			content: "20010db8000000000000000000000000 40 00000000000000000000000000000000 00 " +
+				"00000000000000000000000000000000 00000400 00000001 00000000 00000001     eth0\n" +
+				"00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 00000400 00000003 00000000 00000003     eth0\n",
+			want: "fe80::1",
+		},
+		{
+			name: "malformed line is skipped, default still found below",
+			content: "shortline only-three-fields here\n" +
+				"00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 00000400 00000003 00000000 00000003     eth0\n",
+			want: "fe80::1",
+		},
+		{
+			name:    "empty input",
+			content: "",
+			wantErr: true,
+			errFrag: "in IPv6 route table",
+		},
+		{
+			name: "non-hex next-hop returns parse error",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz 00000400 00000003 00000000 00000003     eth0\n",
+			wantErr: true,
+			errFrag: "failed to parse IPv6 gateway hex",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := detectDefaultIPv6GatewayFromReader(strings.NewReader(tt.content))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("detectDefaultIPv6GatewayFromReader() expected error, got nil (got %q)", got)
+				}
+				if tt.errFrag != "" && !strings.Contains(err.Error(), tt.errFrag) {
+					t.Errorf("detectDefaultIPv6GatewayFromReader() err = %q, want substring %q", err.Error(), tt.errFrag)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("detectDefaultIPv6GatewayFromReader() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("detectDefaultIPv6GatewayFromReader() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("missing file", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "does-not-exist")
+		_, err := detectDefaultIPv6GatewayFromFile(missing)
+		if err == nil {
+			t.Errorf("detectDefaultIPv6GatewayFromFile(%q) expected error for missing file, got nil", missing)
+		}
+	})
 }
 
 func TestGatewayMonitor_CheckGateway(t *testing.T) {
