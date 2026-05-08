@@ -203,6 +203,14 @@ func main() {
 		remediatorRegistry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
 		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d)",
 			remediatorRegistry.IsDryRun(), maxPerHour)
+
+		// Wire the controller lease client when coordination is opted in.
+		// The registry's Remediate path checks for a non-nil lease client and
+		// performs RequestLease/ReleaseLease internally; nothing else to wire.
+		// Failures here are non-fatal — coordination is opt-in.
+		if err := wireLeaseClient(remediatorRegistry, config); err != nil {
+			log.Printf("[WARN] Lease client not wired: %v (continuing without controller coordination)", err)
+		}
 	}
 
 	// Create exporters (health server is wired with the history provider before Start).
@@ -443,4 +451,31 @@ type monitorFactoryAdapter struct {
 // CreateMonitor implements the detector.MonitorFactory interface
 func (mfa *monitorFactoryAdapter) CreateMonitor(config types.MonitorConfig) (types.Monitor, error) {
 	return monitors.CreateMonitor(mfa.ctx, config)
+}
+
+// wireLeaseClient constructs a LeaseClient from the coordination config and
+// installs it on the registry so registry.Remediate() will request a lease
+// from the controller before each remediation. When coordination is disabled
+// or unconfigured, this is a no-op (returns nil).
+//
+// Returning a non-nil error means the operator opted in to coordination but
+// construction failed; the caller should warn-and-continue rather than abort
+// startup, because remediation is still safe without a lease (the registry
+// simply skips the lease phase when its lease client is nil).
+func wireLeaseClient(registry *remediators.RemediatorRegistry, config *types.NodeDoctorConfig) error {
+	if registry == nil {
+		return nil
+	}
+	coord := config.Remediation.Coordination
+	if coord == nil || !coord.Enabled {
+		return nil
+	}
+	leaseClient, err := remediators.NewLeaseClient(coord, config.Settings.NodeName)
+	if err != nil {
+		return fmt.Errorf("create lease client: %w", err)
+	}
+	registry.SetLeaseClient(leaseClient)
+	log.Printf("[INFO] Lease client wired (controller=%s node=%s leaseTimeout=%v)",
+		coord.ControllerURL, config.Settings.NodeName, coord.LeaseTimeout)
+	return nil
 }
