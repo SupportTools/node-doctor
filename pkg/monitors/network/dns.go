@@ -23,7 +23,7 @@ import (
 // DNSQuery represents a custom DNS query configuration.
 type DNSQuery struct {
 	Domain             string
-	RecordType         string // Currently only "A" is supported
+	RecordType         string // "A" (default) or "AAAA". Other values emit UnsupportedQueryType.
 	TestEachNameserver bool   // Test this domain against each nameserver individually
 	ConsistencyCheck   bool   // Enable consistency checking with multiple rapid queries
 }
@@ -1581,70 +1581,73 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 // checkCustomQueries checks custom DNS queries.
 func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Status) {
 	for _, query := range m.config.CustomQueries {
-		// Currently only A record queries are supported
-		if query.RecordType != "A" && query.RecordType != "" {
-			status.AddEvent(types.NewEvent(
-				types.EventWarning,
-				"UnsupportedQueryType",
-				fmt.Sprintf("Query type %s is not supported for domain %s (only A records supported)", query.RecordType, query.Domain),
-			))
-			continue
-		}
-
-		// Use per-nameserver testing if enabled
-		if query.TestEachNameserver {
-			m.checkDomainAgainstNameservers(ctx, status, query.Domain)
-			continue
-		}
-
-		// Use consistency checking if enabled (both per-query and global)
-		if query.ConsistencyCheck && m.config.ConsistencyChecking != nil && m.config.ConsistencyChecking.Enabled {
-			m.checkDomainConsistency(ctx, status, query.Domain)
-			continue
-		}
-
-		// Standard resolution using system resolver
-		start := time.Now()
-		addrs, err := m.resolver.LookupHost(ctx, query.Domain)
-		latency := time.Since(start)
-
 		recordType := query.RecordType
 		if recordType == "" {
 			recordType = "A"
 		}
+		if recordType != "A" && recordType != "AAAA" {
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"UnsupportedQueryType",
+				fmt.Sprintf("Query type %s is not supported for domain %s (supported: A, AAAA)", query.RecordType, query.Domain),
+			))
+			continue
+		}
+
+		// Per-nameserver and consistency paths only support A today; AAAA falls
+		// through to direct resolution.
+		if recordType == "A" && query.TestEachNameserver {
+			m.checkDomainAgainstNameservers(ctx, status, query.Domain)
+			continue
+		}
+
+		if recordType == "A" && query.ConsistencyCheck && m.config.ConsistencyChecking != nil && m.config.ConsistencyChecking.Enabled {
+			m.checkDomainConsistency(ctx, status, query.Domain)
+			continue
+		}
+
+		start := time.Now()
+		var resultCount int
+		var err error
+		if recordType == "AAAA" {
+			var ips []net.IP
+			ips, err = m.resolver.LookupIP(ctx, "ip6", query.Domain)
+			resultCount = len(ips)
+		} else {
+			var addrs []string
+			addrs, err = m.resolver.LookupHost(ctx, query.Domain)
+			resultCount = len(addrs)
+		}
+		latency := time.Since(start)
 
 		if err != nil {
 			errType := classifyDNSError(err)
 			status.AddEvent(types.NewEvent(
 				types.EventError,
 				"CustomDNSQueryFailed",
-				fmt.Sprintf("[%s] Failed to resolve custom domain %s: %v", errType, query.Domain, err),
+				fmt.Sprintf("[%s] Failed to resolve %s record for custom domain %s: %v", errType, recordType, query.Domain, err),
 			))
-			// Record failed custom DNS query latency
 			m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, false)
 			continue
 		}
 
-		if len(addrs) == 0 {
+		if resultCount == 0 {
 			status.AddEvent(types.NewEvent(
 				types.EventWarning,
 				"CustomDNSNoRecords",
-				fmt.Sprintf("No A records found for custom domain %s", query.Domain),
+				fmt.Sprintf("No %s records found for custom domain %s", recordType, query.Domain),
 			))
-			// Record as failed since no records found
 			m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, false)
 			continue
 		}
 
-		// Record successful custom DNS query latency
 		m.recordDNSLatency(query.Domain, "custom", "system", recordType, latency, true)
 
-		// Check latency
 		if latency > m.config.LatencyThreshold {
 			status.AddEvent(types.NewEvent(
 				types.EventWarning,
 				"HighCustomDNSLatency",
-				fmt.Sprintf("Custom DNS resolution for %s took %v (threshold: %v)", query.Domain, latency, m.config.LatencyThreshold),
+				fmt.Sprintf("Custom DNS %s resolution for %s took %v (threshold: %v)", recordType, query.Domain, latency, m.config.LatencyThreshold),
 			))
 		}
 	}

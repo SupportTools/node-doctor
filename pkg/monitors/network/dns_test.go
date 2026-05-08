@@ -16,6 +16,10 @@ import (
 type mockResolver struct {
 	// Responses maps domain names to their resolved addresses
 	responses map[string][]string
+	// IPResponses maps (network, domain) to []net.IP returned by LookupIP.
+	ipResponses map[string][]net.IP
+	// IPErrors maps (network, domain) to errors returned by LookupIP.
+	ipErrors map[string]error
 	// Errors maps domain names to errors
 	errors map[string]error
 	// Latencies maps domain names to artificial latencies
@@ -25,10 +29,22 @@ type mockResolver struct {
 // newMockResolver creates a new mock resolver for testing.
 func newMockResolver() *mockResolver {
 	return &mockResolver{
-		responses: make(map[string][]string),
-		errors:    make(map[string]error),
-		latencies: make(map[string]time.Duration),
+		responses:   make(map[string][]string),
+		ipResponses: make(map[string][]net.IP),
+		ipErrors:    make(map[string]error),
+		errors:      make(map[string]error),
+		latencies:   make(map[string]time.Duration),
 	}
+}
+
+// setIPResponse configures a successful LookupIP response for a (network, domain) pair.
+func (m *mockResolver) setIPResponse(network, domain string, ips []net.IP) {
+	m.ipResponses[network+"|"+domain] = ips
+}
+
+// setIPError configures an error response for LookupIP on a (network, domain) pair.
+func (m *mockResolver) setIPError(network, domain string, err error) {
+	m.ipErrors[network+"|"+domain] = err
 }
 
 // setResponse configures a successful DNS response for a domain.
@@ -64,6 +80,21 @@ func (m *mockResolver) LookupHost(ctx context.Context, host string) ([]string, e
 	}
 
 	// Default: not found
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+// LookupIP implements the Resolver interface for testing.
+func (m *mockResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
+	key := network + "|" + host
+	if latency, ok := m.latencies[host]; ok {
+		time.Sleep(latency)
+	}
+	if err, ok := m.ipErrors[key]; ok {
+		return nil, err
+	}
+	if ips, ok := m.ipResponses[key]; ok {
+		return ips, nil
+	}
 	return nil, fmt.Errorf("no such host: %s", host)
 }
 
@@ -692,6 +723,44 @@ func TestCustomQueries(t *testing.T) {
 			},
 			wantEvents: 1, // High latency warning
 		},
+		{
+			name: "successful AAAA custom query",
+			customQueries: []DNSQuery{
+				{Domain: "v6.example.com", RecordType: "AAAA"},
+			},
+			mockSetup: func(m *mockResolver) {
+				m.setIPResponse("ip6", "v6.example.com", []net.IP{net.ParseIP("2606:4700::1")})
+			},
+			wantEvents: 0,
+		},
+		{
+			name: "failed AAAA custom query",
+			customQueries: []DNSQuery{
+				{Domain: "missing-v6.example.com", RecordType: "AAAA"},
+			},
+			mockSetup: func(m *mockResolver) {
+				m.setIPError("ip6", "missing-v6.example.com", fmt.Errorf("no such host"))
+			},
+			wantEvents: 1,
+		},
+		{
+			name: "AAAA custom query with no records",
+			customQueries: []DNSQuery{
+				{Domain: "empty-v6.example.com", RecordType: "AAAA"},
+			},
+			mockSetup: func(m *mockResolver) {
+				m.setIPResponse("ip6", "empty-v6.example.com", []net.IP{})
+			},
+			wantEvents: 1,
+		},
+		{
+			name: "unsupported record type",
+			customQueries: []DNSQuery{
+				{Domain: "mx.example.com", RecordType: "MX"},
+			},
+			mockSetup: func(m *mockResolver) {},
+			wantEvents: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1039,12 +1108,34 @@ func TestCheckCustomQueries(t *testing.T) {
 			wantEventTypes: []string{"UnsupportedQueryType"},
 		},
 		{
-			name: "unsupported record type - AAAA",
+			name: "successful AAAA record query",
 			queries: []DNSQuery{
 				{Domain: "example.com", RecordType: "AAAA"},
 			},
-			setupMock:      func(m *mockResolver) {},
-			wantEventTypes: []string{"UnsupportedQueryType"},
+			setupMock: func(m *mockResolver) {
+				m.ipResponses["ip6|example.com"] = []net.IP{net.ParseIP("2606:2800:220:1::248")}
+			},
+			wantEventTypes: []string{},
+		},
+		{
+			name: "AAAA record query with no records",
+			queries: []DNSQuery{
+				{Domain: "v4only.example.com", RecordType: "AAAA"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.ipResponses["ip6|v4only.example.com"] = []net.IP{}
+			},
+			wantEventTypes: []string{"CustomDNSNoRecords"},
+		},
+		{
+			name: "AAAA record query failure",
+			queries: []DNSQuery{
+				{Domain: "nx-v6.example.com", RecordType: "AAAA"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.ipErrors["ip6|nx-v6.example.com"] = fmt.Errorf("no such host")
+			},
+			wantEventTypes: []string{"CustomDNSQueryFailed"},
 		},
 		{
 			name: "successful A record query",
@@ -2506,6 +2597,10 @@ func (m *intermittentMockResolver) LookupAddr(ctx context.Context, addr string) 
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (m *intermittentMockResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 // TestCheckDomainConsistencyIntermittent tests intermittent failure detection.
 func TestCheckDomainConsistencyIntermittent(t *testing.T) {
 	mock := &intermittentMockResolver{
@@ -2574,6 +2669,10 @@ func (m *varyingIPMockResolver) LookupHost(ctx context.Context, host string) ([]
 }
 
 func (m *varyingIPMockResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *varyingIPMockResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
