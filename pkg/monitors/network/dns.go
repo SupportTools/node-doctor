@@ -1581,7 +1581,7 @@ func (m *DNSMonitor) checkDNSDomains(ctx context.Context, status *types.Status, 
 // checkCustomQueries checks custom DNS queries.
 func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Status) {
 	for _, query := range m.config.CustomQueries {
-		recordType := query.RecordType
+		recordType := strings.ToUpper(strings.TrimSpace(query.RecordType))
 		if recordType == "" {
 			recordType = "A"
 		}

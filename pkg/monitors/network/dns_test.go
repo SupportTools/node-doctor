@@ -1138,6 +1138,26 @@ func TestCheckCustomQueries(t *testing.T) {
 			wantEventTypes: []string{"CustomDNSQueryFailed"},
 		},
 		{
+			name: "lowercase aaaa is normalized",
+			queries: []DNSQuery{
+				{Domain: "v6.example.com", RecordType: "aaaa"},
+			},
+			setupMock: func(m *mockResolver) {
+				m.ipResponses["ip6|v6.example.com"] = []net.IP{net.ParseIP("2606:4700::1")}
+			},
+			wantEventTypes: []string{},
+		},
+		{
+			name: "whitespace-padded A is normalized",
+			queries: []DNSQuery{
+				{Domain: "example.com", RecordType: "  A "},
+			},
+			setupMock: func(m *mockResolver) {
+				m.responses["example.com"] = []string{"1.2.3.4"}
+			},
+			wantEventTypes: []string{},
+		},
+		{
 			name: "successful A record query",
 			queries: []DNSQuery{
 				{Domain: "example.com", RecordType: "A"},
