@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -43,13 +44,28 @@ func newHTTPPinger(port int, path string) Pinger {
 	}
 }
 
+// hostFamily classifies the target as an IPv4 literal, IPv6 literal, or
+// hostname. For IP literals it returns the matching family constant; for
+// hostnames family is empty and the resolver will pick a family at dial time.
+func hostFamily(target string) string {
+	ip := net.ParseIP(target)
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		return FamilyIPv4
+	}
+	return FamilyIPv6
+}
+
 // Ping sends HTTP GET requests to the target IP and returns results.
 // It follows the same contract as the ICMP pinger: sends `count` probes
 // with 100ms inter-probe delay, measuring RTT for each.
 func (p *httpPinger) Ping(ctx context.Context, target string, count int, timeout time.Duration) ([]PingResult, error) {
 	results := make([]PingResult, 0, count)
 
-	url := fmt.Sprintf("http://%s:%d%s", target, p.port, p.path)
+	family := hostFamily(target)
+	url := "http://" + net.JoinHostPort(target, strconv.Itoa(p.port)) + p.path
 
 	for i := 0; i < count; i++ {
 		// Check context before each probe
@@ -59,7 +75,7 @@ func (p *httpPinger) Ping(ctx context.Context, target string, count int, timeout
 		default:
 		}
 
-		result := p.singleProbe(ctx, url, timeout)
+		result := p.singleProbe(ctx, url, family, timeout)
 		results = append(results, result)
 
 		// 100ms delay between probes (same as ICMP pinger)
@@ -76,7 +92,7 @@ func (p *httpPinger) Ping(ctx context.Context, target string, count int, timeout
 }
 
 // singleProbe performs a single HTTP GET and measures RTT.
-func (p *httpPinger) singleProbe(ctx context.Context, url string, timeout time.Duration) PingResult {
+func (p *httpPinger) singleProbe(ctx context.Context, url, family string, timeout time.Duration) PingResult {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -85,6 +101,7 @@ func (p *httpPinger) singleProbe(ctx context.Context, url string, timeout time.D
 		return PingResult{
 			Success: false,
 			Error:   fmt.Errorf("failed to create request: %w", err),
+			Family:  family,
 		}
 	}
 
@@ -96,6 +113,7 @@ func (p *httpPinger) singleProbe(ctx context.Context, url string, timeout time.D
 		return PingResult{
 			Success: false,
 			Error:   fmt.Errorf("HTTP probe failed: %w", err),
+			Family:  family,
 		}
 	}
 	defer func() {
@@ -108,11 +126,13 @@ func (p *httpPinger) singleProbe(ctx context.Context, url string, timeout time.D
 		return PingResult{
 			Success: false,
 			Error:   fmt.Errorf("HTTP probe returned status %d", resp.StatusCode),
+			Family:  family,
 		}
 	}
 
 	return PingResult{
 		Success: true,
 		RTT:     rtt,
+		Family:  family,
 	}
 }
