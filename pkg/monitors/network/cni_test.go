@@ -1115,3 +1115,212 @@ func TestCNIMonitor_ConcurrentPeerChecks_ContextCancellation(t *testing.T) {
 		t.Errorf("expected 5 peer statuses, got %d", len(monitor.peerStatuses))
 	}
 }
+
+// TestCNIMonitor_PeerStatusFamilyPropagation verifies that the address family
+// reported by the underlying pinger flows through into PeerStatus.Family so
+// downstream consumers (exporters, correlators) can distinguish IPv4 vs IPv6
+// connectivity outcomes per peer.
+func TestCNIMonitor_PeerStatusFamilyPropagation(t *testing.T) {
+	tests := []struct {
+		name        string
+		peer        Peer
+		pingResults []PingResult
+		pingErr     error
+		wantFamily  string
+		wantReach   bool
+	}{
+		{
+			name: "ipv4 success populates family",
+			peer: Peer{Name: "peer-1", NodeName: "node-2", NodeIP: "10.0.0.2"},
+			pingResults: []PingResult{
+				{Success: true, RTT: 10 * time.Millisecond, Family: FamilyIPv4},
+				{Success: true, RTT: 12 * time.Millisecond, Family: FamilyIPv4},
+				{Success: true, RTT: 11 * time.Millisecond, Family: FamilyIPv4},
+			},
+			wantFamily: FamilyIPv4,
+			wantReach:  true,
+		},
+		{
+			name: "ipv6 success populates family",
+			peer: Peer{Name: "peer-2", NodeName: "node-3", NodeIP: "2001:db8::3"},
+			pingResults: []PingResult{
+				{Success: true, RTT: 8 * time.Millisecond, Family: FamilyIPv6},
+				{Success: true, RTT: 9 * time.Millisecond, Family: FamilyIPv6},
+				{Success: true, RTT: 10 * time.Millisecond, Family: FamilyIPv6},
+			},
+			wantFamily: FamilyIPv6,
+			wantReach:  true,
+		},
+		{
+			name: "failed pings still emit family when listener bound",
+			peer: Peer{Name: "peer-3", NodeName: "node-4", NodeIP: "10.0.0.4"},
+			pingResults: []PingResult{
+				{Success: false, Error: errors.New("timeout"), Family: FamilyIPv4},
+				{Success: false, Error: errors.New("timeout"), Family: FamilyIPv4},
+				{Success: false, Error: errors.New("timeout"), Family: FamilyIPv4},
+			},
+			wantFamily: FamilyIPv4,
+			wantReach:  false,
+		},
+		{
+			name: "results without family leave family empty on first attempt",
+			peer: Peer{Name: "peer-4", NodeName: "node-5", NodeIP: "10.0.0.5"},
+			pingResults: []PingResult{
+				{Success: false, Error: errors.New("timeout")},
+				{Success: false, Error: errors.New("timeout")},
+				{Success: false, Error: errors.New("timeout")},
+			},
+			wantFamily: "",
+			wantReach:  false,
+		},
+		{
+			name:        "pinger-level error leaves family empty on first attempt",
+			peer:        Peer{Name: "peer-5", NodeName: "node-6", NodeIP: "10.0.0.6"},
+			pingResults: nil,
+			pingErr:     errors.New("socket create failed"),
+			wantFamily:  "",
+			wantReach:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			monitor := &CNIMonitor{
+				name: "test-cni",
+				config: &CNIMonitorConfig{
+					Connectivity: ConnectivityConfig{
+						PingCount:   3,
+						PingTimeout: 5 * time.Second,
+					},
+				},
+				pinger:       newMockPinger(tt.pingResults, tt.pingErr),
+				peerStatuses: make(map[string]*PeerStatus),
+			}
+
+			status := monitor.checkPeerConnectivity(context.Background(), tt.peer)
+			if status.Reachable != tt.wantReach {
+				t.Errorf("Reachable = %v, want %v", status.Reachable, tt.wantReach)
+			}
+			if status.Family != tt.wantFamily {
+				t.Errorf("Family = %q, want %q", status.Family, tt.wantFamily)
+			}
+		})
+	}
+}
+
+// TestCNIMonitor_FamilyPreservedAcrossFailures verifies that a previously
+// observed Family value is carried forward when the next probe attempt cannot
+// determine a family (pinger-level error before the family is selected).
+func TestCNIMonitor_FamilyPreservedAcrossFailures(t *testing.T) {
+	peer := Peer{Name: "peer-1", NodeName: "node-2", NodeIP: "2001:db8::2"}
+
+	monitor := &CNIMonitor{
+		name: "test-cni",
+		config: &CNIMonitorConfig{
+			Connectivity: ConnectivityConfig{
+				PingCount:   3,
+				PingTimeout: 5 * time.Second,
+			},
+		},
+		peerStatuses: map[string]*PeerStatus{
+			// Seed with a prior status that observed IPv6.
+			"node-2": {
+				Peer:             peer,
+				Family:           FamilyIPv6,
+				ConsecutiveFails: 1,
+				FailureCount:     1,
+			},
+		},
+	}
+
+	// Pinger returns an error before any result/family is produced.
+	monitor.pinger = newMockPinger(nil, errors.New("socket create failed"))
+
+	status := monitor.checkPeerConnectivity(context.Background(), peer)
+	if status.Reachable {
+		t.Errorf("Reachable = true, want false (pinger errored)")
+	}
+	if status.Family != FamilyIPv6 {
+		t.Errorf("Family = %q, want %q (should preserve prior family)", status.Family, FamilyIPv6)
+	}
+	if status.ConsecutiveFails != 2 {
+		t.Errorf("ConsecutiveFails = %d, want 2 (should increment from prior 1)", status.ConsecutiveFails)
+	}
+}
+
+// TestCNIMonitor_FamilyEndToEndCarryForward exercises two consecutive
+// checkPeerConnectivity calls on the same monitor (no manual seeding). The
+// first call observes IPv4; the second call hits a pinger-level error. The
+// stored peerStatuses entry from the first call should make the second call's
+// result preserve Family=ipv4.
+func TestCNIMonitor_FamilyEndToEndCarryForward(t *testing.T) {
+	peer := Peer{Name: "peer-1", NodeName: "node-2", NodeIP: "10.0.0.2"}
+
+	monitor := &CNIMonitor{
+		name: "test-cni",
+		config: &CNIMonitorConfig{
+			Connectivity: ConnectivityConfig{
+				PingCount:   3,
+				PingTimeout: 5 * time.Second,
+			},
+		},
+		pinger: newMockPinger([]PingResult{
+			{Success: true, RTT: 10 * time.Millisecond, Family: FamilyIPv4},
+			{Success: true, RTT: 11 * time.Millisecond, Family: FamilyIPv4},
+			{Success: true, RTT: 12 * time.Millisecond, Family: FamilyIPv4},
+		}, nil),
+		peerStatuses: make(map[string]*PeerStatus),
+	}
+
+	// First attempt: success populates Family=ipv4. Mirror the production wiring
+	// in CheckCNI by storing the returned status in peerStatuses for the next
+	// attempt to find via the existing-status carry-forward branch.
+	first := monitor.checkPeerConnectivity(context.Background(), peer)
+	if first.Family != FamilyIPv4 {
+		t.Fatalf("first attempt Family = %q, want %q", first.Family, FamilyIPv4)
+	}
+	monitor.peerStatuses[peer.NodeName] = first
+
+	// Second attempt: pinger errors before producing any result. Family should
+	// be preserved from the first attempt's stored status.
+	monitor.pinger = newMockPinger(nil, errors.New("socket create failed"))
+	second := monitor.checkPeerConnectivity(context.Background(), peer)
+	if second.Reachable {
+		t.Errorf("second attempt Reachable = true, want false")
+	}
+	if second.Family != FamilyIPv4 {
+		t.Errorf("second attempt Family = %q, want %q (carry-forward broken)", second.Family, FamilyIPv4)
+	}
+}
+
+// TestCNIMonitor_FamilyMixedResultsTakesFirstNonEmpty ensures that when a
+// batch of ping results contains a mix of empty and non-empty Family values
+// (which can happen if the pinger encounters an error mid-batch), the first
+// non-empty Family wins.
+func TestCNIMonitor_FamilyMixedResultsTakesFirstNonEmpty(t *testing.T) {
+	peer := Peer{Name: "peer-1", NodeName: "node-2", NodeIP: "10.0.0.2"}
+
+	monitor := &CNIMonitor{
+		name: "test-cni",
+		config: &CNIMonitorConfig{
+			Connectivity: ConnectivityConfig{
+				PingCount:   3,
+				PingTimeout: 5 * time.Second,
+			},
+		},
+		pinger: newMockPinger([]PingResult{
+			{Success: false, Error: errors.New("send fail")}, // no family yet
+			{Success: true, RTT: 10 * time.Millisecond, Family: FamilyIPv4},
+			{Success: true, RTT: 11 * time.Millisecond, Family: FamilyIPv4},
+		}, nil),
+		peerStatuses: make(map[string]*PeerStatus),
+	}
+
+	status := monitor.checkPeerConnectivity(context.Background(), peer)
+	if !status.Reachable {
+		t.Errorf("Reachable = false, want true (2/3 succeeded)")
+	}
+	if status.Family != FamilyIPv4 {
+		t.Errorf("Family = %q, want %q", status.Family, FamilyIPv4)
+	}
+}

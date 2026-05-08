@@ -106,6 +106,11 @@ type PeerStatus struct {
 	LastCheck        time.Time
 	LastSuccess      time.Time
 	ConsecutiveFails int
+	// Family is the address family observed on the most recent probe that
+	// resolved a target ("ipv4" or "ipv6"). It is captured from PingResult.Family
+	// and preserved across attempts that fail before the pinger can select a
+	// family (e.g., resolution failure with a nil pinger).
+	Family string
 }
 
 // CNIMonitor monitors CNI connectivity and cross-node health.
@@ -634,6 +639,10 @@ func (m *CNIMonitor) checkPeerConnectivity(ctx context.Context, peer Peer) *Peer
 	if exists {
 		peerStatus.ConsecutiveFails = existingStatus.ConsecutiveFails
 		peerStatus.FailureCount = existingStatus.FailureCount
+		// Carry forward the previously-observed family so a transient probe
+		// failure (which may produce no family signal) does not erase what we
+		// already know about the peer's address family.
+		peerStatus.Family = existingStatus.Family
 	}
 
 	// Determine which IP to ping based on overlay test mode
@@ -658,6 +667,13 @@ func (m *CNIMonitor) checkPeerConnectivity(ctx context.Context, peer Peer) *Peer
 	var totalRTT time.Duration
 
 	for _, result := range results {
+		// Capture address family from the first result that reports one. All
+		// results in a batch target the same IP, so families are uniform; we
+		// take the first non-empty value to also pick up failures that still
+		// resolved a family (e.g., timeout after the listener bound).
+		if peerStatus.Family == "" && result.Family != "" {
+			peerStatus.Family = result.Family
+		}
 		if result.Success {
 			successCount++
 			totalRTT += result.RTT
