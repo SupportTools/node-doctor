@@ -2602,10 +2602,10 @@ func TestControllerWebhookConfigValidation(t *testing.T) {
 		{
 			name: "zero interval",
 			input: ControllerWebhookConfig{
-				Enabled:  true,
-				URL:      "https://controller.example.com",
-				Timeout:  10 * time.Second,
-				Auth:     AuthConfig{Type: "none"},
+				Enabled: true,
+				URL:     "https://controller.example.com",
+				Timeout: 10 * time.Second,
+				Auth:    AuthConfig{Type: "none"},
 			},
 			wantErr: true,
 			errMsg:  "interval must be positive",

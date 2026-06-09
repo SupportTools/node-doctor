@@ -218,7 +218,7 @@ func verifyNodeCondition(ctx context.Context, kubeContext string, conditionType 
 		// Get node conditions
 		output, err := utils.ExecInNodeDoctor(ctx, kubeContext,
 			"kubectl", "get", "node",
-			"-o", "jsonpath={.items[0].status.conditions[?(@.type=='" + conditionType + "')].status}")
+			"-o", "jsonpath={.items[0].status.conditions[?(@.type=='"+conditionType+"')].status}")
 		if err != nil {
 			return false, nil
 		}

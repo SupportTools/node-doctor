@@ -263,7 +263,6 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-
 // corsMiddleware adds CORS headers when enabled in server config.
 // It allows all origins — this is intentional for an internal metrics/status API
 // that runs in a cluster and is not exposed to the public internet.
@@ -814,9 +813,9 @@ func (s *Server) requestLease(w http.ResponseWriter, r *http.Request) {
 	// lease state. Then fire the event asynchronously to avoid holding the write
 	// lock across a potentially-blocking Kubernetes API call.
 	var (
-		coordinatedNodes  []string
-		recorder          = s.eventRecorder
-		remediationType   = req.RemediationType
+		coordinatedNodes []string
+		recorder         = s.eventRecorder
+		remediationType  = req.RemediationType
 	)
 	if recorder != nil {
 		for _, l := range s.leases {

@@ -58,6 +58,7 @@ func (e *noopExporter) Stop() error {
 	return nil
 }
 
+//nolint:gocyclo // top-level CLI wiring: flag parsing + subsystem init is naturally branchy
 func main() {
 	// Parse command line flags
 	var (

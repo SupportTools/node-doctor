@@ -282,11 +282,11 @@ func (ns *NameserverStats) Len() int {
 //     still copies slots 0..count-1, so the returned slice is in slot order,
 //     NOT chronological order. Example with capacity=3:
 //
-//       add(r0) → slots: [r0, _, _]
-//       add(r1) → slots: [r0, r1, _]
-//       add(r2) → slots: [r0, r1, r2]   snapshot → [r0, r1, r2]  (ordered)
-//       add(r3) → slots: [r3, r1, r2]   snapshot → [r3, r1, r2]  (slot order!)
-//       add(r4) → slots: [r3, r4, r2]   snapshot → [r3, r4, r2]  (slot order!)
+//     add(r0) → slots: [r0, _, _]
+//     add(r1) → slots: [r0, r1, _]
+//     add(r2) → slots: [r0, r1, r2]   snapshot → [r0, r1, r2]  (ordered)
+//     add(r3) → slots: [r3, r1, r2]   snapshot → [r3, r1, r2]  (slot order!)
+//     add(r4) → slots: [r3, r4, r2]   snapshot → [r3, r4, r2]  (slot order!)
 //
 // # Callers must not assume chronological order
 //
@@ -507,7 +507,7 @@ type DNSMonitorConfig struct {
 	// ResolverPath is the path to the resolver configuration file
 	ResolverPath string `json:"resolverPath"`
 
-	// FailureCountThreshold is the number of consecutive failures before reporting NetworkUnreachable
+	// FailureCountThreshold is the number of consecutive failures before reporting ClusterDNSDown / ExternalDNSDown
 	FailureCountThreshold int `json:"failureCountThreshold"`
 
 	// SuccessRateTracking configures sliding window success rate tracking
@@ -538,7 +538,7 @@ type DNSMonitor struct {
 	config   *DNSMonitorConfig
 	resolver Resolver
 
-	// Failure tracking for NetworkUnreachable condition
+	// Failure tracking for the ClusterDNSDown / ExternalDNSDown conditions
 	mu                   sync.Mutex
 	clusterFailureCount  int
 	externalFailureCount int
@@ -1229,6 +1229,8 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 }
 
 // applyDefaults applies default values to the DNS monitor configuration.
+//
+//nolint:gocyclo // config defaults are inherently branchy across many optional fields
 func (c *DNSMonitorConfig) applyDefaults() error {
 	// Default cluster domains - only apply if not explicitly set (nil vs empty slice)
 	if c.ClusterDomains == nil {
@@ -1654,8 +1656,9 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 }
 
 // checkDomainConsistency performs multiple rapid DNS queries to detect intermittent failures.
-// It reports DNSResolutionIntermittent if some queries fail or return different results,
-// and DNSResolutionConsistent if all queries succeed with consistent results.
+// It toggles the DNSResolution{Down,Intermittent,Inconsistent} condition group: the matching
+// member is set True when queries fail or return varying results, and all three are cleared
+// (set False) when every query succeeds with consistent results.
 func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.Status, domain string) {
 	cc := m.config.ConsistencyChecking
 	queriesCount := cc.QueriesPerCheck
@@ -1762,8 +1765,12 @@ func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.S
 		}
 	}
 
-	// Generate events and conditions based on results
-	if failureCount == queriesCount {
+	// Generate events for this check, then toggle the consistency condition group.
+	// {DNSResolutionDown, DNSResolutionIntermittent, DNSResolutionInconsistent} are
+	// mutually exclusive; the all-consistent case clears all three (activeType "").
+	active := ""
+	switch {
+	case failureCount == queriesCount:
 		// All queries failed
 		errType := DNSErrorUnknown
 		if firstError != nil {
@@ -1774,13 +1781,8 @@ func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.S
 			"ConsistencyCheckAllFailed",
 			fmt.Sprintf("[%s] All %d consistency check queries failed for %s: %v", errType, queriesCount, domain, firstError),
 		))
-		status.AddCondition(types.NewCondition(
-			"DNSResolutionDown",
-			types.ConditionTrue,
-			"AllConsistencyQueriesFailed",
-			fmt.Sprintf("Domain %s: all %d rapid queries failed", domain, queriesCount),
-		))
-	} else if failureCount > 0 {
+		active = "DNSResolutionDown"
+	case failureCount > 0:
 		// Some queries failed - intermittent issue detected
 		errType := DNSErrorUnknown
 		if firstError != nil {
@@ -1791,13 +1793,8 @@ func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.S
 			"ConsistencyCheckIntermittent",
 			fmt.Sprintf("[%s] Intermittent DNS resolution for %s: %d/%d queries succeeded (avg latency: %v)", errType, domain, successCount, queriesCount, avgLatency),
 		))
-		status.AddCondition(types.NewCondition(
-			"DNSResolutionIntermittent",
-			types.ConditionTrue,
-			"IntermittentConsistencyFailures",
-			fmt.Sprintf("Domain %s: %d/%d queries succeeded (%.1f%% success rate)", domain, successCount, queriesCount, float64(successCount)/float64(queriesCount)*100),
-		))
-	} else if !ipConsistent {
+		active = "DNSResolutionIntermittent"
+	case !ipConsistent:
 		// All queries succeeded but returned different IPs
 		ipList := make([]string, 0, len(allAddrs))
 		for ip := range allAddrs {
@@ -1808,25 +1805,26 @@ func (m *DNSMonitor) checkDomainConsistency(ctx context.Context, status *types.S
 			"ConsistencyCheckIPVariation",
 			fmt.Sprintf("DNS resolution for %s returned varying IPs across %d queries: %s (avg latency: %v)", domain, queriesCount, strings.Join(ipList, ", "), avgLatency),
 		))
-		status.AddCondition(types.NewCondition(
-			"DNSResolutionInconsistent",
-			types.ConditionTrue,
-			"InconsistentIPAddresses",
-			fmt.Sprintf("Domain %s: %d unique IPs returned across %d queries", domain, len(allAddrs), queriesCount),
-		))
-	} else {
-		// All queries succeeded with consistent results
-		ipList := make([]string, 0, len(allAddrs))
-		for ip := range allAddrs {
-			ipList = append(ipList, ip)
-		}
-		status.AddCondition(types.NewCondition(
-			"DNSResolutionConsistent",
-			types.ConditionTrue,
-			"ConsistentResolution",
-			fmt.Sprintf("Domain %s: all %d queries succeeded with consistent IPs %s (avg latency: %v)", domain, queriesCount, strings.Join(ipList, ", "), avgLatency),
-		))
+		active = "DNSResolutionInconsistent"
 	}
+
+	setMutuallyExclusiveCondition(status, []exclusiveCond{
+		{
+			Type:    "DNSResolutionDown",
+			Reason:  "AllConsistencyQueriesFailed",
+			Message: fmt.Sprintf("Domain %s: all %d rapid queries failed", domain, queriesCount),
+		},
+		{
+			Type:    "DNSResolutionIntermittent",
+			Reason:  "IntermittentConsistencyFailures",
+			Message: fmt.Sprintf("Domain %s: %d/%d queries succeeded (%.1f%% success rate)", domain, successCount, queriesCount, float64(successCount)/float64(queriesCount)*100),
+		},
+		{
+			Type:    "DNSResolutionInconsistent",
+			Reason:  "InconsistentIPAddresses",
+			Message: fmt.Sprintf("Domain %s: %d unique IPs returned across %d queries", domain, len(allAddrs), queriesCount),
+		},
+	}, active)
 
 	// Check average latency
 	if avgLatency > m.config.LatencyThreshold {
@@ -1935,33 +1933,30 @@ func (m *DNSMonitor) checkDomainAgainstNameservers(ctx context.Context, status *
 		}
 	}
 
-	// Report aggregate condition based on results
+	// Toggle the aggregate condition based on results. {CustomDNSDown, DNSResolutionDegraded}
+	// are mutually exclusive; the all-responding case clears both (activeType "").
+	active := ""
 	if successCount == 0 && totalServers > 0 {
 		// All nameservers failed
-		status.AddCondition(types.NewCondition(
-			"CustomDNSDown",
-			types.ConditionTrue,
-			"AllNameserversFailed",
-			fmt.Sprintf("Domain %s: all %d nameservers failed to resolve", domain, totalServers),
-		))
+		active = "CustomDNSDown"
 	} else if successCount > 0 && len(failedServers) > 0 {
 		// Partial failure - some nameservers working, some not
-		status.AddCondition(types.NewCondition(
-			"DNSResolutionDegraded",
-			types.ConditionTrue,
-			"PartialNameserverFailure",
-			fmt.Sprintf("Domain %s: %d/%d nameservers responding (failed: %s)",
-				domain, successCount, totalServers, strings.Join(failedServers, ", ")),
-		))
-	} else if successCount == totalServers {
-		// All nameservers succeeded
-		status.AddCondition(types.NewCondition(
-			"CustomDNSHealthy",
-			types.ConditionTrue,
-			"AllNameserversHealthy",
-			fmt.Sprintf("Domain %s: all %d nameservers responding", domain, totalServers),
-		))
+		active = "DNSResolutionDegraded"
 	}
+
+	setMutuallyExclusiveCondition(status, []exclusiveCond{
+		{
+			Type:    "CustomDNSDown",
+			Reason:  "AllNameserversFailed",
+			Message: fmt.Sprintf("Domain %s: all %d nameservers failed to resolve", domain, totalServers),
+		},
+		{
+			Type:   "DNSResolutionDegraded",
+			Reason: "PartialNameserverFailure",
+			Message: fmt.Sprintf("Domain %s: %d/%d nameservers responding (failed: %s)",
+				domain, successCount, totalServers, strings.Join(failedServers, ", ")),
+		},
+	}, active)
 }
 
 // cleanupOldNameserverStatus removes stale entries from the nameserverDomainStatus map.
@@ -2173,6 +2168,9 @@ func (m *DNSMonitor) computeNameserverHealthScores(status *types.Status) []types
 		}
 	}
 
+	// DNSNameserverUnhealthy and DNSNameserverDegraded are independent conditions
+	// (a nameserver set can be unhealthy without being degraded and vice versa).
+	// Each toggles its own True/False so it never latches.
 	if len(unhealthyList) > 0 {
 		status.AddCondition(types.NewCondition(
 			"DNSNameserverUnhealthy",
@@ -2180,6 +2178,13 @@ func (m *DNSMonitor) computeNameserverHealthScores(status *types.Status) []types
 			"LowHealthScore",
 			fmt.Sprintf("Unhealthy nameservers (score < %.0f): %s",
 				cfg.UnhealthyThreshold, strings.Join(unhealthyList, ", ")),
+		))
+	} else {
+		status.AddCondition(types.NewCondition(
+			"DNSNameserverUnhealthy",
+			types.ConditionFalse,
+			"NoUnhealthyNameservers",
+			"No unhealthy nameservers",
 		))
 	}
 
@@ -2190,6 +2195,13 @@ func (m *DNSMonitor) computeNameserverHealthScores(status *types.Status) []types
 			"DegradedHealthScore",
 			fmt.Sprintf("Degraded nameservers (score < %.0f): %s",
 				cfg.DegradedThreshold, strings.Join(degradedList, ", ")),
+		))
+	} else {
+		status.AddCondition(types.NewCondition(
+			"DNSNameserverDegraded",
+			types.ConditionFalse,
+			"NoDegradedNameservers",
+			"No degraded nameservers",
 		))
 	}
 
@@ -2213,21 +2225,34 @@ func (m *DNSMonitor) computePredictiveAlerts(status *types.Status, latencyMetric
 	clusterResult := analyzeRingBuffer(m.clusterSuccessTracker, threshold, cfg)
 	externalResult := analyzeRingBuffer(m.externalSuccessTracker, threshold, cfg)
 
-	// Add DNSPredictedDegradation conditions for breaches within lead time.
-	if clusterResult.WillBreach && clusterResult.WithinLeadTime {
+	// Toggle the single DNSPredictedDegradation condition. It is True when either tracker
+	// predicts a breach within the lead time, False when a prediction was computed but no
+	// breach is imminent, and left untouched when no prediction could be made at all (so a
+	// data-starved cycle does not overwrite a real prior state). A single condition type is
+	// written exactly once per cycle to avoid the cluster arm clobbering the external arm.
+	clusterBreach := clusterResult.WillBreach && clusterResult.WithinLeadTime
+	externalBreach := externalResult.WillBreach && externalResult.WithinLeadTime
+	switch {
+	case clusterBreach:
 		status.AddCondition(types.NewCondition(
 			"DNSPredictedDegradation",
 			types.ConditionTrue,
 			"ClusterDNSBreachPredicted",
 			buildPredictiveConditionMessage("Cluster", clusterResult),
 		))
-	}
-	if externalResult.WillBreach && externalResult.WithinLeadTime {
+	case externalBreach:
 		status.AddCondition(types.NewCondition(
 			"DNSPredictedDegradation",
 			types.ConditionTrue,
 			"ExternalDNSBreachPredicted",
 			buildPredictiveConditionMessage("External", externalResult),
+		))
+	case clusterResult.HasPrediction || externalResult.HasPrediction:
+		status.AddCondition(types.NewCondition(
+			"DNSPredictedDegradation",
+			types.ConditionFalse,
+			"NoDNSBreachPredicted",
+			"No DNS success-rate breach predicted within lead time",
 		))
 	}
 
@@ -2288,6 +2313,23 @@ func (m *DNSMonitor) parseResolverConfig() ([]string, error) {
 	return nameservers, nil
 }
 
+// exclusiveCond describes one member of a mutually-exclusive condition group.
+type exclusiveCond struct{ Type, Reason, Message string }
+
+// setMutuallyExclusiveCondition writes every member of a mutually-exclusive group
+// in a single cycle: the member matching activeType is set True with its own
+// reason/message, and every other member is set False so a previously-latched
+// sibling clears. An empty activeType sets all members False (the all-healthy case).
+func setMutuallyExclusiveCondition(status *types.Status, members []exclusiveCond, activeType string) {
+	for _, mc := range members {
+		if mc.Type == activeType {
+			status.AddCondition(types.NewCondition(mc.Type, types.ConditionTrue, mc.Reason, mc.Message))
+		} else {
+			status.AddCondition(types.NewCondition(mc.Type, types.ConditionFalse, mc.Type+"Clear", mc.Type+" is clear"))
+		}
+	}
+}
+
 // updateFailureTracking updates failure counters and sets conditions based on failure state.
 func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *types.Status) {
 	m.mu.Lock()
@@ -2326,7 +2368,7 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 		m.externalTrendDetector.Observe(m.externalSuccessTracker.GetSuccessRate(), now)
 	}
 
-	// Report ClusterDNSDown condition if cluster DNS failures exceed threshold
+	// Toggle ClusterDNSDown True/False based on the consecutive-failure count.
 	if m.clusterFailureCount >= m.config.FailureCountThreshold {
 		status.AddCondition(types.NewCondition(
 			"ClusterDNSDown",
@@ -2335,30 +2377,28 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 			fmt.Sprintf("Cluster DNS has failed %d consecutive times (threshold: %d)",
 				m.clusterFailureCount, m.config.FailureCountThreshold),
 		))
-	} else if clusterOK && m.clusterFailureCount == 0 {
-		// Report healthy condition when back to normal
+	} else if m.clusterFailureCount == 0 {
 		status.AddCondition(types.NewCondition(
-			"ClusterDNSHealthy",
-			types.ConditionTrue,
+			"ClusterDNSDown",
+			types.ConditionFalse,
 			"ClusterDNSResolved",
 			"Cluster DNS resolution is healthy",
 		))
 	}
 
-	// Report NetworkUnreachable condition if external DNS failures exceed threshold
+	// Toggle ExternalDNSDown True/False based on the consecutive-failure count.
 	if m.externalFailureCount >= m.config.FailureCountThreshold {
 		status.AddCondition(types.NewCondition(
-			"NetworkUnreachable",
+			"ExternalDNSDown",
 			types.ConditionTrue,
 			"RepeatedExternalDNSFailures",
 			fmt.Sprintf("External DNS has failed %d consecutive times (threshold: %d)",
 				m.externalFailureCount, m.config.FailureCountThreshold),
 		))
-	} else if externalOK && m.externalFailureCount == 0 {
-		// Report healthy condition when back to normal
+	} else if m.externalFailureCount == 0 {
 		status.AddCondition(types.NewCondition(
-			"NetworkReachable",
-			types.ConditionTrue,
+			"ExternalDNSDown",
+			types.ConditionFalse,
 			"ExternalDNSResolved",
 			"External DNS resolution is healthy",
 		))
@@ -2375,51 +2415,56 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 func (m *DNSMonitor) checkSuccessRateConditions(status *types.Status) {
 	srtConfig := m.config.SuccessRateTracking
 
-	// Check cluster DNS success rate
+	// Check cluster DNS success rate. Only one of {ClusterDNSDegraded, ClusterDNSIntermittent}
+	// is True at a time; the helper clears the sibling so it never latches.
 	if m.clusterSuccessTracker.Count() >= srtConfig.MinSamplesRequired {
 		clusterFailureRate := m.clusterSuccessTracker.GetFailureRate()
-
-		if clusterFailureRate >= srtConfig.FailureRateThreshold {
-			status.AddCondition(types.NewCondition(
-				"ClusterDNSDegraded",
-				types.ConditionTrue,
-				"HighClusterDNSFailureRate",
-				fmt.Sprintf("Cluster DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
+		members := []exclusiveCond{
+			{
+				Type:   "ClusterDNSDegraded",
+				Reason: "HighClusterDNSFailureRate",
+				Message: fmt.Sprintf("Cluster DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
 					clusterFailureRate*100, srtConfig.FailureRateThreshold*100, m.clusterSuccessTracker.Count()),
-			))
-		} else if clusterFailureRate > 0 {
-			// Some failures but below threshold - intermittent
-			status.AddCondition(types.NewCondition(
-				"ClusterDNSIntermittent",
-				types.ConditionTrue,
-				"IntermittentClusterDNSFailures",
-				fmt.Sprintf("Cluster DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
+			},
+			{
+				Type:   "ClusterDNSIntermittent",
+				Reason: "IntermittentClusterDNSFailures",
+				Message: fmt.Sprintf("Cluster DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
 					clusterFailureRate*100, srtConfig.FailureRateThreshold*100),
-			))
+			},
 		}
+		active := ""
+		if clusterFailureRate >= srtConfig.FailureRateThreshold {
+			active = "ClusterDNSDegraded"
+		} else if clusterFailureRate > 0 {
+			active = "ClusterDNSIntermittent"
+		}
+		setMutuallyExclusiveCondition(status, members, active)
 	}
 
-	// Check external DNS success rate
+	// Check external DNS success rate. Same mutually-exclusive shape as the cluster pair.
 	if m.externalSuccessTracker.Count() >= srtConfig.MinSamplesRequired {
 		externalFailureRate := m.externalSuccessTracker.GetFailureRate()
-
-		if externalFailureRate >= srtConfig.FailureRateThreshold {
-			status.AddCondition(types.NewCondition(
-				"ExternalDNSDegraded",
-				types.ConditionTrue,
-				"HighExternalDNSFailureRate",
-				fmt.Sprintf("External DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
+		members := []exclusiveCond{
+			{
+				Type:   "ExternalDNSDegraded",
+				Reason: "HighExternalDNSFailureRate",
+				Message: fmt.Sprintf("External DNS failure rate %.1f%% exceeds threshold %.1f%% (window: %d samples)",
 					externalFailureRate*100, srtConfig.FailureRateThreshold*100, m.externalSuccessTracker.Count()),
-			))
-		} else if externalFailureRate > 0 {
-			// Some failures but below threshold - intermittent
-			status.AddCondition(types.NewCondition(
-				"ExternalDNSIntermittent",
-				types.ConditionTrue,
-				"IntermittentExternalDNSFailures",
-				fmt.Sprintf("External DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
+			},
+			{
+				Type:   "ExternalDNSIntermittent",
+				Reason: "IntermittentExternalDNSFailures",
+				Message: fmt.Sprintf("External DNS has intermittent failures: %.1f%% failure rate (threshold: %.1f%%)",
 					externalFailureRate*100, srtConfig.FailureRateThreshold*100),
-			))
+			},
 		}
+		active := ""
+		if externalFailureRate >= srtConfig.FailureRateThreshold {
+			active = "ExternalDNSDegraded"
+		} else if externalFailureRate > 0 {
+			active = "ExternalDNSIntermittent"
+		}
+		setMutuallyExclusiveCondition(status, members, active)
 	}
 }

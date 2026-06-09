@@ -67,6 +67,60 @@ func createTestConditionManager(updateInterval, resyncInterval, heartbeatInterva
 	return NewConditionManager(client, config)
 }
 
+// TestRemoveRetiredDNSConditionsOnInitialSync verifies that conditions the DNS monitor no
+// longer writes (the single-toggle refactor's retired mirrors) are removed on startup, while
+// conditions still owned by a monitor survive: NetworkUnreachable (gateway) and ClusterDNSDown (DNS).
+func TestRemoveRetiredDNSConditionsOnInitialSync(t *testing.T) {
+	mkCond := func(typ string) corev1.NodeCondition {
+		return corev1.NodeCondition{
+			Type:               corev1.NodeConditionType(typ),
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+			Reason:             "Seeded",
+			Message:            "seeded for test",
+		}
+	}
+	testNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node", UID: "test-uid"},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
+			mkCond("NodeDoctorClusterDNSHealthy"),
+			mkCond("NodeDoctorCustomDNSHealthy"),
+			mkCond("NodeDoctorNetworkReachable"),
+			mkCond("NodeDoctorDNSResolutionConsistent"),
+			mkCond("NodeDoctorNetworkUnreachable"), // gateway-owned: must survive
+			mkCond("NodeDoctorClusterDNSDown"),     // DNS, still emitted: must survive
+		}},
+	}
+	fakeClientset := fake.NewSimpleClientset(testNode)
+	client := &K8sClient{clientset: fakeClientset, nodeName: "test-node", nodeUID: "test-uid"}
+	cm := NewConditionManager(client, &types.KubernetesExporterConfig{
+		UpdateInterval: time.Second, ResyncInterval: 30 * time.Second, HeartbeatInterval: time.Minute,
+	})
+
+	if err := cm.initialSync(context.Background()); err != nil {
+		t.Fatalf("initialSync: %v", err)
+	}
+
+	got := cm.GetConditions()
+	retired := []string{
+		"NodeDoctorClusterDNSHealthy", "NodeDoctorCustomDNSHealthy",
+		"NodeDoctorNetworkReachable", "NodeDoctorDNSResolutionConsistent",
+	}
+	for _, typ := range retired {
+		if _, exists := got[typ]; exists {
+			t.Errorf("retired condition %s should have been removed on initialSync", typ)
+		}
+		if _, pending := cm.pendingRemovals[typ]; !pending {
+			t.Errorf("retired condition %s should be scheduled in pendingRemovals", typ)
+		}
+	}
+	for _, typ := range []string{"NodeDoctorNetworkUnreachable", "NodeDoctorClusterDNSDown"} {
+		if _, exists := got[typ]; !exists {
+			t.Errorf("condition %s should survive initialSync", typ)
+		}
+	}
+}
+
 // TestNewConditionManager tests condition manager creation
 func TestNewConditionManager(t *testing.T) {
 	config := &types.KubernetesExporterConfig{

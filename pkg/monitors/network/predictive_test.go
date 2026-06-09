@@ -71,7 +71,7 @@ func TestAnalyzeRingBuffer_SteadySuccess_NoAlert(t *testing.T) {
 		entries[i] = struct {
 			success bool
 			secsAgo float64
-		}{true, float64(10 - i) * 30}
+		}{true, float64(10-i) * 30}
 	}
 	rb := fillRingBuffer(entries, 20)
 	result := analyzeRingBuffer(rb, 0.3, cfg)

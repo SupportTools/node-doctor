@@ -363,9 +363,8 @@ config:
 - Troubleshoot split-horizon DNS problems
 
 **Generated Conditions:**
-- `CustomDNSDown`: All nameservers failed to resolve the domain
-- `DNSResolutionDegraded`: Some nameservers working, others failing
-- `CustomDNSHealthy`: All nameservers responding successfully
+- `CustomDNSDown`: All nameservers failed to resolve the domain (cleared to `False` when all respond)
+- `DNSResolutionDegraded`: Some nameservers working, others failing (cleared to `False` when all respond)
 
 ##### 2. Success Rate Tracking (Sliding Window)
 
@@ -449,7 +448,7 @@ config:
 - `intervalBetweenQueries`: 200ms
 
 **Detection Capabilities:**
-- **All queries succeed with same IPs** → `DNSResolutionConsistent`
+- **All queries succeed with same IPs** → all three conditions below cleared to `False`
 - **All queries fail** → `DNSResolutionDown`
 - **Some succeed, some fail** → `DNSResolutionIntermittent`
 - **All succeed but different IPs** → `DNSResolutionInconsistent`
@@ -543,22 +542,20 @@ monitors:
 
 #### Conditions
 
-Node conditions are prefixed with `NodeDoctor` when exported to Kubernetes:
+Node conditions are prefixed with `NodeDoctor` when exported to Kubernetes. Each condition is
+a **single toggle**: it is set `True` while the problem is present and `False` once it clears,
+so a resolved DNS issue no longer leaves a stale `True` condition latched on the node.
 
 | Condition (as shown in kubectl) | Description |
 |--------------------------------|-------------|
 | `NodeDoctorClusterDNSDown` | Cluster DNS failed repeatedly |
-| `NodeDoctorClusterDNSHealthy` | Cluster DNS resolution is healthy |
-| `NodeDoctorNetworkUnreachable` | External DNS failed repeatedly |
-| `NodeDoctorNetworkReachable` | External DNS resolution is healthy |
+| `NodeDoctorExternalDNSDown` | External DNS failed repeatedly |
 | `NodeDoctorClusterDNSDegraded` | Cluster DNS failure rate exceeds threshold |
 | `NodeDoctorClusterDNSIntermittent` | Cluster DNS has intermittent failures |
 | `NodeDoctorExternalDNSDegraded` | External DNS failure rate exceeds threshold |
 | `NodeDoctorExternalDNSIntermittent` | External DNS has intermittent failures |
 | `NodeDoctorCustomDNSDown` | All nameservers failed for custom domain |
-| `NodeDoctorCustomDNSHealthy` | All nameservers healthy for custom domain |
 | `NodeDoctorDNSResolutionDegraded` | Partial nameserver failure for domain |
-| `NodeDoctorDNSResolutionConsistent` | Consistency check: all queries consistent |
 | `NodeDoctorDNSResolutionIntermittent` | Consistency check: some queries failed |
 | `NodeDoctorDNSResolutionInconsistent` | Consistency check: varying IP addresses (expected for CDN/load-balanced domains) |
 | `NodeDoctorDNSResolutionDown` | Consistency check: all queries failed |
@@ -569,11 +566,33 @@ Node conditions are prefixed with `NodeDoctor` when exported to Kubernetes:
 # View all DNS conditions for a node
 kubectl describe node <node-name> | grep -E "NodeDoctorDNS|NodeDoctorCluster|NodeDoctorCustomDNS"
 
-# Example output:
-#   NodeDoctorDNSResolutionConsistent   True   ConsistentResolution   Domain google.com: all 5 queries succeeded with consistent IPs
-#   NodeDoctorCustomDNSHealthy          True   AllNameserversHealthy  Domain cloudflare.com: all 1 nameservers responding
-#   NodeDoctorClusterDNSHealthy         True   ClusterDNSResolved     Cluster DNS resolution is healthy
+# Example output (healthy node — problem conditions sit at False):
+#   NodeDoctorDNSResolutionDown         False  DNSResolutionDownClear   DNSResolutionDown is clear
+#   NodeDoctorCustomDNSDown             False  CustomDNSDownClear       CustomDNSDown is clear
+#   NodeDoctorClusterDNSDown            False  ClusterDNSResolved       Cluster DNS resolution is healthy
 ```
+
+**Upgrade notes (DNS condition single-toggle change):**
+
+Earlier releases emitted DNS conditions additively — a problem condition was set `True` and never
+set back to `False`, while a separate "healthy" mirror condition was written on recovery. A problem
+condition could therefore stay `True` long after the issue cleared (it latched). DNS conditions are
+now a single toggle: each problem condition is written with its correct `True`/`False` every cycle.
+
+- **Renamed:** the DNS external-resolution condition `NodeDoctorNetworkUnreachable` →
+  `NodeDoctorExternalDNSDown`. (`NodeDoctorNetworkUnreachable` is now owned exclusively by the
+  gateway monitor and reflects only gateway reachability.) Update any alert/dashboard rule that keyed
+  the old name to DNS.
+- **Removed (mirror conditions, no replacement):** `NodeDoctorClusterDNSHealthy`,
+  `NodeDoctorNetworkReachable`, `NodeDoctorDNSResolutionConsistent`, `NodeDoctorCustomDNSHealthy`.
+  Their "healthy" meaning is now expressed by the corresponding problem condition reporting `False`.
+- **Orphan cleanup:** on startup the agent removes the four retired conditions above from each node
+  it manages, so stale `True` values left by older agents are cleared automatically. The renamed
+  `NodeDoctorNetworkUnreachable` is intentionally **not** removed (the gateway monitor keeps it).
+- **Per-domain limitation (unchanged):** consistency (`DNSResolution*`) and custom-nameserver
+  (`CustomDNSDown` / `DNSResolutionDegraded`) checks loop over multiple domains writing the **same**
+  condition types, so the last domain evaluated in a cycle wins. These conditions are not reported
+  per-domain; the message names the most recently evaluated domain.
 
 #### Example: Enterprise LDAP DNS Monitoring
 
@@ -808,10 +827,11 @@ DNS conditions appear as node conditions viewable via `kubectl`:
 # View all DNS-related node conditions
 kubectl describe node <node-name> | grep -E "NodeDoctorDNS|NodeDoctorCluster|NodeDoctorCustomDNS"
 
-# Example output from a healthy node:
-#   NodeDoctorDNSResolutionConsistent   True   ConsistentResolution     Domain google.com: all 5 queries succeeded with consistent IPs 142.251.32.46 (avg latency: 4.65ms)
-#   NodeDoctorCustomDNSHealthy          True   AllNameserversHealthy    Domain cloudflare.com: all 1 nameservers responding
-#   NodeDoctorClusterDNSHealthy         True   ClusterDNSResolved       Cluster DNS resolution is healthy
+# Example output from a healthy node (problem conditions sit at False):
+#   NodeDoctorDNSResolutionDown         False  DNSResolutionDownClear   DNSResolutionDown is clear
+#   NodeDoctorCustomDNSDown             False  CustomDNSDownClear       CustomDNSDown is clear
+#   NodeDoctorClusterDNSDown            False  ClusterDNSResolved       Cluster DNS resolution is healthy
+# Example output from a node with a CDN/load-balanced domain returning varying IPs:
 #   NodeDoctorDNSResolutionInconsistent True   InconsistentIPAddresses  Domain google.com: 3 unique IPs returned across 5 queries
 
 # Check DNS conditions across all nodes
@@ -930,9 +950,9 @@ monitors:
 
 | Condition | Expected Value | Notes |
 |-----------|----------------|-------|
-| `NodeDoctorClusterDNSHealthy` | True | Cluster DNS should resolve |
-| `NodeDoctorCustomDNSHealthy` | True | Per-nameserver tests passing |
-| `NodeDoctorDNSResolutionConsistent` | True | Queries returning consistent results |
+| `NodeDoctorClusterDNSDown` | False | Cluster DNS should resolve (no failure) |
+| `NodeDoctorCustomDNSDown` | False | Per-nameserver tests passing |
+| `NodeDoctorDNSResolutionDown` | False | Queries returning consistent results |
 | `NodeDoctorDNSResolutionInconsistent` | True (for google.com) | **Expected** - Google uses DNS round-robin, multiple IPs is normal |
 
 > **Note:** `NodeDoctorDNSResolutionInconsistent=True` for domains like google.com is **expected behavior**. Large CDN/cloud providers use DNS load balancing which returns different IPs. This condition helps detect unexpected IP variation in domains where you expect a single IP.

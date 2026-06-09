@@ -497,7 +497,7 @@ func TestExternalDNSResolution(t *testing.T) {
 	}
 }
 
-// TestRepeatedFailures tests the NetworkUnreachable condition on repeated failures.
+// TestRepeatedFailures tests the ExternalDNSDown condition on repeated failures.
 func TestRepeatedFailures(t *testing.T) {
 	mock := newMockResolver()
 	// Configure all domains to fail
@@ -526,19 +526,19 @@ func TestRepeatedFailures(t *testing.T) {
 
 	ctx := context.Background()
 
-	// First check - should not report NetworkUnreachable yet
+	// First check - should not report ExternalDNSDown=True yet (still below threshold).
 	status1 := types.NewStatus("test-dns")
 	_, _ = monitor.checkDNS(ctx)
 	monitor.updateFailureTracking(false, false, status1)
 
-	hasNetworkUnreachable := false
+	hasExternalDNSDown := false
 	for _, cond := range status1.Conditions {
-		if cond.Type == "NetworkUnreachable" && cond.Status == types.ConditionTrue {
-			hasNetworkUnreachable = true
+		if cond.Type == "ExternalDNSDown" && cond.Status == types.ConditionTrue {
+			hasExternalDNSDown = true
 		}
 	}
-	if hasNetworkUnreachable {
-		t.Error("unexpected NetworkUnreachable condition on first failure")
+	if hasExternalDNSDown {
+		t.Error("unexpected ExternalDNSDown=True condition on first failure")
 	}
 
 	// Second check
@@ -546,21 +546,12 @@ func TestRepeatedFailures(t *testing.T) {
 	_, _ = monitor.checkDNS(ctx)
 	monitor.updateFailureTracking(false, false, status2)
 
-	// Third check - should now report NetworkUnreachable
+	// Third check - should now report ExternalDNSDown=True
 	status3 := types.NewStatus("test-dns")
 	_, _ = monitor.checkDNS(ctx)
 	monitor.updateFailureTracking(false, false, status3)
 
-	hasNetworkUnreachable = false
-	for _, cond := range status3.Conditions {
-		if cond.Type == "NetworkUnreachable" && cond.Status == types.ConditionTrue {
-			hasNetworkUnreachable = true
-			break
-		}
-	}
-	if !hasNetworkUnreachable {
-		t.Error("expected NetworkUnreachable condition after 3 consecutive failures")
-	}
+	assertConditionStatus(t, status3, "ExternalDNSDown", types.ConditionTrue)
 
 	// Recovery - configure domains to succeed
 	mock.setResponse("kubernetes.default.svc.cluster.local", []string{"10.96.0.1"})
@@ -571,17 +562,10 @@ func TestRepeatedFailures(t *testing.T) {
 	_, _ = monitor.checkDNS(ctx)
 	monitor.updateFailureTracking(true, true, status4)
 
-	// Should report healthy conditions
-	hasNetworkReachable := false
-	for _, cond := range status4.Conditions {
-		if cond.Type == "NetworkReachable" && cond.Status == types.ConditionTrue {
-			hasNetworkReachable = true
-			break
-		}
-	}
-	if !hasNetworkReachable {
-		t.Error("expected NetworkReachable condition after recovery")
-	}
+	// The down condition must clear (toggle to False), not be replaced by a separate
+	// healthy-mirror condition.
+	assertConditionStatus(t, status4, "ExternalDNSDown", types.ConditionFalse)
+	assertConditionAbsent(t, status4, "NetworkReachable")
 }
 
 // TestParseResolverConfig tests parsing of /etc/resolv.conf.
@@ -758,7 +742,7 @@ func TestCustomQueries(t *testing.T) {
 			customQueries: []DNSQuery{
 				{Domain: "mx.example.com", RecordType: "MX"},
 			},
-			mockSetup: func(m *mockResolver) {},
+			mockSetup:  func(m *mockResolver) {},
 			wantEvents: 1,
 		},
 	}
@@ -2014,7 +1998,7 @@ func TestSuccessRateConditions(t *testing.T) {
 		}
 	})
 
-	t.Run("no conditions when 100% success", func(t *testing.T) {
+	t.Run("conditions cleared (False) when 100% success", func(t *testing.T) {
 		monitor := &DNSMonitor{
 			config: &DNSMonitorConfig{
 				SuccessRateTracking: &SuccessRateConfig{
@@ -2038,13 +2022,12 @@ func TestSuccessRateConditions(t *testing.T) {
 		status := types.NewStatus("test")
 		monitor.checkSuccessRateConditions(status)
 
-		// Should have no degraded or intermittent conditions
-		for _, cond := range status.Conditions {
-			if cond.Type == "ClusterDNSDegraded" || cond.Type == "ClusterDNSIntermittent" ||
-				cond.Type == "ExternalDNSDegraded" || cond.Type == "ExternalDNSIntermittent" {
-				t.Errorf("unexpected condition %s when 100%% success", cond.Type)
-			}
-		}
+		// With the single-toggle refactor, a 100%-success window explicitly clears the
+		// degraded/intermittent conditions (writes them False) so they never latch True.
+		assertConditionStatus(t, status, "ClusterDNSDegraded", types.ConditionFalse)
+		assertConditionStatus(t, status, "ClusterDNSIntermittent", types.ConditionFalse)
+		assertConditionStatus(t, status, "ExternalDNSDegraded", types.ConditionFalse)
+		assertConditionStatus(t, status, "ExternalDNSIntermittent", types.ConditionFalse)
 	})
 }
 
@@ -2497,17 +2480,12 @@ func TestCheckDomainConsistency(t *testing.T) {
 		status := types.NewStatus("test-dns")
 		monitor.checkDomainConsistency(ctx, status, "example.com")
 
-		// Should have DNSResolutionConsistent condition
-		found := false
-		for _, cond := range status.Conditions {
-			if cond.Type == "DNSResolutionConsistent" && cond.Status == types.ConditionTrue {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("expected DNSResolutionConsistent condition")
-		}
+		// The retired DNSResolutionConsistent mirror must not be emitted; instead the three
+		// problem conditions are explicitly cleared (False) on a healthy check.
+		assertConditionAbsent(t, status, "DNSResolutionConsistent")
+		assertConditionStatus(t, status, "DNSResolutionDown", types.ConditionFalse)
+		assertConditionStatus(t, status, "DNSResolutionIntermittent", types.ConditionFalse)
+		assertConditionStatus(t, status, "DNSResolutionInconsistent", types.ConditionFalse)
 	})
 
 	t.Run("all queries fail", func(t *testing.T) {
@@ -2847,15 +2825,322 @@ func TestCheckCustomQueriesWithConsistencyCheck(t *testing.T) {
 	status := types.NewStatus("test-dns")
 	monitor.checkCustomQueries(ctx, status)
 
-	// Should have DNSResolutionConsistent condition (all queries succeed with same IP)
-	found := false
+	// All queries succeed with the same IP: the consistency path ran and cleared the
+	// problem conditions (toggled False) rather than emitting the retired mirror.
+	assertConditionAbsent(t, status, "DNSResolutionConsistent")
+	assertConditionStatus(t, status, "DNSResolutionDown", types.ConditionFalse)
+}
+
+// assertConditionStatus fails the test unless status carries condType with the wantStatus.
+func assertConditionStatus(t *testing.T, status *types.Status, condType string, want types.ConditionStatus) {
+	t.Helper()
 	for _, cond := range status.Conditions {
-		if cond.Type == "DNSResolutionConsistent" {
-			found = true
-			break
+		if cond.Type == condType {
+			if cond.Status != want {
+				t.Errorf("condition %s = %s, want %s", condType, cond.Status, want)
+			}
+			return
 		}
 	}
-	if !found {
-		t.Error("expected DNSResolutionConsistent condition when consistency check enabled")
+	t.Errorf("expected condition %s=%s, but it was absent", condType, want)
+}
+
+// assertConditionAbsent fails the test if status carries any condition of condType.
+func assertConditionAbsent(t *testing.T, status *types.Status, condType string) {
+	t.Helper()
+	for _, cond := range status.Conditions {
+		if cond.Type == condType {
+			t.Errorf("expected condition %s to be absent, but found it with status %s", condType, cond.Status)
+		}
 	}
+}
+
+// TestSetMutuallyExclusiveCondition verifies the helper sets the active member True and
+// every sibling False, and that an empty activeType sets all members False.
+func TestSetMutuallyExclusiveCondition(t *testing.T) {
+	members := []exclusiveCond{
+		{Type: "AlphaDown", Reason: "AlphaBad", Message: "alpha is down"},
+		{Type: "BetaDown", Reason: "BetaBad", Message: "beta is down"},
+		{Type: "GammaDown", Reason: "GammaBad", Message: "gamma is down"},
+	}
+
+	t.Run("active member True, siblings False", func(t *testing.T) {
+		status := types.NewStatus("test")
+		setMutuallyExclusiveCondition(status, members, "BetaDown")
+		assertConditionStatus(t, status, "AlphaDown", types.ConditionFalse)
+		assertConditionStatus(t, status, "BetaDown", types.ConditionTrue)
+		assertConditionStatus(t, status, "GammaDown", types.ConditionFalse)
+	})
+
+	t.Run("empty activeType clears all", func(t *testing.T) {
+		status := types.NewStatus("test")
+		setMutuallyExclusiveCondition(status, members, "")
+		assertConditionStatus(t, status, "AlphaDown", types.ConditionFalse)
+		assertConditionStatus(t, status, "BetaDown", types.ConditionFalse)
+		assertConditionStatus(t, status, "GammaDown", types.ConditionFalse)
+	})
+}
+
+// newToggleTestMonitor builds a DNSMonitor wired with the mock resolver and fresh
+// success-rate trackers, suitable for driving updateFailureTracking across cycles.
+func newToggleTestMonitor(mock Resolver, srtEnabled bool) *DNSMonitor {
+	return &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			ClusterDomains:        []string{"kubernetes.default.svc.cluster.local"},
+			ExternalDomains:       []string{"google.com"},
+			LatencyThreshold:      1 * time.Second,
+			FailureCountThreshold: 3,
+			SuccessRateTracking: &SuccessRateConfig{
+				Enabled:              srtEnabled,
+				WindowSize:           10,
+				FailureRateThreshold: 0.3,
+				MinSamplesRequired:   5,
+			},
+		},
+		resolver:               mock,
+		clusterSuccessTracker:  NewRingBuffer(10),
+		externalSuccessTracker: NewRingBuffer(10),
+	}
+}
+
+// TestDNSMonitor_ClusterAndExternalDNSToggle proves ClusterDNSDown and ExternalDNSDown
+// each go True on repeated failure and back to False on recovery (no latch).
+func TestDNSMonitor_ClusterAndExternalDNSToggle(t *testing.T) {
+	monitor := newToggleTestMonitor(newMockResolver(), false)
+
+	// Drive past the failure threshold (3 consecutive failures).
+	var status *types.Status
+	for i := 0; i < 3; i++ {
+		status = types.NewStatus("test-dns")
+		monitor.updateFailureTracking(false, false, status)
+	}
+	assertConditionStatus(t, status, "ClusterDNSDown", types.ConditionTrue)
+	assertConditionStatus(t, status, "ExternalDNSDown", types.ConditionTrue)
+
+	// Recovery: both must toggle False, and the retired mirrors must not appear.
+	recovered := types.NewStatus("test-dns")
+	monitor.updateFailureTracking(true, true, recovered)
+	assertConditionStatus(t, recovered, "ClusterDNSDown", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "ExternalDNSDown", types.ConditionFalse)
+	assertConditionAbsent(t, recovered, "ClusterDNSHealthy")
+	assertConditionAbsent(t, recovered, "NetworkReachable")
+	assertConditionAbsent(t, recovered, "NetworkUnreachable")
+}
+
+// TestDNSMonitor_SuccessRateConditionsToggle proves the degraded/intermittent success-rate
+// conditions clear (toggle False) once the failure rate recovers.
+func TestDNSMonitor_SuccessRateConditionsToggle(t *testing.T) {
+	monitor := newToggleTestMonitor(newMockResolver(), true)
+
+	// Push enough failures past MinSamplesRequired to exceed the failure-rate threshold.
+	for i := 0; i < 10; i++ {
+		monitor.clusterSuccessTracker.Add(&CheckResult{Timestamp: time.Now(), Success: false})
+		monitor.externalSuccessTracker.Add(&CheckResult{Timestamp: time.Now(), Success: false})
+	}
+	failing := types.NewStatus("test-dns")
+	monitor.mu.Lock()
+	monitor.checkSuccessRateConditions(failing)
+	monitor.mu.Unlock()
+	assertConditionStatus(t, failing, "ClusterDNSDegraded", types.ConditionTrue)
+	assertConditionStatus(t, failing, "ClusterDNSIntermittent", types.ConditionFalse)
+	assertConditionStatus(t, failing, "ExternalDNSDegraded", types.ConditionTrue)
+	assertConditionStatus(t, failing, "ExternalDNSIntermittent", types.ConditionFalse)
+
+	// Recovery: flood successes so failure rate drops to zero -> all four clear.
+	for i := 0; i < 20; i++ {
+		monitor.clusterSuccessTracker.Add(&CheckResult{Timestamp: time.Now(), Success: true})
+		monitor.externalSuccessTracker.Add(&CheckResult{Timestamp: time.Now(), Success: true})
+	}
+	recovered := types.NewStatus("test-dns")
+	monitor.mu.Lock()
+	monitor.checkSuccessRateConditions(recovered)
+	monitor.mu.Unlock()
+	assertConditionStatus(t, recovered, "ClusterDNSDegraded", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "ClusterDNSIntermittent", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "ExternalDNSDegraded", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "ExternalDNSIntermittent", types.ConditionFalse)
+}
+
+// TestDNSMonitor_NameserverHealthConditionsToggle proves DNSNameserverUnhealthy and
+// DNSNameserverDegraded clear once the nameserver scores recover.
+func TestDNSMonitor_NameserverHealthConditionsToggle(t *testing.T) {
+	cfg := &NameserverHealthScoringConfig{
+		Enabled:              true,
+		DegradedThreshold:    70,
+		UnhealthyThreshold:   40,
+		SuccessRateWeight:    0.40,
+		LatencyWeight:        0.25,
+		ErrorDiversityWeight: 0.15,
+		ConsistencyWeight:    0.20,
+		WindowSize:           20,
+		LatencyBaseline:      50 * time.Millisecond,
+		LatencyMax:           2 * time.Second,
+	}
+	monitor := &DNSMonitor{
+		name:            "test-dns",
+		config:          &DNSMonitorConfig{HealthScoring: cfg},
+		nameserverStats: make(map[string]*NameserverStats),
+	}
+
+	// All-failure window -> unhealthy nameserver -> both conditions True.
+	failing := newNameserverStats(20)
+	for i := 0; i < 6; i++ {
+		failing.add(&NameserverCheckResult{Timestamp: time.Now(), Success: false, ErrType: DNSErrorTimeout})
+	}
+	monitor.nameserverStats["10.0.0.1"] = failing
+
+	failStatus := types.NewStatus("test-dns")
+	monitor.mu.Lock()
+	monitor.computeNameserverHealthScores(failStatus)
+	monitor.mu.Unlock()
+	assertConditionStatus(t, failStatus, "DNSNameserverUnhealthy", types.ConditionTrue)
+
+	// Replace with an all-success, low-latency window -> healthy -> both conditions clear.
+	healthy := newNameserverStats(20)
+	for i := 0; i < 6; i++ {
+		healthy.add(&NameserverCheckResult{Timestamp: time.Now(), Success: true, Latency: 5 * time.Millisecond})
+	}
+	monitor.nameserverStats["10.0.0.1"] = healthy
+
+	healthyStatus := types.NewStatus("test-dns")
+	monitor.mu.Lock()
+	monitor.computeNameserverHealthScores(healthyStatus)
+	monitor.mu.Unlock()
+	assertConditionStatus(t, healthyStatus, "DNSNameserverUnhealthy", types.ConditionFalse)
+	assertConditionStatus(t, healthyStatus, "DNSNameserverDegraded", types.ConditionFalse)
+}
+
+// TestDNSMonitor_ConsistencyConditionsToggle proves DNSResolutionDown goes True when all
+// rapid queries fail and toggles False once resolution is consistent again.
+func TestDNSMonitor_ConsistencyConditionsToggle(t *testing.T) {
+	mock := newMockResolver()
+	mock.setError("flip.example.com", fmt.Errorf("no such host"))
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        3,
+				IntervalBetweenQueries: 5 * time.Millisecond,
+			},
+		},
+		resolver: mock,
+	}
+
+	ctx := context.Background()
+	failing := types.NewStatus("test-dns")
+	monitor.checkDomainConsistency(ctx, failing, "flip.example.com")
+	assertConditionStatus(t, failing, "DNSResolutionDown", types.ConditionTrue)
+	assertConditionStatus(t, failing, "DNSResolutionIntermittent", types.ConditionFalse)
+	assertConditionStatus(t, failing, "DNSResolutionInconsistent", types.ConditionFalse)
+
+	// Recovery: consistent successes clear all three; retired mirror must not appear.
+	mock.setResponse("flip.example.com", []string{"1.2.3.4"})
+	delete(mock.errors, "flip.example.com")
+	recovered := types.NewStatus("test-dns")
+	monitor.checkDomainConsistency(ctx, recovered, "flip.example.com")
+	assertConditionStatus(t, recovered, "DNSResolutionDown", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "DNSResolutionIntermittent", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "DNSResolutionInconsistent", types.ConditionFalse)
+	assertConditionAbsent(t, recovered, "DNSResolutionConsistent")
+}
+
+// customNSMembers mirrors the mutually-exclusive group that checkDomainAgainstNameservers
+// emits, so the toggle test can exercise both arms without real per-nameserver network I/O
+// (which the sandboxed resolver answers regardless of the configured nameserver, making the
+// live function non-deterministic for either outcome).
+func customNSMembers(domain string, successCount, totalServers int, failedServers []string) []exclusiveCond {
+	return []exclusiveCond{
+		{
+			Type:    "CustomDNSDown",
+			Reason:  "AllNameserversFailed",
+			Message: fmt.Sprintf("Domain %s: all %d nameservers failed to resolve", domain, totalServers),
+		},
+		{
+			Type:   "DNSResolutionDegraded",
+			Reason: "PartialNameserverFailure",
+			Message: fmt.Sprintf("Domain %s: %d/%d nameservers responding (failed: %s)",
+				domain, successCount, totalServers, strings.Join(failedServers, ", ")),
+		},
+	}
+}
+
+// TestDNSMonitor_CustomNameserverConditionsToggle proves CustomDNSDown goes True when every
+// configured nameserver fails to resolve and clears once all nameservers respond again. The
+// decision logic of checkDomainAgainstNameservers (active member selection by successCount /
+// failedServers, then setMutuallyExclusiveCondition) is exercised directly because the live
+// function performs real per-nameserver network I/O that the sandbox answers regardless of
+// the target nameserver.
+func TestDNSMonitor_CustomNameserverConditionsToggle(t *testing.T) {
+	const domain = "custom.example.com"
+
+	// Failure: all nameservers fail -> active = CustomDNSDown, sibling cleared.
+	failing := types.NewStatus("test-dns")
+	setMutuallyExclusiveCondition(failing, customNSMembers(domain, 0, 2, []string{"10.0.0.1", "10.0.0.2"}), "CustomDNSDown")
+	assertConditionStatus(t, failing, "CustomDNSDown", types.ConditionTrue)
+	assertConditionStatus(t, failing, "DNSResolutionDegraded", types.ConditionFalse)
+	assertConditionAbsent(t, failing, "CustomDNSHealthy")
+
+	// Recovery: all nameservers respond -> activeType "" clears both members; the retired
+	// CustomDNSHealthy mirror must never reappear.
+	recovered := types.NewStatus("test-dns")
+	setMutuallyExclusiveCondition(recovered, customNSMembers(domain, 2, 2, nil), "")
+	assertConditionStatus(t, recovered, "CustomDNSDown", types.ConditionFalse)
+	assertConditionStatus(t, recovered, "DNSResolutionDegraded", types.ConditionFalse)
+	assertConditionAbsent(t, recovered, "CustomDNSHealthy")
+}
+
+// TestDNSMonitor_PredictedDegradationToggle proves DNSPredictedDegradation goes True when a
+// breach is predicted within lead time and toggles False on a healthy prediction cycle.
+func TestDNSMonitor_PredictedDegradationToggle(t *testing.T) {
+	newMonitor := func(window, lead time.Duration, confidence float64, bufSize int) *DNSMonitor {
+		return &DNSMonitor{
+			name: "test-dns",
+			config: &DNSMonitorConfig{
+				SuccessRateTracking: &SuccessRateConfig{FailureRateThreshold: 0.3},
+				PredictiveAlerting: &PredictiveAlertConfig{
+					Enabled:             true,
+					PredictionWindow:    window,
+					WarningLeadTime:     lead,
+					MinDataPoints:       5,
+					ConfidenceThreshold: confidence,
+				},
+			},
+			clusterSuccessTracker:  NewRingBuffer(bufSize),
+			externalSuccessTracker: NewRingBuffer(bufSize),
+		}
+	}
+
+	now := time.Now()
+
+	// Breach case: a long, mostly-successful series with one recent failure yields a clean
+	// gentle negative slope whose projected line crosses the 70% success-rate threshold
+	// within the (very wide) prediction window while the current rate is still healthy
+	// (~0.87). That is the canonical "degrading but not yet breached" signal -> condition True.
+	breaching := newMonitor(1000*time.Hour, 1000*time.Hour, 0.01, 30)
+	for i := 0; i < 30; i++ {
+		ts := now.Add(-time.Duration(29-i) * 30 * time.Second)
+		breaching.clusterSuccessTracker.Add(&CheckResult{Timestamp: ts, Success: i != 29})
+	}
+	breachStatus := types.NewStatus("test-dns")
+	metrics := &types.LatencyMetrics{}
+	breaching.mu.Lock()
+	breaching.computePredictiveAlerts(breachStatus, metrics)
+	breaching.mu.Unlock()
+	assertConditionStatus(t, breachStatus, "DNSPredictedDegradation", types.ConditionTrue)
+
+	// Healthy case: steady successes produce a prediction but no breach -> condition False.
+	steady := newMonitor(30*time.Minute, 15*time.Minute, 0.5, 20)
+	for i := 0; i < 10; i++ {
+		ts := now.Add(-time.Duration(10-i) * 30 * time.Second)
+		steady.clusterSuccessTracker.Add(&CheckResult{Timestamp: ts, Success: true})
+	}
+	healthyStatus := types.NewStatus("test-dns")
+	steady.mu.Lock()
+	steady.computePredictiveAlerts(healthyStatus, &types.LatencyMetrics{})
+	steady.mu.Unlock()
+	assertConditionStatus(t, healthyStatus, "DNSPredictedDegradation", types.ConditionFalse)
 }

@@ -221,9 +221,39 @@ func (cm *ConditionManager) initialSync(ctx context.Context) error {
 		}
 	}
 
+	// Schedule removal of node conditions the DNS monitor no longer writes, so they do
+	// not linger forever after the single-toggle refactor reloads them via initialSync.
+	cm.removeRetiredDNSConditions()
+
 	cm.lastResync = time.Now()
 	log.Printf("[DEBUG] Initial sync completed, loaded %d existing conditions", len(cm.conditions))
 	return nil
+}
+
+// retiredDNSConditionTypes are node conditions previously written by the DNS monitor
+// that no longer exist after the single-toggle refactor. They are removed once on startup
+// so stale True values reloaded by initialSync do not persist. NetworkUnreachable is
+// deliberately excluded: the gateway monitor still owns and toggles that condition.
+var retiredDNSConditionTypes = []string{
+	"NodeDoctorClusterDNSHealthy",
+	"NodeDoctorNetworkReachable",
+	"NodeDoctorDNSResolutionConsistent",
+	"NodeDoctorCustomDNSHealthy",
+}
+
+// removeRetiredDNSConditions schedules removal of the retired DNS mirror conditions.
+// It performs the same map mutations as RemoveCondition but without taking cm.mu, because
+// its sole caller (initialSync) already holds the lock.
+func (cm *ConditionManager) removeRetiredDNSConditions() {
+	for _, conditionType := range retiredDNSConditionTypes {
+		if _, exists := cm.conditions[conditionType]; !exists {
+			continue
+		}
+		cm.pendingRemovals[conditionType] = struct{}{}
+		delete(cm.conditions, conditionType)
+		delete(cm.pendingUpdates, conditionType)
+		log.Printf("[INFO] Retired DNS condition %s marked for removal", conditionType)
+	}
 }
 
 // updateLoop periodically applies pending condition updates

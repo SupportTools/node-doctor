@@ -1390,9 +1390,9 @@ func TestServer_RemediationCoordinatedEvent_MultipleLeases(t *testing.T) {
 	addr := server.httpServer.Addr
 	grant := func(node string) {
 		body, _ := json.Marshal(map[string]interface{}{
-			"node":       node,
+			"node":        node,
 			"remediation": "disk-cleanup",
-			"reason":     "test",
+			"reason":      "test",
 		})
 		resp, err := http.Post("http://"+addr+"/api/v1/leases", "application/json", bytes.NewReader(body))
 		if err != nil {

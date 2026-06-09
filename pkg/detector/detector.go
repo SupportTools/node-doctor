@@ -1099,12 +1099,11 @@ func (pd *ProblemDetector) cleanupMonitorConditions(monitorType string) {
 		"system-memory": {"MemoryHealthy", "MemoryPressure"},
 		"system-disk":   {"DiskHealthy", "DiskPressure", "InodePressure", "ReadonlyFilesystem"},
 		"network-dns-check": {
-			"ClusterDNSDegraded", "ClusterDNSDown", "ClusterDNSHealthy", "ClusterDNSIntermittent",
-			"CustomDNSDown", "CustomDNSHealthy",
-			"DNSResolutionConsistent", "DNSResolutionDegraded", "DNSResolutionDown",
+			"ClusterDNSDegraded", "ClusterDNSDown", "ClusterDNSIntermittent",
+			"CustomDNSDown",
+			"DNSResolutionDegraded", "DNSResolutionDown",
 			"DNSResolutionInconsistent", "DNSResolutionIntermittent",
-			"ExternalDNSDegraded", "ExternalDNSIntermittent",
-			"NetworkReachable", "NetworkUnreachable",
+			"ExternalDNSDegraded", "ExternalDNSDown", "ExternalDNSIntermittent",
 		},
 		"network-gateway-check": {"NetworkUnreachable"},
 		"network-cni-check": {
