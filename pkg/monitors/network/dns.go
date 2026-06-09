@@ -282,11 +282,11 @@ func (ns *NameserverStats) Len() int {
 //     still copies slots 0..count-1, so the returned slice is in slot order,
 //     NOT chronological order. Example with capacity=3:
 //
-//       add(r0) → slots: [r0, _, _]
-//       add(r1) → slots: [r0, r1, _]
-//       add(r2) → slots: [r0, r1, r2]   snapshot → [r0, r1, r2]  (ordered)
-//       add(r3) → slots: [r3, r1, r2]   snapshot → [r3, r1, r2]  (slot order!)
-//       add(r4) → slots: [r3, r4, r2]   snapshot → [r3, r4, r2]  (slot order!)
+//     add(r0) → slots: [r0, _, _]
+//     add(r1) → slots: [r0, r1, _]
+//     add(r2) → slots: [r0, r1, r2]   snapshot → [r0, r1, r2]  (ordered)
+//     add(r3) → slots: [r3, r1, r2]   snapshot → [r3, r1, r2]  (slot order!)
+//     add(r4) → slots: [r3, r4, r2]   snapshot → [r3, r4, r2]  (slot order!)
 //
 // # Callers must not assume chronological order
 //
@@ -1229,6 +1229,8 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 }
 
 // applyDefaults applies default values to the DNS monitor configuration.
+//
+//nolint:gocyclo // config defaults are inherently branchy across many optional fields
 func (c *DNSMonitorConfig) applyDefaults() error {
 	// Default cluster domains - only apply if not explicitly set (nil vs empty slice)
 	if c.ClusterDomains == nil {

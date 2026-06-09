@@ -1699,11 +1699,11 @@ func TestParseLogPatternConfig_ErrorCases(t *testing.T) {
 					t.Errorf("unexpected error: %v", err)
 				}
 				if cfg == nil {
-				t.Error("expected non-nil config")
+					t.Error("expected non-nil config")
 				}
-				}
-				})
-				}
+			}
+		})
+	}
 }
 
 // TestConditionFalseOnNoMatch verifies that error-severity patterns emit ConditionFalse
@@ -1726,7 +1726,7 @@ func TestConditionFalseOnNoMatch(t *testing.T) {
 
 	monitor := &LogPatternMonitor{
 		BaseMonitor: base,
-		name: "test-monitor",
+		name:        "test-monitor",
 		config: &LogPatternMonitorConfig{
 			CheckKmsg:           true,
 			KmsgPath:            "/dev/kmsg",
@@ -1781,7 +1781,7 @@ func TestConditionTrueOnMatch(t *testing.T) {
 
 	monitor := &LogPatternMonitor{
 		BaseMonitor: base,
-		name: "test-monitor",
+		name:        "test-monitor",
 		config: &LogPatternMonitorConfig{
 			CheckKmsg:           true,
 			KmsgPath:            "/dev/kmsg",
@@ -1845,7 +1845,7 @@ func TestConditionTransitionAcrossCycles(t *testing.T) {
 
 	monitor := &LogPatternMonitor{
 		BaseMonitor: base,
-		name: "test-monitor",
+		name:        "test-monitor",
 		config: &LogPatternMonitorConfig{
 			CheckKmsg:           true,
 			KmsgPath:            "/dev/kmsg",

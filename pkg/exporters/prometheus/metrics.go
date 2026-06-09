@@ -25,22 +25,22 @@ type Metrics struct {
 	UptimeSeconds    *prometheus.GaugeVec
 
 	// Network latency gauge metrics
-	GatewayLatencySeconds    *prometheus.GaugeVec
-	PeerLatencySeconds       *prometheus.GaugeVec
-	PeerLatencyAvgSeconds    *prometheus.GaugeVec
-	PeerReachable            *prometheus.GaugeVec
-	PeersTotal               *prometheus.GaugeVec
-	PeersReachableTotal      *prometheus.GaugeVec
-	DNSLatencySeconds        *prometheus.GaugeVec
-	DNSNameserverHealthScore        *prometheus.GaugeVec
-	DNSNameserverSuccessScore      *prometheus.GaugeVec
-	DNSNameserverLatencyScore      *prometheus.GaugeVec
-	DNSNameserverErrorScore        *prometheus.GaugeVec
-	DNSNameserverConsistencyScore  *prometheus.GaugeVec
+	GatewayLatencySeconds         *prometheus.GaugeVec
+	PeerLatencySeconds            *prometheus.GaugeVec
+	PeerLatencyAvgSeconds         *prometheus.GaugeVec
+	PeerReachable                 *prometheus.GaugeVec
+	PeersTotal                    *prometheus.GaugeVec
+	PeersReachableTotal           *prometheus.GaugeVec
+	DNSLatencySeconds             *prometheus.GaugeVec
+	DNSNameserverHealthScore      *prometheus.GaugeVec
+	DNSNameserverSuccessScore     *prometheus.GaugeVec
+	DNSNameserverLatencyScore     *prometheus.GaugeVec
+	DNSNameserverErrorScore       *prometheus.GaugeVec
+	DNSNameserverConsistencyScore *prometheus.GaugeVec
 
 	// DNS predictive alerting metrics.
-	DNSPredictedBreachSeconds  *prometheus.GaugeVec
-	DNSPredictionConfidence    *prometheus.GaugeVec
+	DNSPredictedBreachSeconds *prometheus.GaugeVec
+	DNSPredictionConfidence   *prometheus.GaugeVec
 
 	APIServerLatencySeconds *prometheus.GaugeVec
 

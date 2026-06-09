@@ -22,9 +22,6 @@ const (
 	// procNetRoute is the path to the Linux IPv4 routing table.
 	procNetRoute = "/proc/net/route"
 
-	// procNetIPv6Route is the path to the Linux IPv6 routing table.
-	procNetIPv6Route = "/proc/net/ipv6_route"
-
 	// ipv6RouteHexLen is the number of hex chars representing a 16-byte
 	// IPv6 address as written by the kernel in /proc/net/ipv6_route.
 	ipv6RouteHexLen = 32
@@ -405,12 +402,6 @@ func detectDefaultGatewayFromReader(r io.Reader) (string, error) {
 	}
 
 	return "", fmt.Errorf("no default gateway found in route table")
-}
-
-// detectDefaultIPv6Gateway detects the default IPv6 gateway from
-// /proc/net/ipv6_route.
-func detectDefaultIPv6Gateway() (string, error) {
-	return detectDefaultIPv6GatewayFromFile(procNetIPv6Route)
 }
 
 // detectDefaultIPv6GatewayFromFile opens the given path and parses it as a

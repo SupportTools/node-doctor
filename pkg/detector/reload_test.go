@@ -804,7 +804,6 @@ func TestApplyConfigReload_DependsOnSemantics(t *testing.T) {
 		}
 	})
 
-
 	t.Run("dependents map fully cleaned when two monitors removed in reversed order", func(t *testing.T) {
 		helper := NewTestHelper()
 		config := helper.CreateTestConfig()

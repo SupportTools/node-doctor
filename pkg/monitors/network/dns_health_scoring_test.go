@@ -443,12 +443,12 @@ func writeFile(path, content string) error {
 
 func TestStddev64(t *testing.T) {
 	tests := []struct {
-		name    string
-		values  []float64
-		mean    float64
-		wantMin float64 // exclusive lower bound (0 means "must be > 0")
-		wantMax float64 // inclusive upper bound
-		wantZero bool   // expect exactly 0
+		name     string
+		values   []float64
+		mean     float64
+		wantMin  float64 // exclusive lower bound (0 means "must be > 0")
+		wantMax  float64 // inclusive upper bound
+		wantZero bool    // expect exactly 0
 	}{
 		// Fewer than 2 elements → zero by definition (no variance possible)
 		{"empty", []float64{}, 0, 0, 0, true},

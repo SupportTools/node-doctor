@@ -105,9 +105,9 @@ type MetricsStore interface {
 // It is safe for concurrent use; a single writer connection serialises writes
 // (matching SQLite's WAL-mode limitation).
 type SQLiteMetricsStore struct {
-	mu        sync.Mutex
-	db        *sql.DB
-	cfg       *HistoricalMetricsConfig
+	mu  sync.Mutex
+	db  *sql.DB
+	cfg *HistoricalMetricsConfig
 }
 
 // NewSQLiteMetricsStore creates a store configured with cfg.
@@ -397,11 +397,11 @@ func (s *SQLiteMetricsStore) QueryAggregates(ctx context.Context, nameserver, gr
 	var aggs []DNSMetricAggregate
 	for rows.Next() {
 		var (
-			ps                      int64
-			ns                      string
-			total, success          int
-			rate, avgLat            float64
-			statsJSON               string
+			ps             int64
+			ns             string
+			total, success int
+			rate, avgLat   float64
+			statsJSON      string
 		)
 		if err := rows.Scan(&ps, &ns, &total, &success, &rate, &avgLat, &statsJSON); err != nil {
 			return nil, fmt.Errorf("scan dns_aggregates row: %w", err)

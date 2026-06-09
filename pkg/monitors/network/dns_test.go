@@ -742,7 +742,7 @@ func TestCustomQueries(t *testing.T) {
 			customQueries: []DNSQuery{
 				{Domain: "mx.example.com", RecordType: "MX"},
 			},
-			mockSetup: func(m *mockResolver) {},
+			mockSetup:  func(m *mockResolver) {},
 			wantEvents: 1,
 		},
 	}
