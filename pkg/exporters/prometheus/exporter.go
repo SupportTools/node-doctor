@@ -298,6 +298,15 @@ func (e *PrometheusExporter) recordExportHealth(success bool) {
 	e.metrics.ExporterConsecutiveFailures.WithLabelValues(e.nodeName, exporterLabel).Set(float64(e.consecutiveFailures))
 }
 
+// ObserveCircuitState sets the remediator circuit-breaker state gauge to the
+// supplied value. It implements the remediators.CircuitStateObserver interface
+// so the remediator registry can push state transitions here without importing
+// this package. The state int uses the registry's encoding: 0=closed, 1=open,
+// 2=half-open.
+func (e *PrometheusExporter) ObserveCircuitState(state int) {
+	e.metrics.RemediatorCircuitBreakerState.WithLabelValues(e.nodeName).Set(float64(state))
+}
+
 // recordLatencyMetrics extracts latency metrics from status metadata and records them
 func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 	latencyMetrics := status.GetLatencyMetrics()

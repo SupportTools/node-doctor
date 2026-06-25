@@ -1494,3 +1494,116 @@ func TestRemediatorRegistry_LogWithLogger(t *testing.T) {
 		t.Errorf("expected 1 error message, got %d", len(logger.errorMessages))
 	}
 }
+
+// fakeCircuitStateObserver records every ObserveCircuitState call for assertions.
+type fakeCircuitStateObserver struct {
+	mu     sync.Mutex
+	states []int
+}
+
+func (f *fakeCircuitStateObserver) ObserveCircuitState(state int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.states = append(f.states, state)
+}
+
+func (f *fakeCircuitStateObserver) snapshot() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]int, len(f.states))
+	copy(out, f.states)
+	return out
+}
+
+func (f *fakeCircuitStateObserver) last() (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.states) == 0 {
+		return 0, false
+	}
+	return f.states[len(f.states)-1], true
+}
+
+func TestSetCircuitStateObserver(t *testing.T) {
+	t.Run("pushes current state immediately on registration", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+		obs := &fakeCircuitStateObserver{}
+
+		registry.SetCircuitStateObserver(obs)
+
+		states := obs.snapshot()
+		if len(states) != 1 {
+			t.Fatalf("expected exactly 1 immediate observation, got %d (%v)", len(states), states)
+		}
+		// Fresh registry starts Closed (iota 0).
+		if states[0] != int(CircuitClosed) {
+			t.Errorf("immediate observed state = %d, want %d (CircuitClosed)", states[0], int(CircuitClosed))
+		}
+	})
+
+	t.Run("notifies on forced state transition", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+		obs := &fakeCircuitStateObserver{}
+
+		// Drive the circuit to Open via failures so the observer (once registered)
+		// will see the transition value. Register the observer first so it is wired
+		// before the transition fires.
+		registry.SetCircuitStateObserver(obs)
+
+		config := CircuitBreakerConfig{
+			Threshold:        2,
+			Timeout:          1 * time.Second,
+			SuccessThreshold: 2,
+		}
+		if err := registry.SetCircuitBreakerConfig(config); err != nil {
+			t.Fatalf("SetCircuitBreakerConfig() failed: %v", err)
+		}
+
+		mock := newMockRemediator("test", true)
+		registry.Register(RemediatorInfo{
+			Type:    "test",
+			Factory: func() (types.Remediator, error) { return mock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+		for i := 0; i < 2; i++ {
+			mock.ClearCooldown(problem)
+			_ = registry.Remediate(context.Background(), "test", problem)
+		}
+
+		if registry.GetCircuitState() != CircuitOpen {
+			t.Fatalf("circuit state = %v, want Open", registry.GetCircuitState())
+		}
+
+		last, ok := obs.last()
+		if !ok {
+			t.Fatal("observer received no notifications")
+		}
+		if last != int(CircuitOpen) {
+			t.Errorf("last observed state = %d, want %d (CircuitOpen)", last, int(CircuitOpen))
+		}
+	})
+
+	t.Run("ResetCircuitBreaker notifies observer with closed state", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+		obs := &fakeCircuitStateObserver{}
+		registry.SetCircuitStateObserver(obs)
+
+		registry.ResetCircuitBreaker()
+
+		last, ok := obs.last()
+		if !ok {
+			t.Fatal("observer received no notifications")
+		}
+		if last != int(CircuitClosed) {
+			t.Errorf("last observed state = %d, want %d (CircuitClosed)", last, int(CircuitClosed))
+		}
+	})
+
+	t.Run("nil observer is a no-op", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+		// Should not panic when no observer is set and a transition fires.
+		registry.SetCircuitStateObserver(nil)
+		registry.ResetCircuitBreaker()
+	})
+}

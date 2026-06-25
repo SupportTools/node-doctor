@@ -220,12 +220,21 @@ func main() {
 	if remediatorRegistry != nil {
 		historyProvider = &remediationHistoryAdapter{registry: remediatorRegistry}
 	}
-	exporters, exporterInterfaces, err := createExporters(ctx, config, historyProvider)
+	exporters, exporterInterfaces, promExporter, err := createExporters(ctx, config, historyProvider)
 	if err != nil {
 		log.Fatalf("Failed to create exporters: %v", err)
 	}
 
 	log.Printf("[INFO] Created %d exporters", len(exporters))
+
+	// Expose the remediator circuit-breaker state as a Prometheus gauge. Only wire
+	// when both the registry (remediation enabled) and the Prometheus exporter are
+	// present. SetCircuitStateObserver pushes the current state immediately and on
+	// every subsequent transition.
+	if remediatorRegistry != nil && promExporter != nil {
+		remediatorRegistry.SetCircuitStateObserver(promExporter)
+		log.Printf("[INFO] Remediator circuit-breaker state wired to Prometheus gauge")
+	}
 
 	// Create monitor factory for hot reload
 	monitorFactory := &monitorFactoryAdapter{ctx: ctx}
@@ -328,9 +337,12 @@ func (a *remediationHistoryAdapter) GetHistory(limit int) interface{} {
 // createExporters creates and configures all exporters from the configuration.
 // remediationProvider is optional; when non-nil it is wired to the health server
 // before Start() so /remediation/history is available immediately on first request.
-func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider) ([]ExporterLifecycle, []types.Exporter, error) {
+func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider) ([]ExporterLifecycle, []types.Exporter, *prometheusexporter.PrometheusExporter, error) {
 	var exporters []ExporterLifecycle
 	var exporterInterfaces []types.Exporter
+	// promExporterTyped keeps a typed reference to the Prometheus exporter (if one
+	// is created and started) so the caller can wire it as a circuit-state observer.
+	var promExporterTyped *prometheusexporter.PrometheusExporter
 
 	// Create Kubernetes exporter if enabled
 	if config.Exporters.Kubernetes != nil && config.Exporters.Kubernetes.Enabled {
@@ -416,6 +428,7 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 			} else {
 				exporters = append(exporters, promExporter)
 				exporterInterfaces = append(exporterInterfaces, promExporter)
+				promExporterTyped = promExporter
 				log.Printf("[INFO] Prometheus exporter created and started on port %d", config.Exporters.Prometheus.Port)
 			}
 		}
@@ -429,7 +442,7 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 		exporterInterfaces = append(exporterInterfaces, noopExp)
 	}
 
-	return exporters, exporterInterfaces, nil
+	return exporters, exporterInterfaces, promExporterTyped, nil
 }
 
 // dumpConfiguration prints the effective configuration as JSON

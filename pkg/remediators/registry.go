@@ -67,6 +67,22 @@ func (s CircuitBreakerState) String() string {
 	}
 }
 
+// CircuitStateObserver is notified whenever the circuit breaker state changes.
+// It is intentionally minimal so the remediators package stays decoupled from any
+// concrete metrics/exporter implementation: the state is passed as an int that
+// matches the CircuitBreakerState iota encoding (0=Closed, 1=Open, 2=HalfOpen).
+//
+// Implementations (e.g. the Prometheus exporter) translate the int into whatever
+// observability primitive they expose. This avoids an import edge from
+// pkg/remediators into pkg/exporters/prometheus.
+type CircuitStateObserver interface {
+	// ObserveCircuitState is called with the current circuit breaker state encoded
+	// as an int (0=Closed, 1=Open, 2=HalfOpen). It is called once immediately when
+	// the observer is registered (to seed the current state) and then on every
+	// subsequent state transition.
+	ObserveCircuitState(state int)
+}
+
 // RemediatorFactory is a function that creates a new remediator instance.
 // It returns a remediator that implements the types.Remediator interface.
 type RemediatorFactory func() (types.Remediator, error)
@@ -212,6 +228,11 @@ type RemediatorRegistry struct {
 
 	// Controller coordination (optional)
 	leaseClient *LeaseClient
+
+	// circuitStateObserver is notified on every circuit breaker state change
+	// (optional). It lets an exporter expose the circuit state as a metric
+	// without the remediators package depending on a concrete exporter.
+	circuitStateObserver CircuitStateObserver
 }
 
 // DefaultCircuitBreakerConfig provides sensible defaults for the circuit breaker.
@@ -312,6 +333,41 @@ func (r *RemediatorRegistry) SetLeaseClient(leaseClient *LeaseClient) {
 	defer r.mu.Unlock()
 	r.leaseClient = leaseClient
 	r.logInfof("Lease client configured for controller coordination")
+}
+
+// SetCircuitStateObserver registers an observer that is notified of circuit
+// breaker state changes. The observer is called once immediately with the
+// current state (so a backing metric is correct from the start) and then on
+// every subsequent transition. Passing a nil observer clears any existing one.
+//
+// The state is passed to the observer as an int matching the
+// CircuitBreakerState iota encoding (0=Closed, 1=Open, 2=HalfOpen).
+func (r *RemediatorRegistry) SetCircuitStateObserver(o CircuitStateObserver) {
+	r.mu.Lock()
+	r.circuitStateObserver = o
+	current := r.circuitState
+	r.mu.Unlock()
+
+	// Push the current state immediately so the observer (e.g. a gauge) reflects
+	// reality from the moment it is wired. Done outside the lock to avoid holding
+	// it across the observer callback.
+	if o != nil {
+		o.ObserveCircuitState(int(current))
+	}
+}
+
+// notifyCircuitStateObserver invokes the registered circuit-state observer (if
+// any) with the given state. It MUST be called with r.mu held; it captures the
+// observer reference under the lock and is safe when no observer is set (no-op).
+//
+// The observer callback is invoked while the lock is held. This is acceptable
+// because observers (such as the Prometheus exporter) only translate the int
+// into a metric and never call back into the registry, so there is no risk of
+// re-entrant deadlock.
+func (r *RemediatorRegistry) notifyCircuitStateObserver(state CircuitBreakerState) {
+	if r.circuitStateObserver != nil {
+		r.circuitStateObserver.ObserveCircuitState(int(state))
+	}
 }
 
 // GetLeaseClient returns the configured lease client, if any.
@@ -613,6 +669,7 @@ func (r *RemediatorRegistry) checkCircuitBreaker() error {
 			r.circuitState = CircuitHalfOpen
 			r.circuitLastStateChange = time.Now()
 			r.consecutiveSuccesses = 0
+			r.notifyCircuitStateObserver(r.circuitState)
 			r.logInfof("Circuit breaker transitioning to HalfOpen (timeout elapsed)")
 			return nil
 		}
@@ -687,6 +744,7 @@ func (r *RemediatorRegistry) recordCircuitBreakerSuccess() {
 			r.circuitState = CircuitClosed
 			r.circuitLastStateChange = time.Now()
 			r.consecutiveSuccesses = 0
+			r.notifyCircuitStateObserver(r.circuitState)
 			r.logInfof("Circuit breaker transitioning to Closed (success threshold reached)")
 		}
 	}
@@ -706,6 +764,7 @@ func (r *RemediatorRegistry) recordCircuitBreakerFailure() {
 		r.circuitOpenedAt = time.Now()
 		r.circuitLastStateChange = time.Now()
 		r.consecutiveFailures = 1 // Reset counter
+		r.notifyCircuitStateObserver(r.circuitState)
 		r.logWarnf("Circuit breaker transitioning to Open (failure in HalfOpen state)")
 		return
 	}
@@ -716,6 +775,7 @@ func (r *RemediatorRegistry) recordCircuitBreakerFailure() {
 			r.circuitState = CircuitOpen
 			r.circuitOpenedAt = time.Now()
 			r.circuitLastStateChange = time.Now()
+			r.notifyCircuitStateObserver(r.circuitState)
 			r.logWarnf("Circuit breaker transitioning to Open (failure threshold %d reached)",
 				r.circuitConfig.Threshold)
 		}
@@ -849,6 +909,7 @@ func (r *RemediatorRegistry) ResetCircuitBreaker() {
 	r.consecutiveSuccesses = 0
 	r.circuitOpenedAt = time.Time{}
 	r.circuitLastStateChange = time.Now()
+	r.notifyCircuitStateObserver(r.circuitState)
 	r.logInfof("Circuit breaker manually reset to Closed")
 }
 

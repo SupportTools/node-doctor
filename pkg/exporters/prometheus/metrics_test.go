@@ -749,3 +749,64 @@ func TestMetricsReset(t *testing.T) {
 		t.Error("monitor_up metric should still exist after ProblemsActive reset")
 	}
 }
+
+func TestRemediatorCircuitBreakerStateGauge(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := NewMetrics("test", "", nil)
+	if err != nil {
+		t.Fatalf("failed to create metrics: %v", err)
+	}
+	if err := metrics.Register(registry); err != nil {
+		t.Fatalf("failed to register metrics: %v", err)
+	}
+
+	e := &PrometheusExporter{
+		nodeName: "test-node",
+		registry: registry,
+		metrics:  metrics,
+	}
+
+	// ObserveCircuitState(2) should set the gauge to 2 (half-open).
+	e.ObserveCircuitState(2)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	const metricName = "test_remediator_circuit_breaker_state"
+
+	// The gauge must be present in the gathered (registered) set.
+	found := false
+	for _, mf := range families {
+		if mf.GetName() == metricName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("%s not present in registered/gathered metrics", metricName)
+	}
+
+	got, ok := gaugeValue(families, metricName, map[string]string{"node": "test-node"})
+	if !ok {
+		t.Fatalf("%s{node=test-node} not found", metricName)
+	}
+	if got != 2 {
+		t.Errorf("%s = %v, want 2 (half-open)", metricName, got)
+	}
+
+	// A subsequent transition value should overwrite the gauge.
+	e.ObserveCircuitState(0)
+	families, err = registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+	got, ok = gaugeValue(families, metricName, map[string]string{"node": "test-node"})
+	if !ok {
+		t.Fatalf("%s{node=test-node} not found after second observe", metricName)
+	}
+	if got != 0 {
+		t.Errorf("%s = %v, want 0 (closed)", metricName, got)
+	}
+}

@@ -58,6 +58,13 @@ type Metrics struct {
 
 	APIServerLatencySeconds *prometheus.GaugeVec
 
+	// RemediatorCircuitBreakerState exposes the remediator registry's circuit
+	// breaker state. The value encodes the state as: 0=closed (normal operation),
+	// 1=open (remediations blocked after too many failures), 2=half-open (testing
+	// recovery). This encoding matches the CircuitBreakerState iota in
+	// pkg/remediators/registry.go exactly.
+	RemediatorCircuitBreakerState *prometheus.GaugeVec
+
 	// Histogram metrics
 	MonitorCheckDuration      *prometheus.HistogramVec
 	ExportDuration            *prometheus.HistogramVec
@@ -434,6 +441,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node"},
 		),
 
+		RemediatorCircuitBreakerState: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "remediator_circuit_breaker_state",
+				Help:        "Current remediator circuit breaker state (0=closed, 1=open, 2=half-open)",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
 		// Histogram metrics
 		MonitorCheckDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -549,6 +567,7 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.DNSPredictedBreachSeconds,
 		m.DNSPredictionConfidence,
 		m.APIServerLatencySeconds,
+		m.RemediatorCircuitBreakerState,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
 		m.DNSLatencyHistogram,
@@ -602,6 +621,7 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.DNSPredictedBreachSeconds,
 		m.DNSPredictionConfidence,
 		m.APIServerLatencySeconds,
+		m.RemediatorCircuitBreakerState,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
 		m.DNSLatencyHistogram,
