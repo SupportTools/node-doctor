@@ -591,6 +591,7 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 //   - "service"    : strat.Service     (systemd-restart target service)
 //   - "scriptPath" : strat.ScriptPath  (custom-script script path)
 //   - "args"       : JSON-encoded strat.Args (custom-script arguments)
+//   - "interface"  : strat.Interface   (restart-interface target interface)
 //
 // Only non-empty params are added so a strategy that does not use a given param
 // does not pollute the metadata.
@@ -605,6 +606,9 @@ func buildProblemMetadata(source string, cond types.Condition, strat types.Monit
 	}
 	if strat.ScriptPath != "" {
 		meta["scriptPath"] = strat.ScriptPath
+	}
+	if strat.Interface != "" {
+		meta["interface"] = strat.Interface
 	}
 	if len(strat.Args) > 0 {
 		// JSON-encode args so values containing commas/spaces survive intact.
@@ -648,6 +652,7 @@ func buildStrategyList(remCfg *types.MonitorRemediationConfig) []types.MonitorRe
 			Service:    remCfg.Service,
 			ScriptPath: remCfg.ScriptPath,
 			Args:       remCfg.Args,
+			Interface:  remCfg.Interface,
 		}}
 	}
 

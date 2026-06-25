@@ -73,6 +73,13 @@ var (
 		"custom-script":   true,
 		"node-reboot":     true,
 		"pod-delete":      true,
+		// Network remediation operations (TaskForge #19263 Phase 3). These map
+		// directly to NetworkRemediator operations and are registered as safe
+		// built-in strategies. "flush-ipv6-route" closes Task #17222.
+		"flush-dns":         true,
+		"restart-interface": true,
+		"reset-routing":     true,
+		"flush-ipv6-route":  true,
 	}
 
 	// Minimum interval thresholds (conservative settings to prevent system overload)
@@ -214,6 +221,12 @@ type MonitorRemediationConfig struct {
 
 	// ScriptPath is the path to remediation script (for custom-script strategy)
 	ScriptPath string `json:"scriptPath,omitempty" yaml:"scriptPath,omitempty"`
+
+	// Interface is the network interface name (for the restart-interface
+	// network remediation strategy). Examples: "eth0", "ens3". It is threaded
+	// to the NetworkRemediator via Problem.Metadata["interface"] at dispatch
+	// time, mirroring how Service is threaded for systemd-restart.
+	Interface string `json:"interface,omitempty" yaml:"interface,omitempty"`
 
 	// Args are arguments to pass to the script
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
@@ -1255,7 +1268,7 @@ func (r *MonitorRemediationConfig) Validate() error {
 		return fmt.Errorf("strategy is required when remediation is enabled")
 	}
 	if !validRemediationStrategies[r.Strategy] {
-		return fmt.Errorf("invalid strategy %q, must be one of: systemd-restart, custom-script, node-reboot, pod-delete", r.Strategy)
+		return fmt.Errorf("invalid strategy %q, must be one of: systemd-restart, custom-script, node-reboot, pod-delete, flush-dns, restart-interface, reset-routing, flush-ipv6-route", r.Strategy)
 	}
 
 	// Strategy-specific validation
@@ -1277,6 +1290,13 @@ func (r *MonitorRemediationConfig) Validate() error {
 		}
 		// Note: File existence check skipped to support containerized deployments
 		// where scripts may be mounted at runtime
+	case "restart-interface":
+		// The restart-interface network strategy must name the interface to
+		// bounce, mirroring how systemd-restart requires Service. The value is
+		// threaded to the NetworkRemediator via Problem.Metadata["interface"].
+		if r.Interface == "" {
+			return fmt.Errorf("interface is required for restart-interface strategy")
+		}
 	}
 
 	// Validate cooldown is positive

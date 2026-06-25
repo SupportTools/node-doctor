@@ -39,6 +39,15 @@ type NetworkConfig struct {
 	// BackupRouting when true, backs up routing table before reset (for ResetRouting)
 	BackupRouting bool
 
+	// AllowMetadataInterface allows constructing a restart-interface remediator
+	// without a fixed InterfaceName, deferring resolution to Remediate time from
+	// Problem.Metadata["interface"]. This is set for the metadata-driven
+	// singleton registered by RegisterBuiltinRemediators so a single remediator
+	// can bounce whatever interface the triggering monitor named. When false (the
+	// default) a restart-interface config without an InterfaceName fails
+	// construction as before.
+	AllowMetadataInterface bool
+
 	// VerifyAfter when true, verifies the operation succeeded
 	VerifyAfter bool
 
@@ -159,8 +168,14 @@ func validateNetworkConfig(config NetworkConfig) error {
 		return fmt.Errorf("invalid operation: %s (must be flush-dns, restart-interface, reset-routing, or flush-ipv6-route)", config.Operation)
 	}
 
-	// RestartInterface requires an interface name
-	if config.Operation == NetworkRestartInterface && config.InterfaceName == "" {
+	// RestartInterface requires an interface name. The name may instead be
+	// supplied per-call via Problem.Metadata["interface"] (the metadata-driven
+	// singleton built by RegisterBuiltinRemediators), so only enforce a
+	// construction-time interface when the remediator allows per-call metadata
+	// resolution to be disabled. AllowMetadataInterface signals that the missing
+	// InterfaceName will be resolved at Remediate time and must not fail
+	// construction.
+	if config.Operation == NetworkRestartInterface && config.InterfaceName == "" && !config.AllowMetadataInterface {
 		return fmt.Errorf("interface name is required for restart-interface operation")
 	}
 
@@ -172,16 +187,44 @@ func validateNetworkConfig(config NetworkConfig) error {
 	return nil
 }
 
+// resolveInterfaceName returns the network interface to act on for this
+// remediation. It prefers the per-call "interface" metadata key (threaded from
+// the strategy's MonitorRemediationConfig.Interface) and falls back to the
+// construction-time config.InterfaceName when the metadata is absent. This
+// mirrors SystemdRemediator.resolveServiceName so a single registered
+// restart-interface remediator can bounce whatever interface the triggering
+// monitor declared.
+func (r *NetworkRemediator) resolveInterfaceName(problem types.Problem) string {
+	if problem.Metadata != nil {
+		if iface := problem.Metadata[metadataKeyInterface]; iface != "" {
+			return iface
+		}
+	}
+	return r.config.InterfaceName
+}
+
 // remediate performs the actual network remediation.
+//
+// For restart-interface the target interface is resolved per-call: when the
+// Problem carries an "interface" metadata key (set by the detector from the
+// strategy's MonitorRemediationConfig.Interface), that value is used; otherwise
+// the remediator falls back to its construction-time config.InterfaceName.
 func (r *NetworkRemediator) remediate(ctx context.Context, problem types.Problem) error {
+	interfaceName := r.resolveInterfaceName(problem)
+
 	// Dry-run mode
 	if r.config.DryRun {
 		r.logInfof("DRY-RUN: Would execute network operation: %s", r.config.Operation)
 		return nil
 	}
 
+	// restart-interface needs a concrete interface name (from config or metadata).
+	if r.config.Operation == NetworkRestartInterface && interfaceName == "" {
+		return fmt.Errorf("no network interface specified for restart-interface (neither problem metadata %q nor config.InterfaceName set)", metadataKeyInterface)
+	}
+
 	// Execute the network operation
-	if err := r.executeOperation(ctx); err != nil {
+	if err := r.executeOperation(ctx, interfaceName); err != nil {
 		return fmt.Errorf("failed to execute %s: %w", r.config.Operation, err)
 	}
 
@@ -189,7 +232,7 @@ func (r *NetworkRemediator) remediate(ctx context.Context, problem types.Problem
 
 	// Verify operation success if configured
 	if r.config.VerifyAfter {
-		if err := r.verifyOperation(ctx); err != nil {
+		if err := r.verifyOperation(ctx, interfaceName); err != nil {
 			return fmt.Errorf("operation verification failed: %w", err)
 		}
 	}
@@ -197,13 +240,14 @@ func (r *NetworkRemediator) remediate(ctx context.Context, problem types.Problem
 	return nil
 }
 
-// executeOperation executes the configured network operation.
-func (r *NetworkRemediator) executeOperation(ctx context.Context) error {
+// executeOperation executes the configured network operation against the
+// resolved interfaceName (used only by restart-interface).
+func (r *NetworkRemediator) executeOperation(ctx context.Context, interfaceName string) error {
 	switch r.config.Operation {
 	case NetworkFlushDNS:
 		return r.flushDNS(ctx)
 	case NetworkRestartInterface:
-		return r.restartInterface(ctx)
+		return r.restartInterface(ctx, interfaceName)
 	case NetworkResetRouting:
 		return r.resetRouting(ctx)
 	case NetworkFlushIPv6Route:
@@ -240,21 +284,22 @@ func (r *NetworkRemediator) flushDNS(ctx context.Context) error {
 }
 
 // restartInterface restarts a network interface by bringing it down and then up.
-func (r *NetworkRemediator) restartInterface(ctx context.Context) error {
-	r.logInfof("Restarting network interface: %s", r.config.InterfaceName)
+// interfaceName is resolved per-call (metadata or config) by remediate.
+func (r *NetworkRemediator) restartInterface(ctx context.Context, interfaceName string) error {
+	r.logInfof("Restarting network interface: %s", interfaceName)
 
 	// Safety check: verify interface exists
-	exists, err := r.networkExecutor.InterfaceExists(ctx, r.config.InterfaceName)
+	exists, err := r.networkExecutor.InterfaceExists(ctx, interfaceName)
 	if err != nil {
 		return fmt.Errorf("failed to verify interface exists: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("interface %s does not exist", r.config.InterfaceName)
+		return fmt.Errorf("interface %s does not exist", interfaceName)
 	}
 
 	// Bring interface down
-	r.logInfof("Bringing interface %s down", r.config.InterfaceName)
-	output, err := r.networkExecutor.ExecuteCommand(ctx, "ip", "link", "set", r.config.InterfaceName, "down")
+	r.logInfof("Bringing interface %s down", interfaceName)
+	output, err := r.networkExecutor.ExecuteCommand(ctx, "ip", "link", "set", interfaceName, "down")
 	if err != nil {
 		return fmt.Errorf("failed to bring interface down: %w (output: %s)", err, output)
 	}
@@ -263,8 +308,8 @@ func (r *NetworkRemediator) restartInterface(ctx context.Context) error {
 	time.Sleep(500 * time.Millisecond)
 
 	// Bring interface up
-	r.logInfof("Bringing interface %s up", r.config.InterfaceName)
-	output, err = r.networkExecutor.ExecuteCommand(ctx, "ip", "link", "set", r.config.InterfaceName, "up")
+	r.logInfof("Bringing interface %s up", interfaceName)
+	output, err = r.networkExecutor.ExecuteCommand(ctx, "ip", "link", "set", interfaceName, "up")
 	if err != nil {
 		return fmt.Errorf("failed to bring interface up: %w (output: %s)", err, output)
 	}
@@ -340,7 +385,7 @@ func (r *NetworkRemediator) flushIPv6RouteCache(ctx context.Context) error {
 }
 
 // verifyOperation verifies that the network operation succeeded.
-func (r *NetworkRemediator) verifyOperation(ctx context.Context) error {
+func (r *NetworkRemediator) verifyOperation(ctx context.Context, interfaceName string) error {
 	// Create a context with timeout for verification
 	verifyCtx, cancel := context.WithTimeout(ctx, r.config.VerifyTimeout)
 	defer cancel()
@@ -353,7 +398,7 @@ func (r *NetworkRemediator) verifyOperation(ctx context.Context) error {
 
 	case NetworkRestartInterface:
 		// Verify interface is up after restart
-		return r.verifyInterfaceUp(verifyCtx)
+		return r.verifyInterfaceUp(verifyCtx, interfaceName)
 
 	case NetworkResetRouting:
 		// Verify routing table exists after reset
@@ -370,28 +415,28 @@ func (r *NetworkRemediator) verifyOperation(ctx context.Context) error {
 }
 
 // verifyInterfaceUp verifies that an interface is up after restart.
-func (r *NetworkRemediator) verifyInterfaceUp(ctx context.Context) error {
+func (r *NetworkRemediator) verifyInterfaceUp(ctx context.Context, interfaceName string) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timeout waiting for interface %s to come up after %v", r.config.InterfaceName, r.config.VerifyTimeout)
+			return fmt.Errorf("timeout waiting for interface %s to come up after %v", interfaceName, r.config.VerifyTimeout)
 
 		case <-ticker.C:
-			isUp, err := r.networkExecutor.IsInterfaceUp(ctx, r.config.InterfaceName)
+			isUp, err := r.networkExecutor.IsInterfaceUp(ctx, interfaceName)
 			if err != nil {
 				r.logWarnf("Error checking interface status during verification: %v", err)
 				continue
 			}
 
 			if isUp {
-				r.logInfof("Interface %s is up", r.config.InterfaceName)
+				r.logInfof("Interface %s is up", interfaceName)
 				return nil
 			}
 
-			r.logInfof("Waiting for interface %s to come up...", r.config.InterfaceName)
+			r.logInfof("Waiting for interface %s to come up...", interfaceName)
 		}
 	}
 }

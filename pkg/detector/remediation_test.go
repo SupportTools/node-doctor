@@ -498,6 +498,42 @@ func TestEvaluateRemediation_MultiStrategyThreadsPerStrategyParams(t *testing.T)
 	}
 }
 
+// TestEvaluateRemediation_ThreadsInterfaceMetadata verifies that a
+// restart-interface strategy's Interface field is threaded into the dispatched
+// Problem.Metadata["interface"] so the NetworkRemediator can resolve it at
+// Remediate time (TaskForge #19263 Phase 3).
+func TestEvaluateRemediation_ThreadsInterfaceMetadata(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+
+	monCfg := types.MonitorConfig{
+		Name:     "iface-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:   true,
+			Strategy:  "restart-interface",
+			Interface: "eth0",
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+	_ = pd
+
+	mon.AddStatusUpdate(unhealthyStatus("iface-monitor", "InterfaceHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected 1 executor call within 1s, got %d", exec.CallCount())
+	}
+
+	call := exec.Calls()[0]
+	if call.RemediatorType != "restart-interface" {
+		t.Errorf("strategy = %q, want restart-interface", call.RemediatorType)
+	}
+	if got := call.Problem.Metadata["interface"]; got != "eth0" {
+		t.Errorf("Problem.Metadata[interface] = %q, want eth0", got)
+	}
+}
+
 // TestEvaluateRemediation_MultiStrategyFirstSuccessWins verifies that when the
 // first strategy succeeds, subsequent strategies are not attempted.
 func TestEvaluateRemediation_MultiStrategyFirstSuccessWins(t *testing.T) {

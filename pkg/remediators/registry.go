@@ -58,6 +58,12 @@ const (
 	// metadataKeyArgs carries the JSON-encoded script arguments for the
 	// custom-script strategy (from MonitorRemediationConfig.Args).
 	metadataKeyArgs = "args"
+
+	// metadataKeyInterface carries the network interface name for the
+	// restart-interface strategy (from MonitorRemediationConfig.Interface).
+	// It is consumed by NetworkRemediator at Remediate time, mirroring how
+	// metadataKeyService is consumed by SystemdRemediator.
+	metadataKeyInterface = "interface"
 )
 
 // CircuitBreakerState represents the state of the circuit breaker.

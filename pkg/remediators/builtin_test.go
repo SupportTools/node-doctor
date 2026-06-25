@@ -8,31 +8,46 @@ import (
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
-// TestRegisterBuiltinRemediators_RegistersSafeStrategiesOnly verifies that
-// Phase 1 registers ONLY systemd-restart and custom-script, and explicitly does
-// NOT register the destructive node-reboot / pod-delete strategies (Phase 2).
+// TestRegisterBuiltinRemediators_RegistersSafeStrategiesOnly verifies that the
+// built-in registration registers the safe strategies (systemd-restart,
+// custom-script, and the four network operations) and explicitly does NOT
+// register the destructive node-reboot / pod-delete strategies (those are
+// Phase 2, registered only by RegisterClusterRemediators).
 func TestRegisterBuiltinRemediators_RegistersSafeStrategiesOnly(t *testing.T) {
 	registry := NewRegistry(10, 100)
 	RegisterBuiltinRemediators(registry, &types.NodeDoctorConfig{})
 
-	if !registry.IsRegistered(StrategySystemdRestart) {
-		t.Errorf("expected %q to be registered", StrategySystemdRestart)
+	// All safe built-in strategies must be registered.
+	safe := []string{
+		StrategySystemdRestart,
+		StrategyCustomScript,
+		StrategyFlushDNS,
+		StrategyRestartInterface,
+		StrategyResetRouting,
+		StrategyFlushIPv6Route,
 	}
-	if !registry.IsRegistered(StrategyCustomScript) {
-		t.Errorf("expected %q to be registered", StrategyCustomScript)
+	for _, s := range safe {
+		if !registry.IsRegistered(s) {
+			t.Errorf("expected %q to be registered", s)
+		}
 	}
 
-	// Destructive strategies must NOT be registered in Phase 1.
+	// flush-ipv6-route reachable closes #17222.
+	if !registry.IsRegistered("flush-ipv6-route") {
+		t.Errorf("flush-ipv6-route must be registered (closes #17222)")
+	}
+
+	// Destructive strategies must NOT be registered by the built-ins.
 	if registry.IsRegistered(StrategyNodeReboot) {
-		t.Errorf("%q must NOT be registered in Phase 1 (destructive, deferred to Phase 2)", StrategyNodeReboot)
+		t.Errorf("%q must NOT be registered by built-ins (destructive, cluster-only)", StrategyNodeReboot)
 	}
 	if registry.IsRegistered(StrategyPodDelete) {
-		t.Errorf("%q must NOT be registered in Phase 1 (destructive, deferred to Phase 2)", StrategyPodDelete)
+		t.Errorf("%q must NOT be registered by built-ins (destructive, cluster-only)", StrategyPodDelete)
 	}
 
 	got := registry.GetRegisteredTypes()
-	if len(got) != 2 {
-		t.Errorf("expected exactly 2 registered types, got %d: %v", len(got), got)
+	if len(got) != 6 {
+		t.Errorf("expected exactly 6 registered types, got %d: %v", len(got), got)
 	}
 }
 
@@ -222,5 +237,139 @@ func TestBuiltinCustomScript_InvalidArgsJSONRejected(t *testing.T) {
 	}
 	if got := mock.getExecutedScripts(); len(got) != 0 {
 		t.Errorf("script must NOT be executed when args are invalid, executed: %v", got)
+	}
+}
+
+// TestBuiltinFlushIPv6Route_DryRunDispatch verifies that flush-ipv6-route is
+// registered and dispatchable via the registry in dry-run, reaching the
+// NetworkRemediator path without executing a real command. This is the wiring
+// that makes flush-ipv6-route reachable (closes Task #17222).
+func TestBuiltinFlushIPv6Route_DryRunDispatch(t *testing.T) {
+	registry := NewRegistry(10, 100)
+	registry.SetDryRun(true)
+	RegisterBuiltinRemediators(registry, &types.NodeDoctorConfig{})
+
+	if !registry.IsRegistered(StrategyFlushIPv6Route) {
+		t.Fatalf("flush-ipv6-route must be registered after RegisterBuiltinRemediators")
+	}
+
+	problem := types.Problem{
+		Type:     StrategyFlushIPv6Route,
+		Resource: "ipv6-routing-table",
+		Severity: types.ProblemCritical,
+	}
+	if err := registry.Remediate(context.Background(), StrategyFlushIPv6Route, problem); err != nil {
+		t.Fatalf("Remediate(flush-ipv6-route) dry-run failed: %v", err)
+	}
+}
+
+// TestBuiltinFlushIPv6Route_DryRunNoRealCommand verifies the remediator built by
+// the flush-ipv6-route factory honors dry-run: with an injected executor and
+// DryRun=true, the ipv6 flush op runs through the remediator but NO real command
+// is executed.
+func TestBuiltinFlushIPv6Route_DryRunNoRealCommand(t *testing.T) {
+	r, err := NewNetworkRemediator(NetworkConfig{
+		Operation: NetworkFlushIPv6Route,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator(flush-ipv6-route): %v", err)
+	}
+	mock := &mockNetworkExecutor{}
+	r.SetNetworkExecutor(mock)
+
+	problem := types.Problem{Type: StrategyFlushIPv6Route}
+	if err := r.Remediate(context.Background(), problem); err != nil {
+		t.Fatalf("Remediate(flush-ipv6-route) dry-run: %v", err)
+	}
+	if len(mock.executedCommands) != 0 {
+		t.Errorf("dry-run must execute NO real command, executed: %v", mock.executedCommands)
+	}
+}
+
+// TestBuiltinFlushIPv6Route_ReachesExecutor verifies a non-dry-run flush-ipv6-route
+// remediation reaches the injected executor and issues the ipv6 flush command.
+func TestBuiltinFlushIPv6Route_ReachesExecutor(t *testing.T) {
+	r, err := NewNetworkRemediator(NetworkConfig{Operation: NetworkFlushIPv6Route})
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator(flush-ipv6-route): %v", err)
+	}
+	mock := &mockNetworkExecutor{}
+	r.SetNetworkExecutor(mock)
+
+	problem := types.Problem{Type: StrategyFlushIPv6Route}
+	if err := r.Remediate(context.Background(), problem); err != nil {
+		t.Fatalf("Remediate(flush-ipv6-route): %v", err)
+	}
+
+	found := false
+	for _, c := range mock.executedCommands {
+		if c == "ip -6 route flush cache" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'ip -6 route flush cache', executed: %v", mock.executedCommands)
+	}
+}
+
+// TestBuiltinRestartInterface_MetadataInterface verifies the restart-interface
+// remediator built by the builtin factory (AllowMetadataInterface, empty fixed
+// interface) resolves its target interface from Problem.Metadata["interface"]
+// and bounces it via the injected executor.
+func TestBuiltinRestartInterface_MetadataInterface(t *testing.T) {
+	// Same construction the builtin factory uses for restart-interface.
+	r, err := NewNetworkRemediator(NetworkConfig{
+		Operation:              NetworkRestartInterface,
+		AllowMetadataInterface: true,
+	})
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator(restart-interface): %v", err)
+	}
+	mock := &mockNetworkExecutor{interfaceExists: true}
+	r.SetNetworkExecutor(mock)
+
+	problem := types.Problem{
+		Type:     StrategyRestartInterface,
+		Metadata: map[string]string{metadataKeyInterface: "eth0"},
+	}
+	if err := r.Remediate(context.Background(), problem); err != nil {
+		t.Fatalf("Remediate(restart-interface): %v", err)
+	}
+
+	wantDown, wantUp := false, false
+	for _, c := range mock.executedCommands {
+		if c == "ip link set eth0 down" {
+			wantDown = true
+		}
+		if c == "ip link set eth0 up" {
+			wantUp = true
+		}
+	}
+	if !wantDown || !wantUp {
+		t.Errorf("expected eth0 to be bounced (down+up), executed: %v", mock.executedCommands)
+	}
+}
+
+// TestBuiltinRestartInterface_MissingInterfaceFails verifies a restart-interface
+// remediation with neither config nor metadata interface fails at Remediate time
+// (rather than acting on an empty interface), and executes no command.
+func TestBuiltinRestartInterface_MissingInterfaceFails(t *testing.T) {
+	r, err := NewNetworkRemediator(NetworkConfig{
+		Operation:              NetworkRestartInterface,
+		AllowMetadataInterface: true,
+	})
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator(restart-interface): %v", err)
+	}
+	mock := &mockNetworkExecutor{interfaceExists: true}
+	r.SetNetworkExecutor(mock)
+
+	problem := types.Problem{Type: StrategyRestartInterface} // no interface metadata
+	if err := r.Remediate(context.Background(), problem); err == nil {
+		t.Fatal("expected error when no interface is specified, got nil")
+	}
+	if len(mock.executedCommands) != 0 {
+		t.Errorf("no command must run when interface is missing, executed: %v", mock.executedCommands)
 	}
 }

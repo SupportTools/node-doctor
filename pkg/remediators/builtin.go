@@ -31,6 +31,19 @@ const (
 	// destructive actions.
 	StrategyNodeReboot = "node-reboot"
 	StrategyPodDelete  = "pod-delete"
+
+	// Network remediation strategies (TaskForge #19263 Phase 3). Each maps
+	// directly to a NetworkRemediator operation (see NetworkOperation consts in
+	// network.go). flush-dns / reset-routing / flush-ipv6-route are
+	// non-destructive cache/route flushes; restart-interface briefly bounces an
+	// interface (its target comes from Problem.Metadata["interface"]). All four
+	// are SAFE-enough to live with the built-ins (NOT the destructive cluster
+	// set). Registering StrategyFlushIPv6Route makes flush-ipv6-route reachable,
+	// closing Task #17222.
+	StrategyFlushDNS         = string(NetworkFlushDNS)
+	StrategyRestartInterface = string(NetworkRestartInterface)
+	StrategyResetRouting     = string(NetworkResetRouting)
+	StrategyFlushIPv6Route   = string(NetworkFlushIPv6Route)
 )
 
 // RegisterBuiltinRemediators registers the SAFE built-in remediator strategies
@@ -101,6 +114,42 @@ func RegisterBuiltinRemediators(registry *RemediatorRegistry, cfg *types.NodeDoc
 		},
 		Description: "Runs the remediation script named in the triggering monitor's remediation config (Problem.Metadata[\"scriptPath\"]/[\"args\"]).",
 	})
+
+	// Network remediation strategies (TaskForge #19263 Phase 3). Each is keyed by
+	// its operation string and builds a NewNetworkRemediator for that operation,
+	// honoring the registry dry-run state. flush-dns / reset-routing /
+	// flush-ipv6-route take no per-call parameters; restart-interface resolves
+	// its target interface per-call from Problem.Metadata["interface"]
+	// (AllowMetadataInterface lets it construct with an empty InterfaceName).
+	// Registering flush-ipv6-route makes that operation reachable -> closes #17222.
+	networkOps := []struct {
+		strategy    string
+		operation   NetworkOperation
+		description string
+	}{
+		{StrategyFlushDNS, NetworkFlushDNS, "Flushes the resolver DNS cache (resolvectl/systemd-resolve; clears A and AAAA)."},
+		{StrategyRestartInterface, NetworkRestartInterface, "Bounces the network interface named in Problem.Metadata[\"interface\"] (down then up)."},
+		{StrategyResetRouting, NetworkResetRouting, "Flushes the IPv4 routing cache (ip route flush cache)."},
+		{StrategyFlushIPv6Route, NetworkFlushIPv6Route, "Flushes the IPv6 route cache (ip -6 route flush cache)."},
+	}
+	for _, op := range networkOps {
+		op := op // capture per-iteration for the closure
+		registry.Register(RemediatorInfo{
+			Type: op.strategy,
+			Factory: func() (types.Remediator, error) {
+				return NewNetworkRemediator(NetworkConfig{
+					Operation: op.operation,
+					// InterfaceName intentionally empty: restart-interface resolves
+					// it per-call from Problem.Metadata["interface"].
+					// AllowMetadataInterface permits construction without a fixed
+					// interface for the metadata-driven singleton.
+					AllowMetadataInterface: op.operation == NetworkRestartInterface,
+					DryRun:                 dryRun,
+				})
+			},
+			Description: op.description,
+		})
+	}
 }
 
 // RegisterClusterRemediators registers the DESTRUCTIVE cluster-scoped remediator

@@ -228,11 +228,14 @@ func main() {
 
 		// Register the built-in remediator strategies so the detector's dispatch
 		// (which addresses a remediator by its strategy type) can find one.
-		// TaskForge #19263 Phase 1 registers ONLY the two SAFE strategies
-		// (systemd-restart, custom-script); the destructive node-reboot/pod-delete
-		// strategies are deferred to Phase 2 and remain unregistered (a config
-		// naming them fails dispatch, which is the desired fail-safe). SetDryRun
-		// is applied above so the closures pick up the correct dry-run state.
+		// TaskForge #19263 registers the SAFE strategies: systemd-restart,
+		// custom-script, and the four network operations (flush-dns,
+		// restart-interface, reset-routing, flush-ipv6-route — Phase 3, the last
+		// closing #17222). The destructive node-reboot/pod-delete strategies are
+		// NOT registered here; they are registered separately by
+		// RegisterClusterRemediators only when a cluster client is available (a
+		// config naming them otherwise fails dispatch, the desired fail-safe).
+		// SetDryRun is applied above so the closures pick up the correct dry-run state.
 		remediators.RegisterBuiltinRemediators(remediatorRegistry, config)
 		log.Printf("[INFO] Registered built-in remediators: %v",
 			remediatorRegistry.GetRegisteredTypes())
