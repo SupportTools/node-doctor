@@ -1608,6 +1608,24 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 			continue
 		}
 
+		// TestEachNameserver and ConsistencyCheck are only implemented for A
+		// queries. For AAAA queries they are silently skipped, so emit a single
+		// warning per query naming the unsupported feature(s) and the domain.
+		if recordType == "AAAA" && (query.TestEachNameserver || query.ConsistencyCheck) {
+			var skipped []string
+			if query.TestEachNameserver {
+				skipped = append(skipped, "TestEachNameserver")
+			}
+			if query.ConsistencyCheck {
+				skipped = append(skipped, "ConsistencyCheck")
+			}
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"AAAAFeatureUnsupported",
+				fmt.Sprintf("%s not supported for AAAA queries; skipping for domain %s (only the basic AAAA lookup runs)", strings.Join(skipped, " and "), query.Domain),
+			))
+		}
+
 		start := time.Now()
 		var resultCount int
 		var err error

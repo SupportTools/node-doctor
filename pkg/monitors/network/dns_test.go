@@ -778,6 +778,171 @@ func TestCustomQueries(t *testing.T) {
 	}
 }
 
+// TestCustomQueriesAAAAUnsupportedFeatureWarning verifies that AAAA queries
+// configured with the A-only TestEachNameserver/ConsistencyCheck features emit
+// exactly one AAAAFeatureUnsupported warning (not one per nameserver) instead of
+// silently dropping the requested feature, while the basic AAAA lookup still runs.
+func TestCustomQueriesAAAAUnsupportedFeatureWarning(t *testing.T) {
+	const unsupportedReason = "AAAAFeatureUnsupported"
+
+	countReason := func(events []types.Event, reason string) int {
+		n := 0
+		for _, e := range events {
+			if e.Reason == reason {
+				n++
+			}
+		}
+		return n
+	}
+
+	tests := []struct {
+		name               string
+		query              DNSQuery
+		mockSetup          func(*mockResolver)
+		wantUnsupported    int
+		wantLookupMentions []string // substrings that must appear in the warning message
+		// checkAAAALookupRan asserts the basic AAAA lookup still happened by
+		// requiring no lookup-failure events (the mock returns "no such host"
+		// for an unconfigured lookup, which would surface as such an event).
+		checkAAAALookupRan bool
+	}{
+		{
+			name:  "AAAA with TestEachNameserver warns once and still resolves",
+			query: DNSQuery{Domain: "v6.example.com", RecordType: "AAAA", TestEachNameserver: true},
+			mockSetup: func(m *mockResolver) {
+				m.setIPResponse("ip6", "v6.example.com", []net.IP{net.ParseIP("2606:4700::1")})
+			},
+			wantUnsupported:    1,
+			wantLookupMentions: []string{"TestEachNameserver", "v6.example.com"},
+			checkAAAALookupRan: true,
+		},
+		{
+			name:  "AAAA with ConsistencyCheck warns once",
+			query: DNSQuery{Domain: "v6c.example.com", RecordType: "AAAA", ConsistencyCheck: true},
+			mockSetup: func(m *mockResolver) {
+				m.setIPResponse("ip6", "v6c.example.com", []net.IP{net.ParseIP("2606:4700::2")})
+			},
+			wantUnsupported:    1,
+			wantLookupMentions: []string{"ConsistencyCheck", "v6c.example.com"},
+		},
+		{
+			name:  "AAAA with both flags warns exactly once mentioning both",
+			query: DNSQuery{Domain: "v6b.example.com", RecordType: "AAAA", TestEachNameserver: true, ConsistencyCheck: true},
+			mockSetup: func(m *mockResolver) {
+				m.setIPResponse("ip6", "v6b.example.com", []net.IP{net.ParseIP("2606:4700::3")})
+			},
+			wantUnsupported:    1,
+			wantLookupMentions: []string{"TestEachNameserver", "ConsistencyCheck", "v6b.example.com"},
+		},
+		{
+			name:  "AAAA with neither flag does not warn",
+			query: DNSQuery{Domain: "v6plain.example.com", RecordType: "AAAA"},
+			mockSetup: func(m *mockResolver) {
+				m.setIPResponse("ip6", "v6plain.example.com", []net.IP{net.ParseIP("2606:4700::4")})
+			},
+			wantUnsupported: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockResolver()
+			tt.mockSetup(mock)
+
+			monitor := &DNSMonitor{
+				name: "test-dns",
+				config: &DNSMonitorConfig{
+					ClusterDomains:   []string{},
+					ExternalDomains:  []string{},
+					CustomQueries:    []DNSQuery{tt.query},
+					LatencyThreshold: 1 * time.Second,
+					// Enabled so an A-query ConsistencyCheck path would activate;
+					// AAAA must still bypass it regardless of this config.
+					ConsistencyChecking: &ConsistencyCheckConfig{
+						Enabled:                true,
+						QueriesPerCheck:        3,
+						IntervalBetweenQueries: time.Millisecond,
+					},
+				},
+				resolver: mock,
+			}
+
+			ctx := context.Background()
+			status := &types.Status{Source: monitor.name, Timestamp: time.Now()}
+
+			monitor.checkCustomQueries(ctx, status)
+
+			if got := countReason(status.Events, unsupportedReason); got != tt.wantUnsupported {
+				t.Errorf("expected %d %s events, got %d (events: %+v)", tt.wantUnsupported, unsupportedReason, got, status.Events)
+			}
+
+			if tt.wantUnsupported > 0 {
+				var msg string
+				for _, e := range status.Events {
+					if e.Reason == unsupportedReason {
+						msg = e.Message
+						if e.Severity != types.EventWarning {
+							t.Errorf("expected %s severity, got %s", types.EventWarning, e.Severity)
+						}
+					}
+				}
+				for _, want := range tt.wantLookupMentions {
+					if !strings.Contains(msg, want) {
+						t.Errorf("warning message %q does not mention %q", msg, want)
+					}
+				}
+			}
+
+			if tt.checkAAAALookupRan {
+				// A configured, successful AAAA lookup produces no failure or
+				// no-records event; their absence confirms the lookup still ran.
+				for _, e := range status.Events {
+					if e.Reason == "CustomDNSQueryFailed" || e.Reason == "CustomDNSNoRecords" {
+						t.Errorf("AAAA lookup did not run as expected; got failure event: %+v", e)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestCustomQueriesAQueryNoAAAAWarning verifies that an A query with the
+// per-nameserver/consistency features enabled does not produce an
+// AAAAFeatureUnsupported warning (those features run on the A path as before).
+func TestCustomQueriesAQueryNoAAAAWarning(t *testing.T) {
+	mock := newMockResolver()
+	mock.setResponse("a.example.com", []string{"1.2.3.4"})
+
+	monitor := &DNSMonitor{
+		name: "test-dns",
+		config: &DNSMonitorConfig{
+			ClusterDomains:  []string{},
+			ExternalDomains: []string{},
+			CustomQueries: []DNSQuery{
+				{Domain: "a.example.com", RecordType: "A", TestEachNameserver: true, ConsistencyCheck: true},
+			},
+			LatencyThreshold: 1 * time.Second,
+			ConsistencyChecking: &ConsistencyCheckConfig{
+				Enabled:                true,
+				QueriesPerCheck:        3,
+				IntervalBetweenQueries: time.Millisecond,
+			},
+		},
+		resolver: mock,
+	}
+
+	ctx := context.Background()
+	status := &types.Status{Source: monitor.name, Timestamp: time.Now()}
+
+	monitor.checkCustomQueries(ctx, status)
+
+	for _, e := range status.Events {
+		if e.Reason == "AAAAFeatureUnsupported" {
+			t.Errorf("A query unexpectedly produced AAAAFeatureUnsupported event: %+v", e)
+		}
+	}
+}
+
 // TestNameserverChecks tests nameserver verification error handling.
 // Note: This primarily tests error paths since checkNameservers creates its own net.Resolver.
 func TestNameserverChecks(t *testing.T) {
