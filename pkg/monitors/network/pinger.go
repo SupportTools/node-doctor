@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -69,35 +70,73 @@ func newDefaultPinger() Pinger {
 	return &defaultPinger{}
 }
 
-// resolveTarget parses the target as an IP literal, or resolves it as a
-// hostname. Returns the chosen IP and family. When the target is a hostname,
-// IPv4 is preferred for backward compatibility; if no IPv4 address is
-// available, the first IPv6 address is used.
-func resolveTarget(target string) (net.IP, string, error) {
-	if ip := net.ParseIP(target); ip != nil {
-		if ip.To4() != nil {
-			return ip.To4(), FamilyIPv4, nil
+// resolveTarget parses the target as an IP literal (optionally carrying an
+// IPv6 zone/scope ID such as "fe80::1%eth0"), or resolves it as a hostname.
+// It returns the chosen IP, the IPv6 zone (empty for IPv4 and zone-less
+// targets), and the address family. When the target is a hostname, IPv4 is
+// preferred for backward compatibility; if no IPv4 address is available, the
+// first IPv6 address is used. Hostname resolution never invents a zone.
+//
+// The zone is parsed by splitting on the LAST "%" in the target and validating
+// that the leading portion is a valid IP literal. We deliberately do not use
+// net.ResolveIPAddr here: ResolveIPAddr would perform a DNS lookup for hostname
+// targets (changing the existing IPv4-preferring LookupIP behavior) and would
+// also issue network lookups for malformed inputs. The manual split keeps IP
+// literal and hostname paths cleanly separated.
+func resolveTarget(target string) (net.IP, string, string, error) {
+	// Separate a possible IPv6 zone suffix (e.g. "fe80::1%eth0"). The address
+	// part is only treated as zoned when it parses as an IP literal; otherwise
+	// the original target is left intact for hostname resolution so that, e.g.,
+	// a hostname containing "%" is not silently mangled.
+	addr, zone := target, ""
+	if i := strings.LastIndex(target, "%"); i >= 0 {
+		if candidate := net.ParseIP(target[:i]); candidate != nil {
+			addr, zone = target[:i], target[i+1:]
 		}
-		return ip, FamilyIPv6, nil
+	}
+
+	if ip := net.ParseIP(addr); ip != nil {
+		if ip.To4() != nil {
+			// IPv4 addresses do not carry a zone.
+			return ip.To4(), "", FamilyIPv4, nil
+		}
+		return ip, zone, FamilyIPv6, nil
 	}
 
 	ips, err := net.LookupIP(target)
 	if err != nil || len(ips) == 0 {
-		return nil, "", fmt.Errorf("failed to resolve target %s: %w", target, err)
+		return nil, "", "", fmt.Errorf("failed to resolve target %s: %w", target, err)
 	}
 
 	for _, resolvedIP := range ips {
 		if resolvedIP.To4() != nil {
-			return resolvedIP.To4(), FamilyIPv4, nil
+			return resolvedIP.To4(), "", FamilyIPv4, nil
 		}
 	}
 	for _, resolvedIP := range ips {
 		if resolvedIP.To16() != nil {
-			return resolvedIP, FamilyIPv6, nil
+			return resolvedIP, "", FamilyIPv6, nil
 		}
 	}
 
-	return nil, "", fmt.Errorf("no usable IP address found for target %s", target)
+	return nil, "", "", fmt.Errorf("no usable IP address found for target %s", target)
+}
+
+// destAddr builds the destination address for a ping send, carrying the IPv6
+// zone/scope ID when present. Link-local IPv6 destinations (fe80::/10) require
+// the zone for the kernel to select the correct outgoing interface.
+func destAddr(ip net.IP, zone string) *net.IPAddr {
+	return &net.IPAddr{IP: ip, Zone: zone}
+}
+
+// peerMatchesIP reports whether the reply came from the target IP, ignoring any
+// zone/scope ID the kernel may attach to a link-local peer address. It compares
+// the underlying IP bytes so that "fe80::1%eth0" matches the target "fe80::1".
+func peerMatchesIP(peer net.Addr, ip net.IP) bool {
+	if ipAddr, ok := peer.(*net.IPAddr); ok {
+		return ipAddr.IP.Equal(ip)
+	}
+	return peer.String() == ip.String()
 }
 
 // listenICMP opens an ICMP packet connection for the given address family
@@ -141,7 +180,7 @@ func isEchoReply(family string, msgType icmp.Type) bool {
 // IPv4 or IPv6 based on the resolved target. Returns one PingResult per
 // attempt; each result carries the address family used.
 func (p *defaultPinger) Ping(ctx context.Context, target string, count int, timeout time.Duration) ([]PingResult, error) {
-	ip, family, err := resolveTarget(target)
+	ip, zone, family, err := resolveTarget(target)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +201,7 @@ func (p *defaultPinger) Ping(ctx context.Context, target string, count int, time
 		default:
 		}
 
-		result := p.singlePing(ctx, conn, ip, family, protocol, echoType, timeout)
+		result := p.singlePing(ctx, conn, ip, zone, family, protocol, echoType, timeout)
 		results = append(results, result)
 
 		// Small delay between pings (100ms)
@@ -183,6 +222,7 @@ func (p *defaultPinger) singlePing(
 	ctx context.Context,
 	conn *icmp.PacketConn,
 	ip net.IP,
+	zone string,
 	family string,
 	protocol int,
 	echoType icmp.Type,
@@ -225,7 +265,7 @@ func (p *defaultPinger) singlePing(
 
 	// Send echo request
 	start := time.Now()
-	_, err = conn.WriteTo(msgBytes, &net.IPAddr{IP: ip})
+	_, err = conn.WriteTo(msgBytes, destAddr(ip, zone))
 	if err != nil {
 		log.Printf("[DEBUG] Ping to %s (%s): failed to send: %v", ip, family, err)
 		return PingResult{
@@ -277,8 +317,10 @@ func (p *defaultPinger) singlePing(
 			continue
 		}
 
-		// Verify it's from the target IP
-		if peer.String() != ip.String() {
+		// Verify it's from the target IP. Compare the address bytes rather than
+		// the string form so a link-local reply carrying a zone suffix
+		// (e.g. "fe80::1%eth0") still matches the zone-less target IP.
+		if !peerMatchesIP(peer, ip) {
 			continue
 		}
 

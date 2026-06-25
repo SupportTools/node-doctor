@@ -266,18 +266,30 @@ func TestResolveTarget(t *testing.T) {
 	tests := []struct {
 		name       string
 		target     string
+		wantIP     string // expected IP string (empty = skip exact check)
+		wantZone   string
 		wantFamily string
 		wantErr    bool
 	}{
-		{name: "IPv4 literal", target: "192.0.2.1", wantFamily: FamilyIPv4},
-		{name: "IPv6 literal", target: "2001:db8::1", wantFamily: FamilyIPv6},
-		{name: "IPv6 loopback literal", target: "::1", wantFamily: FamilyIPv6},
-		{name: "IPv4-mapped literal collapses to v4", target: "::ffff:192.0.2.1", wantFamily: FamilyIPv4},
+		{name: "IPv4 literal", target: "192.0.2.1", wantIP: "192.0.2.1", wantZone: "", wantFamily: FamilyIPv4},
+		{name: "IPv6 literal", target: "2001:db8::1", wantIP: "2001:db8::1", wantZone: "", wantFamily: FamilyIPv6},
+		{name: "IPv6 loopback literal", target: "::1", wantIP: "::1", wantZone: "", wantFamily: FamilyIPv6},
+		{name: "IPv4-mapped literal collapses to v4", target: "::ffff:192.0.2.1", wantIP: "192.0.2.1", wantZone: "", wantFamily: FamilyIPv4},
+		// Link-local IPv6 with a zone/scope ID.
+		{name: "link-local with zone", target: "fe80::1%eth0", wantIP: "fe80::1", wantZone: "eth0", wantFamily: FamilyIPv6},
+		// Link-local IPv6 without a zone (bare).
+		{name: "link-local without zone", target: "fe80::1", wantIP: "fe80::1", wantZone: "", wantFamily: FamilyIPv6},
+		// Zones are retained for any IPv6, not only link-local.
+		{name: "global IPv6 with zone retained", target: "2001:db8::1%eth1", wantIP: "2001:db8::1", wantZone: "eth1", wantFamily: FamilyIPv6},
+		// Empty zone after '%': manual split leaves the address valid with an
+		// empty zone (the trailing '%' is not treated as a zone). This is the
+		// behavior we implement; assert it explicitly.
+		{name: "empty zone after percent", target: "fe80::1%", wantIP: "fe80::1", wantZone: "", wantFamily: FamilyIPv6},
 		{name: "empty target", target: "", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ip, family, err := resolveTarget(tt.target)
+			ip, zone, family, err := resolveTarget(tt.target)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("resolveTarget(%q) err=%v wantErr=%v", tt.target, err, tt.wantErr)
 			}
@@ -288,7 +300,68 @@ func TestResolveTarget(t *testing.T) {
 				t.Errorf("family = %q, want %q", family, tt.wantFamily)
 			}
 			if ip == nil {
-				t.Errorf("ip is nil for target %q", tt.target)
+				t.Fatalf("ip is nil for target %q", tt.target)
+			}
+			if tt.wantIP != "" && ip.String() != tt.wantIP {
+				t.Errorf("ip = %q, want %q", ip.String(), tt.wantIP)
+			}
+			if zone != tt.wantZone {
+				t.Errorf("zone = %q, want %q", zone, tt.wantZone)
+			}
+		})
+	}
+}
+
+// TestDestAddr verifies the zone reaches the *net.IPAddr used for sending.
+// Actually transmitting link-local ICMP requires privileges and a real
+// interface, so we unit-test the destination builder instead.
+func TestDestAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		zone string
+	}{
+		{name: "link-local with zone", ip: "fe80::1", zone: "eth0"},
+		{name: "ipv6 no zone", ip: "2001:db8::1", zone: ""},
+		{name: "ipv4 no zone", ip: "192.0.2.1", zone: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("bad test IP %q", tt.ip)
+			}
+			addr := destAddr(ip, tt.zone)
+			if addr.Zone != tt.zone {
+				t.Errorf("destAddr zone = %q, want %q", addr.Zone, tt.zone)
+			}
+			if !addr.IP.Equal(ip) {
+				t.Errorf("destAddr IP = %v, want %v", addr.IP, ip)
+			}
+		})
+	}
+}
+
+// TestPeerMatchesIP verifies that a link-local reply carrying a zone still
+// matches the zone-less target IP used by the receive loop.
+func TestPeerMatchesIP(t *testing.T) {
+	target := net.ParseIP("fe80::1")
+	if target == nil {
+		t.Fatal("bad target IP")
+	}
+	tests := []struct {
+		name string
+		peer net.Addr
+		want bool
+	}{
+		{name: "zoned peer matches", peer: &net.IPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0"}, want: true},
+		{name: "zoneless peer matches", peer: &net.IPAddr{IP: net.ParseIP("fe80::1")}, want: true},
+		{name: "different ip does not match", peer: &net.IPAddr{IP: net.ParseIP("fe80::2"), Zone: "eth0"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := peerMatchesIP(tt.peer, target); got != tt.want {
+				t.Errorf("peerMatchesIP(%v, %v) = %v, want %v", tt.peer, target, got, tt.want)
 			}
 		})
 	}
