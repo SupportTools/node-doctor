@@ -193,6 +193,14 @@ prometheusRule:
       thresholdPercent: 90
     apiServerLatencyHigh:
       for: 10m
+    # IPv6 misconfiguration alert - fires on any active IPv6* node condition
+    # (sysctl, default route, link-local, global address, RA, firewall blackhole).
+    # Carries address_family=ipv6 so Alertmanager can route IPv6 issues separately.
+    ipv6Misconfigured:
+      enabled: true
+      for: 10m
+      labels: {}
+      annotations: {}
 
   # Informational alerts - for awareness
   info:
