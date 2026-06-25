@@ -253,6 +253,15 @@ func main() {
 		det.SetRemediatorRegistry(remediatorRegistry)
 	}
 
+	// Wire config hot-reload self-metrics. The detector owns the reload
+	// coordinator but only sees exporters via types.Exporter; pass a closure over
+	// the concrete Prometheus exporter's RecordConfigReload. Only wired when the
+	// Prometheus exporter is present (nil otherwise).
+	if promExporter != nil {
+		det.SetReloadMetricsRecorder(promExporter.RecordConfigReload)
+		log.Printf("[INFO] Config hot-reload self-metrics wired to Prometheus exporter")
+	}
+
 	// Start the detector
 	log.Printf("[INFO] Starting detector...")
 	if err := det.Start(); err != nil {

@@ -272,6 +272,32 @@ func (e *PrometheusExporter) RecordMonitorCycle(monitorName string, duration tim
 	e.metrics.MonitorCycleLastTimestamp.WithLabelValues(e.nodeName, monitorName).Set(float64(time.Now().Unix()))
 }
 
+// RecordConfigReload records self-metrics for one completed config hot-reload
+// attempt:
+//   - increments ConfigReloadsTotal with result="success" or result="failure"
+//   - sets ConfigReloadLastSuccess to 1 (success) or 0 (failure)
+//   - sets ConfigReloadLastTimestamp to the current time (last-attempt heartbeat,
+//     updated on both success and failure)
+//   - observes the reload duration into ConfigReloadDuration
+//
+// It implements the reload.ReloadMetricsRecorder signature so the reload
+// coordinator can push reload outcomes here via an injected closure without
+// importing this package. Safe to call directly and concurrently (the
+// underlying prometheus vecs are goroutine-safe).
+func (e *PrometheusExporter) RecordConfigReload(success bool, duration time.Duration) {
+	result := "failure"
+	lastSuccess := 0.0
+	if success {
+		result = "success"
+		lastSuccess = 1.0
+	}
+
+	e.metrics.ConfigReloadsTotal.WithLabelValues(e.nodeName, result).Inc()
+	e.metrics.ConfigReloadLastSuccess.WithLabelValues(e.nodeName).Set(lastSuccess)
+	e.metrics.ConfigReloadLastTimestamp.WithLabelValues(e.nodeName).Set(float64(time.Now().Unix()))
+	e.metrics.ConfigReloadDuration.WithLabelValues(e.nodeName).Observe(duration.Seconds())
+}
+
 // recordExportHealth updates the exporter-health self-metrics for the
 // "prometheus" exporter after an export attempt:
 //   - on success: ExporterHealthy=1, ExporterLastSuccessTimestamp=now, and the

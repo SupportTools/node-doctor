@@ -38,6 +38,19 @@ type Metrics struct {
 	ExporterLastSuccessTimestamp *prometheus.GaugeVec
 	ExporterConsecutiveFailures  *prometheus.GaugeVec
 
+	// Config hot-reload self-metrics. These make the configuration hot-reload
+	// path observable so operators can alert on reload failures or a reload
+	// loop that has gone quiet. All are keyed by the node label only.
+	//
+	// Timestamp semantics: ConfigReloadLastTimestamp records the time of the most
+	// recent reload ATTEMPT (success or failure), updated at the end of every
+	// attempt. Pair it with ConfigReloadLastSuccess (1 if that most-recent attempt
+	// succeeded, 0 if it failed) to distinguish "reloaded recently and it worked"
+	// from "tried recently and it failed".
+	ConfigReloadsTotal        *prometheus.CounterVec
+	ConfigReloadLastTimestamp *prometheus.GaugeVec
+	ConfigReloadLastSuccess   *prometheus.GaugeVec
+
 	// Network latency gauge metrics
 	GatewayLatencySeconds         *prometheus.GaugeVec
 	PeerLatencySeconds            *prometheus.GaugeVec
@@ -72,6 +85,10 @@ type Metrics struct {
 	PeerLatencyHistogram      *prometheus.HistogramVec
 	DNSLatencyHistogram       *prometheus.HistogramVec
 	APIServerLatencyHistogram *prometheus.HistogramVec
+
+	// ConfigReloadDuration observes the wall-clock time of each completed config
+	// reload attempt (performReload), keyed by the node label.
+	ConfigReloadDuration *prometheus.HistogramVec
 }
 
 // NewMetrics creates a new Metrics instance with all metric definitions
@@ -277,6 +294,40 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				ConstLabels: labels,
 			},
 			[]string{"node", "exporter"},
+		),
+
+		// Config hot-reload self-metrics
+		ConfigReloadsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reloads_total",
+				Help:        "Total number of completed configuration reload attempts, partitioned by result (success/failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "result"},
+		),
+
+		ConfigReloadLastTimestamp: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reload_last_timestamp_seconds",
+				Help:        "Unix timestamp (seconds) of the most recent configuration reload attempt (success or failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
+		ConfigReloadLastSuccess: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reload_last_success",
+				Help:        "Whether the most recent configuration reload attempt succeeded (1 = success, 0 = failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
 		),
 
 		// Network latency gauge metrics
@@ -524,6 +575,18 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			},
 			[]string{"node"},
 		),
+
+		ConfigReloadDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reload_duration_seconds",
+				Help:        "Duration of configuration reload attempts in seconds",
+				ConstLabels: labels,
+				Buckets:     prometheus.DefBuckets,
+			},
+			[]string{"node"},
+		),
 	}
 
 	return m, nil
@@ -549,8 +612,12 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.ExporterHealthy,
 		m.ExporterLastSuccessTimestamp,
 		m.ExporterConsecutiveFailures,
+		m.ConfigReloadsTotal,
+		m.ConfigReloadLastTimestamp,
+		m.ConfigReloadLastSuccess,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
+		m.ConfigReloadDuration,
 		// Network latency metrics
 		m.GatewayLatencySeconds,
 		m.PeerLatencySeconds,
@@ -603,8 +670,12 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.ExporterHealthy,
 		m.ExporterLastSuccessTimestamp,
 		m.ExporterConsecutiveFailures,
+		m.ConfigReloadsTotal,
+		m.ConfigReloadLastTimestamp,
+		m.ConfigReloadLastSuccess,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
+		m.ConfigReloadDuration,
 		// Network latency metrics
 		m.GatewayLatencySeconds,
 		m.PeerLatencySeconds,

@@ -810,3 +810,73 @@ func TestRemediatorCircuitBreakerStateGauge(t *testing.T) {
 		t.Errorf("%s = %v, want 0 (closed)", metricName, got)
 	}
 }
+
+func TestRecordConfigReload(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := NewMetrics("test", "", nil)
+	if err != nil {
+		t.Fatalf("failed to create metrics: %v", err)
+	}
+	if err := metrics.Register(registry); err != nil {
+		t.Fatalf("failed to register metrics: %v", err)
+	}
+
+	e := &PrometheusExporter{
+		nodeName: "test-node",
+		registry: registry,
+		metrics:  metrics,
+	}
+
+	nodeLabels := map[string]string{"node": "test-node"}
+
+	// A successful reload: LastSuccess=1, timestamp>0, success counter=1,
+	// duration histogram observed once.
+	e.RecordConfigReload(true, 25*time.Millisecond)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	if got, ok := gaugeValue(families, "test_config_reload_last_success", nodeLabels); !ok || got != 1 {
+		t.Errorf("config_reload_last_success after success = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := gaugeValue(families, "test_config_reload_last_timestamp_seconds", nodeLabels); !ok || got <= 0 {
+		t.Errorf("config_reload_last_timestamp_seconds after success = %v (found=%v), want > 0", got, ok)
+	}
+	if got, ok := counterValue(families, "test_config_reloads_total", map[string]string{
+		"node": "test-node", "result": "success",
+	}); !ok || got != 1 {
+		t.Errorf("config_reloads_total{result=success} = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := histogramSampleCount(families, "test_config_reload_duration_seconds", nodeLabels); !ok || got != 1 {
+		t.Errorf("config_reload_duration_seconds sample count = %v (found=%v), want 1", got, ok)
+	}
+
+	// A failed reload: LastSuccess flips to 0, failure counter=1, timestamp still
+	// advances (last-attempt heartbeat), duration histogram observed again.
+	e.RecordConfigReload(false, 10*time.Millisecond)
+
+	families, err = registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	if got, ok := gaugeValue(families, "test_config_reload_last_success", nodeLabels); !ok || got != 0 {
+		t.Errorf("config_reload_last_success after failure = %v (found=%v), want 0", got, ok)
+	}
+	if got, ok := counterValue(families, "test_config_reloads_total", map[string]string{
+		"node": "test-node", "result": "failure",
+	}); !ok || got != 1 {
+		t.Errorf("config_reloads_total{result=failure} = %v (found=%v), want 1", got, ok)
+	}
+	// Success counter must be unchanged.
+	if got, ok := counterValue(families, "test_config_reloads_total", map[string]string{
+		"node": "test-node", "result": "success",
+	}); !ok || got != 1 {
+		t.Errorf("config_reloads_total{result=success} after failure = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := histogramSampleCount(families, "test_config_reload_duration_seconds", nodeLabels); !ok || got != 2 {
+		t.Errorf("config_reload_duration_seconds sample count = %v (found=%v), want 2", got, ok)
+	}
+}

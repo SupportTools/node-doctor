@@ -17,12 +17,22 @@ type ReloadCallback func(ctx context.Context, newConfig *types.NodeDoctorConfig,
 // EventEmitter emits reload status events.
 type EventEmitter func(severity types.EventSeverity, reason, message string)
 
+// ReloadMetricsRecorder records the outcome of a completed reload attempt.
+// success is true when the reload applied (or determined there were no changes)
+// without error, false when any step failed. duration is the wall-clock time
+// spent in performReload. It is invoked exactly once per reload attempt.
+//
+// This is an injected hook (mirroring EventEmitter) so the reload package never
+// imports the prometheus exporter, avoiding coupling/cycles.
+type ReloadMetricsRecorder func(success bool, duration time.Duration)
+
 // ReloadCoordinator orchestrates configuration reload operations.
 type ReloadCoordinator struct {
 	configPath       string
 	currentConfig    *types.NodeDoctorConfig
 	reloadCallback   ReloadCallback
 	eventEmitter     EventEmitter
+	metricsRecorder  ReloadMetricsRecorder
 	validator        *ConfigValidator
 	mu               sync.Mutex
 	reloadInProgress bool
@@ -82,8 +92,20 @@ func (rc *ReloadCoordinator) TriggerReload(ctx context.Context) error {
 }
 
 // performReload executes the reload process.
-func (rc *ReloadCoordinator) performReload(ctx context.Context) error {
+//
+// The named return value err is inspected by a deferred closure that records
+// reload self-metrics exactly once, on EVERY return path (load error, validation
+// error, no-changes success, callback error, full success). success is derived
+// from err == nil at the moment of return, so adding a new early return cannot
+// silently skip metric recording.
+func (rc *ReloadCoordinator) performReload(ctx context.Context) (err error) {
 	startTime := time.Now()
+
+	// Record reload self-metrics exactly once when performReload returns,
+	// regardless of which path produced the result.
+	defer func() {
+		rc.recordMetrics(err == nil, time.Since(startTime))
+	}()
 
 	// Emit start event
 	rc.emitEvent(types.EventInfo, "ConfigReloadStarted", "Configuration reload initiated")
@@ -184,6 +206,20 @@ func (rc *ReloadCoordinator) buildReloadStats(diff *ConfigDiff, duration time.Du
 func (rc *ReloadCoordinator) emitEvent(severity types.EventSeverity, reason, message string) {
 	if rc.eventEmitter != nil {
 		rc.eventEmitter(severity, reason, message)
+	}
+}
+
+// SetMetricsRecorder sets (or clears) the reload self-metrics recorder. It is
+// nil-safe: passing nil disables metric recording. Safe to call before the
+// coordinator is used to trigger reloads.
+func (rc *ReloadCoordinator) SetMetricsRecorder(recorder ReloadMetricsRecorder) {
+	rc.metricsRecorder = recorder
+}
+
+// recordMetrics invokes the metrics recorder, if one is set.
+func (rc *ReloadCoordinator) recordMetrics(success bool, duration time.Duration) {
+	if rc.metricsRecorder != nil {
+		rc.metricsRecorder(success, duration)
 	}
 }
 
