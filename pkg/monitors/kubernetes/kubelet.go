@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -310,6 +311,167 @@ func (c *defaultKubeletClient) addAuthHeader(req *http.Request) error {
 	return nil
 }
 
+// isLoopbackHost reports whether host (which may be a bare host or include a
+// port, e.g. "127.0.0.1:10248" or "[::1]:10250") refers to a recognized
+// loopback address: the literal "localhost", any address in 127.0.0.0/8, or
+// the IPv6 loopback "::1". Non-loopback hosts (including hostnames that merely
+// resolve to a loopback at runtime) return false so they are never rewritten.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+
+	// Strip a port if present. SplitHostPort fails for bare hosts, in which
+	// case we fall back to the original value.
+	h := host
+	if hostOnly, _, err := net.SplitHostPort(host); err == nil {
+		h = hostOnly
+	}
+
+	// "localhost" is a recognized loopback name; resolution may yield either
+	// or both families, which is exactly the ambiguity this fallback handles.
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+
+	return false
+}
+
+// loopbackFallbackURL inspects rawURL and, when its host is a recognized
+// loopback (localhost, 127.0.0.0/8, or ::1), returns an equivalent URL whose
+// host has been rewritten to the IPv6 loopback "[::1]" (or, when the original
+// host was already the IPv6 loopback, to the IPv4 loopback "127.0.0.1").
+// Scheme, port, path, query, and userinfo are preserved. The boolean result is
+// true only when a rewrite was performed; for non-loopback hosts (or parse
+// failures) it returns ("", false) so callers never rewrite a non-loopback
+// host.
+func loopbackFallbackURL(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+
+	host := parsed.Hostname()
+	if host == "" || !isLoopbackHost(host) {
+		return "", false
+	}
+
+	// Determine the opposite-family loopback target.
+	var target string
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		// Original host is the IPv6 loopback (::1) -> fall back to IPv4.
+		target = "127.0.0.1"
+	} else {
+		// Original host is localhost or an IPv4 loopback -> fall back to IPv6.
+		target = "::1"
+	}
+
+	// Preserve the port if one was specified. net.JoinHostPort correctly
+	// brackets IPv6 literals (e.g. "[::1]:10248").
+	if port := parsed.Port(); port != "" {
+		parsed.Host = net.JoinHostPort(target, port)
+	} else if target == "::1" {
+		parsed.Host = "[::1]"
+	} else {
+		parsed.Host = target
+	}
+
+	return parsed.String(), true
+}
+
+// isConnectionLevelError reports whether err represents a transport/dial-level
+// failure (connection refused, no route to host, dial failure, etc.) as
+// opposed to a successful HTTP response carrying an error status code. Only
+// connection-level failures should trigger the IPv6 loopback fallback: an HTTP
+// 4xx/5xx means kubelet answered and is therefore reachable on the probed
+// loopback.
+//
+// This is intentionally conservative. It treats *net.OpError (dial/read/write
+// transport failures, which wrap syscall errors like ECONNREFUSED and
+// EHOSTUNREACH) as connection-level. It explicitly does NOT treat context
+// cancellation or deadline-driven timeouts as connection-level, since those
+// usually indicate the request as a whole ran out of time rather than a
+// wrong-family loopback.
+func isConnectionLevelError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Deadline/cancellation are not connection-level: a slow-but-reachable
+	// kubelet should not cause us to silently probe the other family.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	// A *net.OpError on the "dial" op is the canonical signal for
+	// connection-refused / no-route style failures. errors.As unwraps the
+	// *url.Error that http.Client.Do returns.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		// A dial-phase failure is a connection-level error. Read/write phase
+		// OpErrors also indicate the transport could not complete, which is a
+		// reasonable signal to retry the alternate loopback.
+		return true
+	}
+
+	return false
+}
+
+// doRequestWithLoopbackFallback executes req against c.client. If the request
+// fails with a connection-level error (see isConnectionLevelError) and the
+// request targets a recognized loopback host, it rebuilds the request against
+// the opposite-family loopback and retries exactly once. It returns the
+// response from whichever attempt succeeded and a boolean indicating whether
+// the fallback path was taken.
+//
+// On a successful primary attempt no second request is made and usedFallback
+// is false. The label argument ("healthz" or "metrics") is used only for
+// logging.
+func (c *defaultKubeletClient) doRequestWithLoopbackFallback(req *http.Request, label string) (resp *http.Response, usedFallback bool, err error) {
+	resp, err = c.client.Do(req)
+	if err == nil {
+		return resp, false, nil
+	}
+
+	// Only fall back on connection-level (dial) failures, and only when the
+	// original host is a recognized loopback we are allowed to rewrite.
+	if !isConnectionLevelError(err) {
+		return nil, false, err
+	}
+
+	fallbackURL, ok := loopbackFallbackURL(req.URL.String())
+	if !ok {
+		return nil, false, err
+	}
+
+	primaryErr := err
+
+	// Rebuild the request against the alternate loopback, preserving method,
+	// context, and headers (including any auth header already applied).
+	fbReq, buildErr := http.NewRequestWithContext(req.Context(), req.Method, fallbackURL, nil)
+	if buildErr != nil {
+		// Could not build the fallback request; surface the original error.
+		return nil, false, primaryErr
+	}
+	fbReq.Header = req.Header.Clone()
+
+	log.Printf("[INFO] kubelet %s: loopback probe to %s failed (%v), retrying %s",
+		label, req.URL.Host, primaryErr, fbReq.URL.Host)
+
+	resp, err = c.client.Do(fbReq)
+	if err != nil {
+		// Both families failed. Return the fallback error so the message
+		// reflects the most recent (alternate-loopback) attempt.
+		return nil, true, err
+	}
+
+	return resp, true, nil
+}
+
 // CheckHealth performs a health check against the kubelet healthz endpoint.
 func (c *defaultKubeletClient) CheckHealth(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.healthzURL, nil)
@@ -322,7 +484,7 @@ func (c *defaultKubeletClient) CheckHealth(ctx context.Context) error {
 		return fmt.Errorf("failed to add authentication header: %w", err)
 	}
 
-	resp, err := c.client.Do(req)
+	resp, _, err := c.doRequestWithLoopbackFallback(req, "healthz")
 	if err != nil {
 		return fmt.Errorf("health check request failed: %w", err)
 	}
@@ -350,7 +512,7 @@ func (c *defaultKubeletClient) GetMetrics(ctx context.Context) (*KubeletMetrics,
 		return nil, fmt.Errorf("failed to add authentication header: %w", err)
 	}
 
-	resp, err := c.client.Do(req)
+	resp, _, err := c.doRequestWithLoopbackFallback(req, "metrics")
 	if err != nil {
 		return nil, fmt.Errorf("metrics request failed: %w", err)
 	}
