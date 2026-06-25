@@ -1450,6 +1450,70 @@ func TestCheckCustomQueries_AAAAScopedAddresses(t *testing.T) {
 	}
 }
 
+// TestCheckCustomQueries_AAAARecordTypeInEventMessage asserts that events
+// emitted for AAAA custom queries name the record type ("AAAA") in their
+// message, so operators can tell IPv6 query results apart from A in logs/
+// events. Covers the failure, no-records, and high-latency event paths.
+// Spawned from Task #17201 (AAAA probe path).
+func TestCheckCustomQueries_AAAARecordTypeInEventMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupMock  func(*mockResolver)
+		wantReason string
+	}{
+		{
+			name:       "failure event names AAAA",
+			setupMock:  func(m *mockResolver) { m.ipErrors["ip6|v6.example.com"] = fmt.Errorf("no such host") },
+			wantReason: "CustomDNSQueryFailed",
+		},
+		{
+			name:       "no-records event names AAAA",
+			setupMock:  func(m *mockResolver) { m.ipResponses["ip6|v6.example.com"] = []net.IP{} },
+			wantReason: "CustomDNSNoRecords",
+		},
+		{
+			name: "high-latency event names AAAA",
+			setupMock: func(m *mockResolver) {
+				m.ipResponses["ip6|v6.example.com"] = []net.IP{net.ParseIP("2606:4700::1")}
+				m.latencies["v6.example.com"] = 2 * time.Second
+			},
+			wantReason: "HighCustomDNSLatency",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockResolver()
+			tt.setupMock(mock)
+
+			monitor := &DNSMonitor{
+				config: &DNSMonitorConfig{
+					CustomQueries:    []DNSQuery{{Domain: "v6.example.com", RecordType: "AAAA"}},
+					LatencyThreshold: 500 * time.Millisecond,
+				},
+				resolver: mock,
+			}
+
+			status := types.NewStatus("test-dns")
+			monitor.checkCustomQueries(context.Background(), status)
+
+			var found bool
+			for _, e := range status.Events {
+				if e.Reason != tt.wantReason {
+					continue
+				}
+				found = true
+				if !strings.Contains(e.Message, "AAAA") {
+					t.Errorf("%s message %q does not contain the record type \"AAAA\"", tt.wantReason, e.Message)
+				}
+			}
+			if !found {
+				t.Fatalf("expected an event with reason %s; got %d events", tt.wantReason, len(status.Events))
+			}
+		})
+	}
+}
+
 // TestParseDNSConfigTestEachNameserver tests parsing of testEachNameserver field.
 func TestParseDNSConfigTestEachNameserver(t *testing.T) {
 	tests := []struct {
