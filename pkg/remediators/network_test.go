@@ -298,6 +298,59 @@ func TestNetworkRemediator_FlushDNS(t *testing.T) {
 	}
 }
 
+// TestNetworkRemediator_FlushDNS_CoversIPv6 verifies that the DNS flush is
+// address-family agnostic and therefore covers IPv6 (AAAA) records (Task
+// #17221). resolvectl flush-caches / systemd-resolve --flush-caches clear the
+// resolver's entire cache; the remediator must NOT pass any family-restricting
+// flag (e.g. -4/-6/--type) that would leave AAAA entries cached. This asserts
+// the exact flush command and the absence of any such restriction.
+func TestNetworkRemediator_FlushDNS_CoversIPv6(t *testing.T) {
+	for _, method := range []string{"resolvectl", "systemd-resolve"} {
+		t.Run(method, func(t *testing.T) {
+			mock := &mockNetworkExecutor{dnsFlushMethod: method}
+			config := NetworkConfig{
+				Operation:     NetworkFlushDNS,
+				VerifyTimeout: 2 * time.Second,
+			}
+			r, err := NewNetworkRemediator(config)
+			if err != nil {
+				t.Fatalf("NewNetworkRemediator: %v", err)
+			}
+			r.networkExecutor = mock
+
+			if err := r.Remediate(context.Background(), types.Problem{}); err != nil {
+				t.Fatalf("flush-dns remediation failed: %v", err)
+			}
+
+			var flushCmd string
+			for _, c := range mock.executedCommands {
+				if strings.HasPrefix(c, method) {
+					flushCmd = c
+				}
+			}
+			if flushCmd == "" {
+				t.Fatalf("expected a %s flush command; executed: %v", method, mock.executedCommands)
+			}
+			// Full-cache flush, no per-family restriction.
+			var wantCmd string
+			switch method {
+			case "resolvectl":
+				wantCmd = "resolvectl flush-caches"
+			case "systemd-resolve":
+				wantCmd = "systemd-resolve --flush-caches"
+			}
+			if flushCmd != wantCmd {
+				t.Errorf("flush command = %q, want %q (a family-agnostic full-cache flush)", flushCmd, wantCmd)
+			}
+			for _, restrict := range []string{"-4", "-6", "--type", "ipv4", "ipv6"} {
+				if strings.Contains(flushCmd, restrict) {
+					t.Errorf("flush command %q contains family/type restriction %q; AAAA entries would not be cleared", flushCmd, restrict)
+				}
+			}
+		})
+	}
+}
+
 // TestNetworkRemediator_RestartInterface tests interface restart.
 func TestNetworkRemediator_RestartInterface(t *testing.T) {
 	config := NetworkConfig{

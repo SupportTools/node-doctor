@@ -214,6 +214,11 @@ func (r *NetworkRemediator) executeOperation(ctx context.Context) error {
 }
 
 // flushDNS flushes the DNS resolver cache.
+//
+// The flush is address-family agnostic: both resolvectl flush-caches and
+// systemd-resolve --flush-caches clear the resolver's ENTIRE cache, including
+// AAAA (IPv6) records, not just A (IPv4). There is therefore no separate
+// IPv6 DNS-flush operation — this one covers both families (see Task #17221).
 func (r *NetworkRemediator) flushDNS(ctx context.Context) error {
 	r.logInfof("Flushing DNS cache")
 
