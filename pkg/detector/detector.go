@@ -133,6 +133,9 @@ type MonitorFactory interface {
 type RemediationExecutor interface {
 	// Remediate executes the named remediator strategy for the given problem.
 	Remediate(ctx context.Context, remediatorType string, problem types.Problem) error
+	// RemediateWithStrategies attempts an ordered list of remediator strategy
+	// types, stopping at the first one that succeeds (first-success-wins).
+	RemediateWithStrategies(ctx context.Context, strategyTypes []string, problem types.Problem) error
 	// IsDryRun reports whether the executor is running in dry-run mode.
 	IsDryRun() bool
 }
@@ -513,13 +516,22 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 
 	remCfg := monitorCfg.Remediation
 
+	// Build the ordered list of remediation strategy types to attempt.
+	// When Strategies is non-empty, dispatch each nested strategy in order
+	// (first-success-wins). Otherwise fall back to the single Strategy so that
+	// existing single-strategy configs behave exactly as before.
+	strategyTypes := buildStrategyList(remCfg)
+	if len(strategyTypes) == 0 {
+		return
+	}
+
 	for _, cond := range status.Conditions {
 		if cond.Status != types.ConditionFalse {
 			continue
 		}
 
 		problem := types.Problem{
-			Type:       remCfg.Strategy,
+			Type:       strategyTypes[0],
 			Resource:   cond.Type,
 			Severity:   types.ProblemWarning,
 			Message:    cond.Message,
@@ -531,16 +543,47 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 			},
 		}
 
-		if err := registry.Remediate(pd.ctx, remCfg.Strategy, problem); err != nil {
-			log.Printf("[WARN] Remediation failed for %s/%s (strategy=%s): %v",
-				status.Source, cond.Type, remCfg.Strategy, err)
+		if err := registry.RemediateWithStrategies(pd.ctx, strategyTypes, problem); err != nil {
+			log.Printf("[WARN] Remediation failed for %s/%s (strategies=%v): %v",
+				status.Source, cond.Type, strategyTypes, err)
 			pd.stats.IncrementRemediationsFailed()
 		} else {
-			log.Printf("[INFO] Remediation triggered for %s/%s (strategy=%s, dry-run=%v)",
-				status.Source, cond.Type, remCfg.Strategy, registry.IsDryRun())
+			log.Printf("[INFO] Remediation triggered for %s/%s (strategies=%v, dry-run=%v)",
+				status.Source, cond.Type, strategyTypes, registry.IsDryRun())
 			pd.stats.IncrementRemediationsTriggered()
 		}
 	}
+}
+
+// buildStrategyList returns the ordered list of remediation strategy types to
+// attempt for a monitor's remediation config.
+//
+// When remCfg.Strategies is non-empty, the nested strategies are dispatched in
+// order (each strategy's Strategy field, skipping empties). Otherwise it falls
+// back to the single remCfg.Strategy, preserving backward compatibility:
+// a config with only Strategy set yields []string{Strategy}.
+func buildStrategyList(remCfg *types.MonitorRemediationConfig) []string {
+	if remCfg == nil {
+		return nil
+	}
+
+	if len(remCfg.Strategies) > 0 {
+		strategies := make([]string, 0, len(remCfg.Strategies))
+		for _, s := range remCfg.Strategies {
+			if s.Strategy != "" {
+				strategies = append(strategies, s.Strategy)
+			}
+		}
+		if len(strategies) > 0 {
+			return strategies
+		}
+	}
+
+	if remCfg.Strategy != "" {
+		return []string{remCfg.Strategy}
+	}
+
+	return nil
 }
 
 // fanInFromMonitor reads statuses from a monitor and forwards them to the main status channel

@@ -655,6 +655,51 @@ func (r *RemediatorRegistry) Remediate(ctx context.Context, remediatorType strin
 	return nil
 }
 
+// RemediateWithStrategies attempts an ordered list of remediation strategy
+// types, stopping at the first one that succeeds (first-success-wins).
+//
+// Each strategy type is dispatched through Remediate, so every per-strategy
+// safety check (circuit breaker, rate limit, cooldown, max attempts, dry-run)
+// is applied identically to single-strategy remediation. The problem's Type
+// field is set to the strategy being attempted before each call so that
+// history, logging, and problem keys reflect the actual strategy used.
+//
+// Behavior:
+//   - Returns nil as soon as any strategy succeeds.
+//   - If a strategy fails, the next strategy in the list is attempted.
+//   - If all strategies fail, the last error is returned (wrapped with the
+//     count of attempted strategies for context).
+//   - An empty strategyTypes list returns an error (nothing to do).
+//
+// A list with a single strategy behaves exactly like calling Remediate once,
+// preserving backward compatibility for existing single-strategy configs.
+func (r *RemediatorRegistry) RemediateWithStrategies(ctx context.Context, strategyTypes []string, problem types.Problem) error {
+	if len(strategyTypes) == 0 {
+		return fmt.Errorf("no remediation strategies provided")
+	}
+
+	var lastErr error
+	for i, strategyType := range strategyTypes {
+		// Set the problem type to the strategy being attempted so history,
+		// logging, and problem keys reflect the actual strategy used.
+		attemptProblem := problem
+		attemptProblem.Type = strategyType
+
+		err := r.Remediate(ctx, strategyType, attemptProblem)
+		if err == nil {
+			// First success wins - stop here.
+			return nil
+		}
+
+		lastErr = err
+		r.logInfof("Remediation strategy %d/%d (%s) failed, trying next: %v",
+			i+1, len(strategyTypes), strategyType, err)
+	}
+
+	return fmt.Errorf("all %d remediation strategies failed, last error: %w",
+		len(strategyTypes), lastErr)
+}
+
 // checkCircuitBreaker checks if the circuit breaker allows remediation.
 // This must be called with the lock held.
 func (r *RemediatorRegistry) checkCircuitBreaker() error {
