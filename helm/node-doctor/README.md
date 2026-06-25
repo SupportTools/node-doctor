@@ -91,6 +91,44 @@ The following table lists the configurable parameters of the Node Doctor chart a
 | `serviceMonitor.interval` | Scrape interval | `30s` |
 | `serviceMonitor.scrapeTimeout` | Scrape timeout | `10s` |
 
+### IPv6 / Dual-Stack
+
+Node Doctor ships four **detection-only** IPv6 monitors (they never modify host
+settings) and binds its HTTP/metrics endpoints dual-stack by default.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `monitors.ipv6Sysctl.enabled` | Detect `disable_ipv6` sysctl set when IPv6 is expected on | `true` |
+| `monitors.ipv6Route.enabled` | Detect a missing IPv6 default route when expected | `true` |
+| `monitors.ipv6Neighbor.enabled` | Detect missing RA/SLAAC address (link-local/global) and `accept_ra` disabled | `true` |
+| `monitors.ipv6Firewall.enabled` | Sanity-check ip6tables/nftables for an IPv6 black-hole (detection only) | `true` |
+| `monitors.ipv6Sysctl.expectIPv6Enabled` | Treat IPv6-disabled as a problem (shared key across the IPv6 monitors) | `true` |
+| `monitors.ipv6Firewall.backend` | Firewall backend to read: `auto`, `ip6tables`, or `nft` | `auto` |
+| `exporters.http.bindAddress` | Listen address; `::` = dual-stack (IPv4+IPv6), falls back to `0.0.0.0` if the kernel has IPv6 disabled | `"::"` |
+
+These monitors **degrade gracefully on IPv4-only nodes**: a missing IPv6 stack is
+reported as a warning, not an error, and the conditions stay healthy when IPv6
+cannot be confirmed. On purely IPv4 clusters you can silence them by setting
+`expectIPv6Enabled: false` (or `enabled: false`) on each:
+
+```yaml
+monitors:
+  ipv6Sysctl:
+    enabled: false
+  ipv6Route:
+    enabled: false
+  ipv6Neighbor:
+    enabled: false
+  ipv6Firewall:
+    enabled: false
+```
+
+Network metrics (`gateway_latency_seconds`, `peer_latency_seconds`,
+`peer_reachable`, `dns_latency_seconds`) carry an `address_family` label
+(`ipv4`/`ipv6`/`unknown`) so dashboards and alerts can distinguish the families;
+the bundled PrometheusRule alerts (`prometheusRule.enabled`) include a
+`NodeDoctorIPv6Misconfigured` alert and per-family peer alerts.
+
 ## Security Considerations
 
 Node Doctor requires privileged access to monitor system health effectively. This includes:
