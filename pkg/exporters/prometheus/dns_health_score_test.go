@@ -74,24 +74,18 @@ func TestDNSHealthScore_GaugeValueRecording(t *testing.T) {
 // TestDNSHealthScore_LabelCorrectness verifies that the node label reflects the
 // configured node name and the nameserver label contains the nameserver address.
 func TestDNSHealthScore_LabelCorrectness(t *testing.T) {
-	port := freePort(t)
-	cfg := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
 	settings := &types.GlobalSettings{NodeName: "my-custom-node"}
 
-	exp, err := NewPrometheusExporter(cfg, settings)
+	exp, err := newEphemeralExporter(settings)
 	if err != nil {
-		t.Fatalf("NewPrometheusExporter: %v", err)
+		t.Fatalf("newEphemeralExporter: %v", err)
 	}
 	ctx := context.Background()
 	if err := exp.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { exp.Stop() })
+	port := exp.BoundPort()
 	if err := waitForServerReady(fmt.Sprintf("localhost:%d", port), 5*time.Second); err != nil {
 		t.Fatalf("server not ready: %v", err)
 	}
@@ -226,26 +220,23 @@ func TestDNSHealthScore_AllInsufficientDataClearsGauges(t *testing.T) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// newStartedExporter creates and starts a PrometheusExporter on a free port
-// with namespace "test" and node name "test-node". It registers t.Cleanup to
-// stop the exporter and blocks until the server is ready.
+// newStartedExporter creates and starts a PrometheusExporter on an OS-assigned
+// ephemeral port with namespace "test" and node name "test-node". It registers
+// t.Cleanup to stop the exporter and blocks until the server is ready. The
+// returned port is the real bound port (read back via BoundPort), so there is no
+// close-then-rebind window for another process to grab — the exporter binds the
+// port exactly once.
 func newStartedExporter(t *testing.T) (*PrometheusExporter, int) {
 	t.Helper()
-	port := freePort(t)
-	cfg := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	exp, err := NewPrometheusExporter(cfg, &types.GlobalSettings{NodeName: "test-node"})
+	exp, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
-		t.Fatalf("NewPrometheusExporter: %v", err)
+		t.Fatalf("newEphemeralExporter: %v", err)
 	}
 	if err := exp.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { exp.Stop() })
+	port := exp.BoundPort()
 	if err := waitForServerReady(fmt.Sprintf("localhost:%d", port), 5*time.Second); err != nil {
 		t.Fatalf("server not ready: %v", err)
 	}

@@ -15,16 +15,7 @@ import (
 )
 
 func TestMetricsEndpoint(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -36,13 +27,14 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
 
 	// Test metrics endpoint
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}
@@ -82,16 +74,7 @@ func TestMetricsEndpoint(t *testing.T) {
 }
 
 func TestHealthEndpoint(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -103,13 +86,14 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
 
 	// Test health endpoint
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/health", port))
 	if err != nil {
 		t.Fatalf("failed to get health: %v", err)
 	}
@@ -143,16 +127,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestPrometheusFormat(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -164,7 +139,8 @@ func TestPrometheusFormat(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
@@ -203,7 +179,7 @@ func TestPrometheusFormat(t *testing.T) {
 	exporter.ExportProblem(ctx, problem)
 
 	// Get metrics
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}
@@ -266,16 +242,7 @@ func TestPrometheusFormat(t *testing.T) {
 }
 
 func TestConditionStatusGauge(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -287,7 +254,8 @@ func TestConditionStatusGauge(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
@@ -309,7 +277,7 @@ func TestConditionStatusGauge(t *testing.T) {
 	exporter.ExportStatus(ctx, status)
 
 	// Scrape and verify gauge == 1
-	body := scrapeMetrics(t, config.Port, config.Path)
+	body := scrapeMetrics(t, port, "/metrics")
 	if !strings.Contains(body, `test_condition_status{condition_type="NetworkPartitioned"`) {
 		t.Error("condition_status metric not found for NetworkPartitioned")
 	}
@@ -334,7 +302,7 @@ func TestConditionStatusGauge(t *testing.T) {
 	exporter.ExportStatus(ctx, status2)
 
 	// Scrape and verify gauge == 0
-	body = scrapeMetrics(t, config.Port, config.Path)
+	body = scrapeMetrics(t, port, "/metrics")
 	if !containsMetricWithValue(body, "test_condition_status", "NetworkPartitioned", "0") {
 		t.Error("expected condition_status=0 for NetworkPartitioned=False, but gauge did not update")
 	}
@@ -371,16 +339,7 @@ func containsMetricWithValue(body, metricName, conditionType, value string) bool
 }
 
 func TestConcurrentScrapes(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -392,7 +351,8 @@ func TestConcurrentScrapes(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
@@ -410,7 +370,7 @@ func TestConcurrentScrapes(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < numScrapes; j++ {
-				resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+				resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 				if err != nil {
 					errCh <- fmt.Errorf("scrape %d-%d failed: %w", id, j, err)
 					return
@@ -444,16 +404,7 @@ func TestConcurrentScrapes(t *testing.T) {
 }
 
 func TestServerShutdown(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -464,13 +415,14 @@ func TestServerShutdown(t *testing.T) {
 		t.Fatalf("failed to start exporter: %v", err)
 	}
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
 
 	// Verify server is running
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to connect before shutdown: %v", err)
 	}
@@ -488,23 +440,14 @@ func TestServerShutdown(t *testing.T) {
 	}
 
 	// Verify server is no longer running
-	_, err = newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	_, err = newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err == nil {
 		t.Error("expected connection to fail after shutdown")
 	}
 }
 
 func TestMetricValues(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -516,7 +459,8 @@ func TestMetricValues(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
@@ -543,7 +487,7 @@ func TestMetricValues(t *testing.T) {
 	}
 
 	// Get metrics
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to get metrics: %v", err)
 	}
@@ -610,16 +554,7 @@ func TestMetricValues(t *testing.T) {
 }
 
 func TestNameserverHealthScoreStaleMetricCleanup(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -630,7 +565,8 @@ func TestNameserverHealthScoreStaleMetricCleanup(t *testing.T) {
 	}
 	defer exporter.Stop()
 
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
@@ -647,7 +583,7 @@ func TestNameserverHealthScoreStaleMetricCleanup(t *testing.T) {
 		t.Fatalf("failed to export status round 1: %v", err)
 	}
 
-	body := scrapeMetrics(t, config.Port, config.Path)
+	body := scrapeMetrics(t, port, "/metrics")
 	if !strings.Contains(body, `nameserver="8.8.8.8"`) {
 		t.Error("round 1: expected 8.8.8.8 metric to be present")
 	}
@@ -666,7 +602,7 @@ func TestNameserverHealthScoreStaleMetricCleanup(t *testing.T) {
 		t.Fatalf("failed to export status round 2: %v", err)
 	}
 
-	body = scrapeMetrics(t, config.Port, config.Path)
+	body = scrapeMetrics(t, port, "/metrics")
 	if !strings.Contains(body, `nameserver="8.8.8.8"`) {
 		t.Error("round 2: expected 8.8.8.8 metric to still be present")
 	}
