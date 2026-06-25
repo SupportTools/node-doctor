@@ -1,0 +1,38 @@
+# KIND cluster configuration for Node Doctor dual-stack integration tests
+#
+# This configuration creates a single control-plane node cluster with
+# DUAL-STACK (IPv4 + IPv6) networking enabled. It is consumed by
+# test/integration/ipv6_kind_test.go (build tag: integration) to validate
+# that Node Doctor's IPv6/dual-stack code paths run against a real cluster
+# whose nodes advertise both IPv4 and IPv6 pod CIDRs and addresses.
+#
+# Based on test/e2e/cluster/kind-config.yaml to stay consistent with the
+# repo's existing kind usage (privileged containers, allow-privileged).
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+# Single node cluster (sufficient for dual-stack assertions)
+nodes:
+  - role: control-plane
+    # Enable privileged containers (required for Node Doctor)
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            "allow-privileged": "true"
+
+# Networking configuration: DUAL-STACK (IPv4 + IPv6)
+networking:
+  # Enable dual-stack networking. This is the key field that flips the
+  # cluster from single-stack to dual-stack; the integration test asserts
+  # on it via the kube API.
+  ipFamily: dual
+
+  # Explicit dual pod/service CIDRs (comma-separated IPv4,IPv6).
+  podSubnet: "10.244.0.0/16,fd00:10:244::/56"
+  serviceSubnet: "10.96.0.0/16,fd00:10:96::/112"
+
+  # Keep the default CNI (kindnet) which supports dual-stack.
+  disableDefaultCNI: false
