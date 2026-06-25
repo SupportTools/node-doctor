@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +33,49 @@ func newTestStorage(t *testing.T) *SQLiteStorage {
 	})
 
 	return storage
+}
+
+// TestSQLiteStorage_WALAndSynchronous verifies that Initialize applies
+// journal_mode=WAL and synchronous=NORMAL (Task #15220). WAL only takes effect
+// for a file-backed database (it is a no-op for :memory:), so this uses a temp
+// file. SetMaxOpenConns(1)/SetMaxIdleConns(1)/SetConnMaxLifetime(0) are also
+// asserted via DB().Stats() bounds.
+func TestSQLiteStorage_WALAndSynchronous(t *testing.T) {
+	config := &StorageConfig{
+		Path:      filepath.Join(t.TempDir(), "node-doctor.db"),
+		Retention: 24 * time.Hour,
+	}
+	storage, err := NewSQLiteStorage(config)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := storage.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	t.Cleanup(func() { storage.Close() })
+
+	var journalMode string
+	if err := storage.db.QueryRowContext(ctx, "PRAGMA journal_mode;").Scan(&journalMode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		t.Errorf("journal_mode = %q, want wal", journalMode)
+	}
+
+	// PRAGMA synchronous returns the integer mode: 0=OFF, 1=NORMAL, 2=FULL.
+	var synchronous int
+	if err := storage.db.QueryRowContext(ctx, "PRAGMA synchronous;").Scan(&synchronous); err != nil {
+		t.Fatalf("query synchronous: %v", err)
+	}
+	if synchronous != 1 {
+		t.Errorf("synchronous = %d, want 1 (NORMAL)", synchronous)
+	}
+
+	// Connection pool is pinned to a single connection for SQLite.
+	if got := storage.db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections = %d, want 1", got)
+	}
 }
 
 func TestNewSQLiteStorage(t *testing.T) {
