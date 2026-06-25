@@ -2,6 +2,8 @@ package prometheus
 
 import (
 	"fmt"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -878,5 +880,136 @@ func TestRecordConfigReload(t *testing.T) {
 	}
 	if got, ok := histogramSampleCount(families, "test_config_reload_duration_seconds", nodeLabels); !ok || got != 2 {
 		t.Errorf("config_reload_duration_seconds sample count = %v (found=%v), want 2", got, ok)
+	}
+}
+
+// TestSelfMetricsRegistered is the authoritative "all self-metrics registered"
+// test for task #17215. It proves the full self-metrics surface (observability
+// about node-doctor itself) is both registered in the exporter's registry and
+// actually gather-able after each metric has been recorded.
+//
+// Registry choice: it wires NewRegistry(...) — the exact constructor the
+// production exporter uses (see NewPrometheusExporter in exporter.go) — and then
+// registers the node-doctor Metrics into it via metrics.Register. This is the
+// only configuration that lets one test assert BOTH the node-doctor self-metric
+// families AND the standard go_*/process_* collector families that NewRegistry
+// adds. A namespace of "node_doctor" (the production default) is used so the
+// asserted family names carry the real production prefix, e.g.
+// node_doctor_monitor_cycles_total.
+//
+// Population: each self-metric is exercised through the same recorder method
+// production uses (RecordMonitorCycle, recordExportHealth, RecordConfigReload,
+// ObserveCircuitState). The three export-operation self-metrics
+// (export_operations_total, export_errors_total, export_duration_seconds) have
+// no single dedicated recorder, so they are populated directly via
+// WithLabelValues(...).Inc()/Observe() to yield at least one series each.
+func TestSelfMetricsRegistered(t *testing.T) {
+	const (
+		namespace = "node_doctor"
+		nodeName  = "test-node"
+		exporter  = "prometheus"
+	)
+
+	// Use the production registry constructor so go_*/process_* collectors are
+	// present, then register node-doctor metrics into it exactly as the exporter
+	// does.
+	registry := NewRegistry(prometheus.Labels{})
+	metrics, err := NewMetrics(namespace, "", nil)
+	if err != nil {
+		t.Fatalf("NewMetrics() error: %v", err)
+	}
+	if err := metrics.Register(registry); err != nil {
+		t.Fatalf("metrics.Register() error: %v", err)
+	}
+
+	e := &PrometheusExporter{
+		nodeName: nodeName,
+		registry: registry,
+		metrics:  metrics,
+	}
+
+	// --- Populate every self-metric so each family yields at least one series. ---
+
+	// Monitor-cycle self-metrics: monitor_cycles_total,
+	// monitor_check_duration_seconds, monitor_cycle_last_timestamp_seconds.
+	e.RecordMonitorCycle("disk-monitor", 25*time.Millisecond, nil)
+
+	// Exporter-health self-metrics: exporter_healthy,
+	// exporter_last_success_timestamp_seconds, exporter_consecutive_failures.
+	// recordExportHealth requires the caller to hold e.mu; mirror real usage.
+	e.mu.Lock()
+	e.recordExportHealth(true)
+	e.mu.Unlock()
+
+	// Export-operation self-metrics: export_operations_total, export_errors_total,
+	// export_duration_seconds. No single recorder covers these, so drive the vecs
+	// directly to create a series in each family.
+	metrics.ExportOperationsTotal.WithLabelValues(nodeName, exporter, "status", "success").Inc()
+	metrics.ExportErrorsTotal.WithLabelValues(nodeName, exporter, "timeout").Inc()
+	metrics.ExportDuration.WithLabelValues(nodeName, exporter, "status").Observe(0.01)
+
+	// Circuit-breaker self-metric: remediator_circuit_breaker_state.
+	e.ObserveCircuitState(0)
+
+	// Config-reload self-metrics: config_reloads_total,
+	// config_reload_last_timestamp_seconds, config_reload_last_success,
+	// config_reload_duration_seconds.
+	e.RecordConfigReload(true, 15*time.Millisecond)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("registry.Gather() error: %v", err)
+	}
+
+	present := make(map[string]bool, len(families))
+	for _, mf := range families {
+		present[mf.GetName()] = true
+	}
+
+	// Full self-metrics surface, with the production node_doctor_ prefix derived
+	// from the namespace passed to NewMetrics (subsystem is empty).
+	expected := []string{
+		// monitor cycle
+		"node_doctor_monitor_cycles_total",
+		"node_doctor_monitor_cycle_last_timestamp_seconds",
+		"node_doctor_monitor_check_duration_seconds",
+		// exporter health
+		"node_doctor_exporter_healthy",
+		"node_doctor_exporter_last_success_timestamp_seconds",
+		"node_doctor_exporter_consecutive_failures",
+		// export ops
+		"node_doctor_export_operations_total",
+		"node_doctor_export_errors_total",
+		"node_doctor_export_duration_seconds",
+		// circuit breaker
+		"node_doctor_remediator_circuit_breaker_state",
+		// config reload
+		"node_doctor_config_reloads_total",
+		"node_doctor_config_reload_last_timestamp_seconds",
+		"node_doctor_config_reload_last_success",
+		"node_doctor_config_reload_duration_seconds",
+	}
+
+	var missing []string
+	for _, name := range expected {
+		if !present[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("self-metric families missing from registered/gathered set: %s", strings.Join(missing, ", "))
+	}
+
+	// Because NewRegistry wires the Go and process collectors, the runtime/process
+	// self-observability families must also be exposed. go_goroutines is present
+	// on every platform; process_* is only emitted on platforms the collector
+	// supports (Linux in CI/production).
+	if !present["go_goroutines"] {
+		t.Errorf("expected go_goroutines from the Go collector wired by NewRegistry; not present")
+	}
+	if runtime.GOOS == "linux" {
+		if !present["process_start_time_seconds"] {
+			t.Errorf("expected process_start_time_seconds from the process collector on linux; not present")
+		}
 	}
 }
