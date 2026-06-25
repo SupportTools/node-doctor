@@ -107,9 +107,13 @@ type PeerStatus struct {
 	LastSuccess      time.Time
 	ConsecutiveFails int
 	// Family is the address family observed on the most recent probe that
-	// resolved a target ("ipv4" or "ipv6"). It is captured from PingResult.Family
-	// and preserved across attempts that fail before the pinger can select a
-	// family (e.g., resolution failure with a nil pinger).
+	// resolved a target ("ipv4" or "ipv6"). It is captured from PingResult.Family.
+	// The most recent check that resolves a family always wins, so a peer re-IP
+	// (v4->v6 or v6->v4) or an overlay-test target toggle is reflected immediately.
+	// The prior family is retained only across checks where no result resolved a
+	// family at all (e.g., a pinger-level error or resolution failure before a
+	// family is selected), so a transient probe failure does not erase what we
+	// already know about the peer's address family.
 	Family string
 }
 
@@ -639,10 +643,6 @@ func (m *CNIMonitor) checkPeerConnectivity(ctx context.Context, peer Peer) *Peer
 	if exists {
 		peerStatus.ConsecutiveFails = existingStatus.ConsecutiveFails
 		peerStatus.FailureCount = existingStatus.FailureCount
-		// Carry forward the previously-observed family so a transient probe
-		// failure (which may produce no family signal) does not erase what we
-		// already know about the peer's address family.
-		peerStatus.Family = existingStatus.Family
 	}
 
 	// Determine which IP to ping based on overlay test mode
@@ -659,26 +659,44 @@ func (m *CNIMonitor) checkPeerConnectivity(ctx context.Context, peer Peer) *Peer
 		peerStatus.Reachable = false
 		peerStatus.ConsecutiveFails++
 		peerStatus.FailureCount++
+		// No results were produced, so this check resolved no family. Preserve the
+		// previously-observed family across this transient failure.
+		if exists {
+			peerStatus.Family = existingStatus.Family
+		}
 		return peerStatus
 	}
 
-	// Analyze ping results
+	// Analyze ping results.
+	//
+	// Resolve the address family from THIS check's results: a fresh probe that
+	// resolves a family always wins, so a peer re-IP (v4<->v6) or an overlay-test
+	// target toggle is reflected immediately rather than sticking to a stale
+	// value. All results in a batch target the same IP, so families are uniform;
+	// we take the first non-empty value (which also picks up failures that still
+	// resolved a family, e.g., a timeout after the listener bound). Only when no
+	// result resolved a family do we carry forward the previously-observed family
+	// so a transient probe failure does not erase what we already know.
 	successCount := 0
 	var totalRTT time.Duration
+	var freshFamily string
 
 	for _, result := range results {
-		// Capture address family from the first result that reports one. All
-		// results in a batch target the same IP, so families are uniform; we
-		// take the first non-empty value to also pick up failures that still
-		// resolved a family (e.g., timeout after the listener bound).
-		if peerStatus.Family == "" && result.Family != "" {
-			peerStatus.Family = result.Family
+		if freshFamily == "" && result.Family != "" {
+			freshFamily = result.Family
 		}
 		if result.Success {
 			successCount++
 			totalRTT += result.RTT
 			peerStatus.LastLatency = result.RTT
 		}
+	}
+
+	// Fresh family wins; fall back to the prior family only when this check
+	// resolved none.
+	peerStatus.Family = freshFamily
+	if peerStatus.Family == "" && exists {
+		peerStatus.Family = existingStatus.Family
 	}
 
 	// Majority of pings must succeed
