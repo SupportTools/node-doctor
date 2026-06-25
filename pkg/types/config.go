@@ -448,8 +448,18 @@ type RemediationCoordinationConfig struct {
 	RequestTimeoutString string        `json:"requestTimeout,omitempty" yaml:"requestTimeout,omitempty"`
 	RequestTimeout       time.Duration `json:"-" yaml:"-"`
 
-	// FallbackOnUnreachable determines behavior when controller is unreachable
-	// If true, proceed with remediation; if false, block and wait for controller
+	// FallbackOnUnreachable determines behavior when the controller is unreachable.
+	// If true, proceed with remediation; if false, block and wait for the controller.
+	//
+	// WARNING (cluster-wide remediation storm risk): Setting this to true defeats
+	// the lease coordination during a controller outage. When the controller is
+	// down, EVERY DaemonSet node's lease request "succeeds" with a fake self-
+	// approval simultaneously, so ALL nodes may remediate (reboot/drain/etc.) at
+	// the same time — a thundering-herd, cluster-wide remediation storm. The lease
+	// coordination exists precisely to serialize remediations (single node at a
+	// time) and prevent that. Defaults to false (safe: block when the controller is
+	// unreachable). Only enable when single-node-at-a-time coordination is not
+	// required and higher availability is preferred over storm protection.
 	FallbackOnUnreachable bool `json:"fallbackOnUnreachable,omitempty" yaml:"fallbackOnUnreachable,omitempty"`
 
 	// MaxRetries is the maximum number of lease request retries
