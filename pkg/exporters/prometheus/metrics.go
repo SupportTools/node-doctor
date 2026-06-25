@@ -15,6 +15,7 @@ type Metrics struct {
 	ConditionsTotal       *prometheus.CounterVec
 	ExportOperationsTotal *prometheus.CounterVec
 	ExportErrorsTotal     *prometheus.CounterVec
+	MonitorCyclesTotal    *prometheus.CounterVec
 
 	// Gauge metrics
 	ProblemsActive   *prometheus.GaugeVec
@@ -23,6 +24,11 @@ type Metrics struct {
 	Info             *prometheus.GaugeVec
 	StartTimeSeconds *prometheus.GaugeVec
 	UptimeSeconds    *prometheus.GaugeVec
+
+	// MonitorCycleLastTimestamp records the unix-seconds time of each monitor's
+	// most recently completed check cycle. Used as a per-monitor "last run"
+	// heartbeat for staleness alerting.
+	MonitorCycleLastTimestamp *prometheus.GaugeVec
 
 	// Network latency gauge metrics
 	GatewayLatencySeconds         *prometheus.GaugeVec
@@ -136,6 +142,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node", "exporter", "error_type"},
 		),
 
+		MonitorCyclesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "monitor_cycles_total",
+				Help:        "Total number of completed monitor check cycles, partitioned by result (success/error)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "monitor_name", "result"},
+		),
+
 		// Gauge metrics
 		ConditionStatus: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -201,6 +218,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				ConstLabels: labels,
 			},
 			[]string{"node"},
+		),
+
+		MonitorCycleLastTimestamp: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "monitor_cycle_last_timestamp_seconds",
+				Help:        "Unix timestamp (seconds) of each monitor's most recently completed check cycle",
+				ConstLabels: labels,
+			},
+			[]string{"node", "monitor_name"},
 		),
 
 		// Network latency gauge metrics
@@ -451,12 +479,14 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.ConditionsTotal,
 		m.ExportOperationsTotal,
 		m.ExportErrorsTotal,
+		m.MonitorCyclesTotal,
 		m.ProblemsActive,
 		m.MonitorUp,
 		m.ConditionStatus,
 		m.Info,
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
+		m.MonitorCycleLastTimestamp,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
 		// Network latency metrics
@@ -499,12 +529,14 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.ConditionsTotal,
 		m.ExportOperationsTotal,
 		m.ExportErrorsTotal,
+		m.MonitorCyclesTotal,
 		m.ProblemsActive,
 		m.MonitorUp,
 		m.ConditionStatus,
 		m.Info,
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
+		m.MonitorCycleLastTimestamp,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
 		// Network latency metrics

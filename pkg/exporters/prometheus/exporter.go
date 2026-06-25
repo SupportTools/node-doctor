@@ -170,6 +170,12 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 		return fmt.Errorf("status validation failed: %w", err)
 	}
 
+	// One ExportStatus call corresponds to one completed monitor check cycle:
+	// the monitor ran its check and emitted a status, which the detector forwards
+	// here. Time the cycle and record self-metrics at the end via RecordMonitorCycle.
+	cycleStart := time.Now()
+	cycleHadError := statusHasError(status)
+
 	timer := prometheus.NewTimer(e.metrics.ExportDuration.WithLabelValues(
 		e.nodeName, "prometheus", "status"))
 	defer timer.ObserveDuration()
@@ -209,9 +215,48 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 	e.metrics.ExportOperationsTotal.WithLabelValues(
 		e.nodeName, "prometheus", "status", "success").Inc()
 
+	// Record monitor-cycle self-metrics. status.Source is the monitor name.
+	// A status carrying any ConditionFalse is treated as a failed cycle.
+	var cycleErr error
+	if cycleHadError {
+		cycleErr = fmt.Errorf("monitor %s reported an unhealthy condition", status.Source)
+	}
+	e.RecordMonitorCycle(status.Source, time.Since(cycleStart), cycleErr)
+
 	log.Printf("[DEBUG] Exported status from %s to Prometheus", status.Source)
 
 	return nil
+}
+
+// statusHasError reports whether a status carries any condition signalling an
+// unhealthy/failed monitor cycle (ConditionFalse). Conditions that are True or
+// Unknown (e.g. the synthetic MonitorBlocked condition) do not count as errors.
+func statusHasError(status *types.Status) bool {
+	for _, cond := range status.Conditions {
+		if cond.Status == types.ConditionFalse {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordMonitorCycle records self-metrics for one completed monitor check cycle:
+//   - increments MonitorCyclesTotal with result="success" or result="error"
+//   - observes the cycle duration into MonitorCheckDuration
+//   - sets MonitorCycleLastTimestamp to the current time (a "last run" heartbeat)
+//
+// monitorName is the name of the monitor (status.Source). A non-nil err marks
+// the cycle as an error. This is the seam the detector's per-cycle path reaches
+// via ExportStatus; it is also safe to call directly.
+func (e *PrometheusExporter) RecordMonitorCycle(monitorName string, duration time.Duration, err error) {
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+
+	e.metrics.MonitorCyclesTotal.WithLabelValues(e.nodeName, monitorName, result).Inc()
+	e.metrics.MonitorCheckDuration.WithLabelValues(e.nodeName, monitorName).Observe(duration.Seconds())
+	e.metrics.MonitorCycleLastTimestamp.WithLabelValues(e.nodeName, monitorName).Set(float64(time.Now().Unix()))
 }
 
 // recordLatencyMetrics extracts latency metrics from status metadata and records them

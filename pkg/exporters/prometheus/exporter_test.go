@@ -255,6 +255,82 @@ func TestExportStatus(t *testing.T) {
 	}
 }
 
+// TestExportStatusRecordsMonitorCycle verifies that ExportStatus records the
+// per-cycle self-metrics (MonitorCyclesTotal, MonitorCheckDuration,
+// MonitorCycleLastTimestamp) and classifies the cycle result based on the
+// presence of a ConditionFalse condition.
+func TestExportStatusRecordsMonitorCycle(t *testing.T) {
+	port := freePort(t)
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      port,
+		Path:      "/metrics",
+		Namespace: "test",
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("failed to create exporter: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := exporter.Start(ctx); err != nil {
+		t.Fatalf("failed to start exporter: %v", err)
+	}
+	defer exporter.Stop()
+
+	// Healthy cycle (no ConditionFalse) -> result=success.
+	healthy := &types.Status{
+		Source:    "disk-monitor",
+		Timestamp: time.Now(),
+		Conditions: []types.Condition{
+			{Type: "DiskHealthy", Status: types.ConditionTrue, Reason: "OK", Message: "ok", Transition: time.Now()},
+		},
+	}
+	if err := exporter.ExportStatus(ctx, healthy); err != nil {
+		t.Fatalf("failed to export healthy status: %v", err)
+	}
+
+	// Unhealthy cycle (ConditionFalse) -> result=error.
+	unhealthy := &types.Status{
+		Source:    "disk-monitor",
+		Timestamp: time.Now(),
+		Conditions: []types.Condition{
+			{Type: "DiskHealthy", Status: types.ConditionFalse, Reason: "Full", Message: "disk full", Transition: time.Now()},
+		},
+	}
+	if err := exporter.ExportStatus(ctx, unhealthy); err != nil {
+		t.Fatalf("failed to export unhealthy status: %v", err)
+	}
+
+	families, err := exporter.registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	if got, ok := counterValue(families, "test_monitor_cycles_total", map[string]string{
+		"monitor_name": "disk-monitor", "result": "success",
+	}); !ok || got != 1 {
+		t.Errorf("monitor_cycles_total{result=success} = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := counterValue(families, "test_monitor_cycles_total", map[string]string{
+		"monitor_name": "disk-monitor", "result": "error",
+	}); !ok || got != 1 {
+		t.Errorf("monitor_cycles_total{result=error} = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := histogramSampleCount(families, "test_monitor_check_duration_seconds", map[string]string{
+		"monitor_name": "disk-monitor",
+	}); !ok || got != 2 {
+		t.Errorf("monitor_check_duration_seconds sample count = %v (found=%v), want 2", got, ok)
+	}
+	if got, ok := gaugeValue(families, "test_monitor_cycle_last_timestamp_seconds", map[string]string{
+		"monitor_name": "disk-monitor",
+	}); !ok || got <= 0 {
+		t.Errorf("monitor_cycle_last_timestamp_seconds = %v (found=%v), want > 0", got, ok)
+	}
+}
+
 func TestExportProblem(t *testing.T) {
 	port := freePort(t)
 	config := &types.PrometheusExporterConfig{

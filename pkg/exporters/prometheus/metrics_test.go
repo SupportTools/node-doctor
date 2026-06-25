@@ -1,7 +1,9 @@
 package prometheus
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -104,6 +106,12 @@ func TestNewMetrics(t *testing.T) {
 			if metrics.ExportDuration == nil {
 				t.Error("ExportDuration metric not created")
 			}
+			if metrics.MonitorCyclesTotal == nil {
+				t.Error("MonitorCyclesTotal metric not created")
+			}
+			if metrics.MonitorCycleLastTimestamp == nil {
+				t.Error("MonitorCycleLastTimestamp metric not created")
+			}
 		})
 	}
 }
@@ -193,6 +201,10 @@ func TestMetricUpdates(t *testing.T) {
 	timer2 := prometheus.NewTimer(metrics.ExportDuration.WithLabelValues("test-node", "prometheus", "status"))
 	timer2.ObserveDuration()
 
+	// Monitor-cycle self-metrics
+	metrics.MonitorCyclesTotal.WithLabelValues("test-node", "disk-monitor", "success").Inc()
+	metrics.MonitorCycleLastTimestamp.WithLabelValues("test-node", "disk-monitor").Set(1640995200)
+
 	// Gather metrics to verify they were updated
 	metricFamilies, err := registry.Gather()
 	if err != nil {
@@ -224,6 +236,8 @@ func TestMetricUpdates(t *testing.T) {
 		"test_uptime_seconds",
 		"test_monitor_check_duration_seconds",
 		"test_export_duration_seconds",
+		"test_monitor_cycles_total",
+		"test_monitor_cycle_last_timestamp_seconds",
 	}
 
 	for _, expectedMetric := range expectedMetrics {
@@ -438,6 +452,142 @@ func TestAddressFamilyLabelEmitted(t *testing.T) {
 		if !seen {
 			t.Errorf("peer_latency_seconds: expected an address_family=%q series, none found", fam)
 		}
+	}
+}
+
+// counterValue returns the value of the first sample of the named counter metric
+// family whose labels include all of wantLabels, or (0, false) if not found.
+func counterValue(families []*dto.MetricFamily, metricName string, wantLabels map[string]string) (float64, bool) {
+	for _, mf := range families {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, metric := range mf.Metric {
+			labels := make(map[string]string)
+			for _, l := range metric.Label {
+				labels[l.GetName()] = l.GetValue()
+			}
+			match := true
+			for k, v := range wantLabels {
+				if labels[k] != v {
+					match = false
+					break
+				}
+			}
+			if match && metric.Counter != nil {
+				return metric.Counter.GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// gaugeValue returns the value of the first sample of the named gauge metric
+// family whose labels include all of wantLabels, or (0, false) if not found.
+func gaugeValue(families []*dto.MetricFamily, metricName string, wantLabels map[string]string) (float64, bool) {
+	for _, mf := range families {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, metric := range mf.Metric {
+			labels := make(map[string]string)
+			for _, l := range metric.Label {
+				labels[l.GetName()] = l.GetValue()
+			}
+			match := true
+			for k, v := range wantLabels {
+				if labels[k] != v {
+					match = false
+					break
+				}
+			}
+			if match && metric.Gauge != nil {
+				return metric.Gauge.GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// histogramSampleCount returns the sample count of the named histogram metric
+// family whose labels include all of wantLabels, or (0, false) if not found.
+func histogramSampleCount(families []*dto.MetricFamily, metricName string, wantLabels map[string]string) (uint64, bool) {
+	for _, mf := range families {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, metric := range mf.Metric {
+			labels := make(map[string]string)
+			for _, l := range metric.Label {
+				labels[l.GetName()] = l.GetValue()
+			}
+			match := true
+			for k, v := range wantLabels {
+				if labels[k] != v {
+					match = false
+					break
+				}
+			}
+			if match && metric.Histogram != nil {
+				return metric.Histogram.GetSampleCount(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestRecordMonitorCycle(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := NewMetrics("test", "", nil)
+	if err != nil {
+		t.Fatalf("failed to create metrics: %v", err)
+	}
+	if err := metrics.Register(registry); err != nil {
+		t.Fatalf("failed to register metrics: %v", err)
+	}
+
+	e := &PrometheusExporter{
+		nodeName: "test-node",
+		registry: registry,
+		metrics:  metrics,
+	}
+
+	// Two successful cycles and one errored cycle for the same monitor.
+	e.RecordMonitorCycle("disk-monitor", 50*time.Millisecond, nil)
+	e.RecordMonitorCycle("disk-monitor", 75*time.Millisecond, nil)
+	e.RecordMonitorCycle("disk-monitor", 10*time.Millisecond, fmt.Errorf("check failed"))
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	// Success counter should be 2.
+	if got, ok := counterValue(families, "test_monitor_cycles_total", map[string]string{
+		"monitor_name": "disk-monitor", "result": "success",
+	}); !ok || got != 2 {
+		t.Errorf("monitor_cycles_total{result=success} = %v (found=%v), want 2", got, ok)
+	}
+
+	// Error counter should be 1.
+	if got, ok := counterValue(families, "test_monitor_cycles_total", map[string]string{
+		"monitor_name": "disk-monitor", "result": "error",
+	}); !ok || got != 1 {
+		t.Errorf("monitor_cycles_total{result=error} = %v (found=%v), want 1", got, ok)
+	}
+
+	// MonitorCheckDuration should have observed all 3 cycles.
+	if got, ok := histogramSampleCount(families, "test_monitor_check_duration_seconds", map[string]string{
+		"monitor_name": "disk-monitor",
+	}); !ok || got != 3 {
+		t.Errorf("monitor_check_duration_seconds sample count = %v (found=%v), want 3", got, ok)
+	}
+
+	// Last-timestamp heartbeat gauge should be set to a positive unix time.
+	if got, ok := gaugeValue(families, "test_monitor_cycle_last_timestamp_seconds", map[string]string{
+		"monitor_name": "disk-monitor",
+	}); !ok || got <= 0 {
+		t.Errorf("monitor_cycle_last_timestamp_seconds = %v (found=%v), want > 0", got, ok)
 	}
 }
 
