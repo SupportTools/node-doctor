@@ -208,6 +208,56 @@ monitors:
       warningLatency: 50
       criticalLatency: 100
 
+  # ---------------------------------------------------------------------------
+  # IPv6 / dual-stack monitors (detection-only — never modify host settings).
+  # These degrade gracefully on IPv4-only nodes: a missing IPv6 stack is
+  # reported as a warning, not an error. On IPv4-only clusters set
+  # expectIPv6Enabled: false (or enabled: false) to silence them.
+  # ---------------------------------------------------------------------------
+
+  # IPv6 disable_ipv6 sysctl monitor — flags IPv6 disabled when it is expected on.
+  - name: ipv6-sysctl-check
+    type: network-ipv6-sysctl
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true
+      checkPerInterface: false
+      procPath: /proc
+
+  # IPv6 default-route monitor — flags a missing IPv6 default route when expected.
+  - name: ipv6-route-check
+    type: network-ipv6-route
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectDefaultRoute: true
+      procPath: /proc
+
+  # IPv6 RA/SLAAC + address-presence monitor (link-local/global address, accept_ra).
+  - name: ipv6-neighbor-check
+    type: network-ipv6-neighbor
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true
+      checkPerInterface: true
+      requireGlobalAddress: false
+      procPath: /proc
+
+  # IPv6 firewall sanity monitor (detection-only ip6tables/nft listing).
+  - name: ipv6-firewall-check
+    type: network-ipv6-firewall
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true
+      backend: auto
+
 # Exporters - export monitoring data to various systems
 exporters:
   # Kubernetes Exporter - Updates node conditions and creates events
