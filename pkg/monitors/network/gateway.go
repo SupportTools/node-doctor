@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -470,8 +471,18 @@ func detectDefaultGatewayFromFile(path string) (string, error) {
 }
 
 // detectDefaultGatewayFromReader parses /proc/net/route content and returns
-// the first default gateway it finds. The reader must include the header line
-// the kernel emits first; that line is skipped before route entries are read.
+// the gateway of the default route with the LOWEST metric. The kernel routes
+// traffic through the lowest-metric default route when several exist (multi-NIC,
+// failover), so node-doctor mirrors that selection. The reader must include the
+// header line the kernel emits first; that line is skipped before route entries
+// are read.
+//
+// The Metric column (index 6, 0-based) in /proc/net/route is a plain base-10
+// integer string (the kernel formats it with %d), so it is parsed as decimal.
+// On ties, the first-seen default route wins. A line whose Metric field cannot
+// be parsed is treated as having the maximum metric so it never wins over a
+// well-formed route, but is still eligible if it is the only default route — the
+// gateway hex itself is still validated before the value is returned.
 func detectDefaultGatewayFromReader(r io.Reader) (string, error) {
 	scanner := bufio.NewScanner(r)
 
@@ -480,13 +491,19 @@ func detectDefaultGatewayFromReader(r io.Reader) (string, error) {
 		return "", fmt.Errorf("route table is empty")
 	}
 
+	var (
+		bestGateway string
+		bestMetric  int64
+		found       bool
+	)
+
 	// Parse route entries
 	for scanner.Scan() {
 		line := scanner.Text()
 		fields := strings.Fields(line)
 
 		// Route table format: Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
-		// We need at least 8 fields
+		// We need at least 7 fields to read the Metric column (index 6).
 		if len(fields) < 8 {
 			continue
 		}
@@ -494,14 +511,30 @@ func detectDefaultGatewayFromReader(r io.Reader) (string, error) {
 		destination := fields[1]
 		gateway := fields[2]
 
-		// Default route has destination 00000000
-		if destination == "00000000" && gateway != "00000000" {
-			// Parse gateway hex string to IP
-			gatewayIP, err := hexToIP(gateway)
-			if err != nil {
-				return "", fmt.Errorf("failed to parse gateway hex %s: %w", gateway, err)
-			}
-			return gatewayIP, nil
+		// Default route has destination 00000000 and a non-zero gateway.
+		if destination != "00000000" || gateway == "00000000" {
+			continue
+		}
+
+		// Parse the gateway hex up front so a malformed gateway is rejected
+		// even when it is the only default route present.
+		gatewayIP, err := hexToIP(gateway)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse gateway hex %s: %w", gateway, err)
+		}
+
+		// Metric column is a base-10 integer. A malformed metric is treated as
+		// the maximum value so a well-formed lower-metric route always wins.
+		metric, err := strconv.ParseInt(fields[6], 10, 64)
+		if err != nil {
+			metric = math.MaxInt64
+		}
+
+		// First-seen wins on equal metric (strict less-than comparison).
+		if !found || metric < bestMetric {
+			bestGateway = gatewayIP
+			bestMetric = metric
+			found = true
 		}
 	}
 
@@ -509,7 +542,11 @@ func detectDefaultGatewayFromReader(r io.Reader) (string, error) {
 		return "", fmt.Errorf("error reading route table: %w", err)
 	}
 
-	return "", fmt.Errorf("no default gateway found in route table")
+	if !found {
+		return "", fmt.Errorf("no default gateway found in route table")
+	}
+
+	return bestGateway, nil
 }
 
 // detectDefaultIPv6GatewayFromFile opens the given path and parses it as a
@@ -526,9 +563,11 @@ func detectDefaultIPv6GatewayFromFile(path string) (string, error) {
 }
 
 // detectDefaultIPv6GatewayFromReader parses /proc/net/ipv6_route content and
-// returns the first default route's next-hop. Unlike /proc/net/route, the
-// IPv6 route table does NOT begin with a header line — every line is a route
-// entry. The kernel format is space-separated:
+// returns the next-hop of the default route with the LOWEST metric. As with the
+// IPv4 table, the kernel routes traffic through the lowest-metric default route
+// when several exist, so node-doctor mirrors that selection. Unlike
+// /proc/net/route, the IPv6 route table does NOT begin with a header line —
+// every line is a route entry. The kernel format is space-separated:
 //
 //	dest(32 hex)  prefix(2)  src(32)  src_prefix(2)  next_hop(32)  metric(8)
 //	ref(8)        use(8)     flags(8)  iface
@@ -536,15 +575,28 @@ func detectDefaultIPv6GatewayFromFile(path string) (string, error) {
 // A default route has destination = all-zero and prefix = 0x00. Lines whose
 // next-hop is all-zero are link-scoped on-link routes (no gateway) and are
 // skipped.
+//
+// The metric column (index 5, 0-based) is an 8-character HEX value (the kernel
+// formats it with %08x), so it is parsed as base 16. On ties, the first-seen
+// default route wins. A line whose metric field cannot be parsed is treated as
+// the maximum metric so a well-formed lower-metric route always wins, but it is
+// still eligible if it is the only default route — the next-hop hex is still
+// validated before the value is returned.
 func detectDefaultIPv6GatewayFromReader(r io.Reader) (string, error) {
 	scanner := bufio.NewScanner(r)
+
+	var (
+		bestGateway string
+		bestMetric  uint64
+		found       bool
+	)
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		fields := strings.Fields(line)
 
-		// Need at least dest, prefix, src, src_prefix, next_hop
-		if len(fields) < 5 {
+		// Need at least dest, prefix, src, src_prefix, next_hop, metric
+		if len(fields) < 6 {
 			continue
 		}
 
@@ -561,18 +613,37 @@ func detectDefaultIPv6GatewayFromReader(r io.Reader) (string, error) {
 			continue
 		}
 
+		// Validate the next-hop hex up front so a malformed gateway is rejected
+		// even when it is the only default route present.
 		gatewayIP, err := hexToIPv6(nextHop)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse IPv6 gateway hex %s: %w", nextHop, err)
 		}
-		return gatewayIP, nil
+
+		// Metric column is an 8-hex value. A malformed metric is treated as the
+		// maximum value so a well-formed lower-metric route always wins.
+		metric, err := strconv.ParseUint(fields[5], 16, 64)
+		if err != nil {
+			metric = math.MaxUint64
+		}
+
+		// First-seen wins on equal metric (strict less-than comparison).
+		if !found || metric < bestMetric {
+			bestGateway = gatewayIP
+			bestMetric = metric
+			found = true
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("error reading IPv6 route table: %w", err)
 	}
 
-	return "", fmt.Errorf("no default IPv6 gateway found in IPv6 route table")
+	if !found {
+		return "", fmt.Errorf("no default IPv6 gateway found in IPv6 route table")
+	}
+
+	return bestGateway, nil
 }
 
 // hexToIP converts a hex string (little-endian) to an IP address string.

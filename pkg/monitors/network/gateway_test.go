@@ -309,10 +309,40 @@ func TestDetectDefaultGateway(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "multiple interfaces - first default gateway",
+			// Equal-metric tie: first-seen default route wins.
+			name: "multiple interfaces equal metric - first default gateway",
 			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
 				"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
-				"wlan0\t00000000\t0A0AA8C0\t0003\t0\t0\t200\t00000000\t0\t0\t0\n",
+				"wlan0\t00000000\t0A0AA8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n",
+			want:    "192.168.1.1",
+			wantErr: false,
+		},
+		{
+			// Lowest-metric default route wins even though it is NOT first in
+			// file order (proves metric-based selection, not first-wins).
+			name: "multiple defaults - lowest metric selected (not first)",
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+				"eth0\t00000000\t0101A8C0\t0003\t0\t0\t200\t00000000\t0\t0\t0\n" +
+				"wlan0\t00000000\t0A0AA8C0\t0003\t0\t0\t50\t00000000\t0\t0\t0\n",
+			want:    "192.168.10.10",
+			wantErr: false,
+		},
+		{
+			// A malformed Metric field is treated as max metric, so the other
+			// well-formed default route is still selected.
+			name: "malformed metric on one default - other valid default selected",
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+				"eth0\t00000000\t0101A8C0\t0003\t0\t0\tNOTANUM\t00000000\t0\t0\t0\n" +
+				"wlan0\t00000000\t0A0AA8C0\t0003\t0\t0\t300\t00000000\t0\t0\t0\n",
+			want:    "192.168.10.10",
+			wantErr: false,
+		},
+		{
+			// A single default route with a malformed Metric is still returned
+			// (graceful handling, no crash) since it is the only default route.
+			name: "single default with malformed metric still returned",
+			routeData: "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+				"eth0\t00000000\t0101A8C0\t0003\t0\t0\tNOTANUM\t00000000\t0\t0\t0\n",
 			want:    "192.168.1.1",
 			wantErr: false,
 		},
@@ -470,11 +500,40 @@ func TestDetectDefaultIPv6Gateway(t *testing.T) {
 			errFrag: "in IPv6 route table",
 		},
 		{
-			name: "first default route wins",
+			// Equal-metric tie: the first-seen default route wins.
+			name: "equal metric tie - first default route wins",
 			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
 				"fe800000000000000000000000000001 00000400 00000003 00000000 00000003     eth0\n" +
 				"00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
-				"20010db800000000000000000000beef 00000800 00000001 00000000 00000003     eth1\n",
+				"20010db800000000000000000000beef 00000400 00000001 00000000 00000003     eth1\n",
+			want: "fe80::1",
+		},
+		{
+			// Lowest-metric default route wins even though it is NOT first in
+			// file order. Metric is parsed as HEX: 00000800=2048, 00000100=256.
+			name: "lowest metric default selected (not first)",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 00000800 00000003 00000000 00000003     eth0\n" +
+				"00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"20010db8000000000000000000000001 00000100 00000001 00000000 00000003     eth1\n",
+			want: "2001:db8::1",
+		},
+		{
+			// A malformed metric field is treated as max metric, so the other
+			// well-formed default route (higher position) is still selected.
+			name: "malformed metric on one default - other valid default selected",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 zzzzzzzz 00000003 00000000 00000003     eth0\n" +
+				"00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"20010db8000000000000000000000001 00000900 00000001 00000000 00000003     eth1\n",
+			want: "2001:db8::1",
+		},
+		{
+			// A single default route with a malformed metric is still returned
+			// (graceful handling, no crash) since it is the only default route.
+			name: "single default with malformed metric still returned",
+			content: "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+				"fe800000000000000000000000000001 zzzzzzzz 00000003 00000000 00000003     eth0\n",
 			want: "fe80::1",
 		},
 		{
@@ -533,6 +592,35 @@ func TestDetectDefaultIPv6Gateway(t *testing.T) {
 		_, err := detectDefaultIPv6GatewayFromFile(missing)
 		if err == nil {
 			t.Errorf("detectDefaultIPv6GatewayFromFile(%q) expected error for missing file, got nil", missing)
+		}
+	})
+}
+
+// TestDetectDefaultGateway_MetricSelectionFixture verifies metric-based default
+// route selection against committed fixture files (one per family) that contain
+// MULTIPLE default routes with different metrics, where the lowest-metric route
+// is intentionally NOT first in file order.
+func TestDetectDefaultGateway_MetricSelectionFixture(t *testing.T) {
+	t.Run("ipv4 lowest-metric default selected from fixture", func(t *testing.T) {
+		got, err := detectDefaultGatewayFromFile("testdata/proc/net/route_multi_default")
+		if err != nil {
+			t.Fatalf("detectDefaultGatewayFromFile() error = %v", err)
+		}
+		// Lowest metric (50) is the second default route -> 192.168.10.10.
+		if want := "192.168.10.10"; got != want {
+			t.Errorf("detectDefaultGatewayFromFile() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ipv6 lowest-metric default selected from fixture", func(t *testing.T) {
+		got, err := detectDefaultIPv6GatewayFromFile("testdata/proc/net/ipv6_route_multi_default")
+		if err != nil {
+			t.Fatalf("detectDefaultIPv6GatewayFromFile() error = %v", err)
+		}
+		// Lowest metric (0x100) is the last default route -> 2001:db8::1,
+		// even though fe80::1 (0x400) appears first.
+		if want := "2001:db8::1"; got != want {
+			t.Errorf("detectDefaultIPv6GatewayFromFile() = %q, want %q", got, want)
 		}
 	})
 }
