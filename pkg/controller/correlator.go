@@ -35,6 +35,11 @@ type Correlator struct {
 	mu     sync.RWMutex
 	active map[string]*Correlation // id -> correlation
 
+	// injectedPatterns holds custom common-cause patterns registered at runtime
+	// via InjectProblemPattern. They participate in common-cause detection
+	// alongside the built-in patterns. Guarded by mu.
+	injectedPatterns []injectedPattern
+
 	// Tracking for detection
 	nodeReports  map[string]*NodeReport // nodeName -> latest report
 	totalNodes   int
@@ -44,6 +49,16 @@ type Correlator struct {
 	started bool
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
+}
+
+// injectedPattern is a custom common-cause pattern registered at runtime via
+// InjectProblemPattern. It mirrors the shape of the built-in common-cause
+// patterns: a set of problem types that, when all present on a node, indicate
+// a shared root cause.
+type injectedPattern struct {
+	problems    []string
+	name        string
+	description string
 }
 
 // NewCorrelator creates a new Correlator instance.
@@ -58,13 +73,14 @@ func NewCorrelator(config *CorrelationConfig, storage Storage, metrics *Controll
 	}
 
 	return &Correlator{
-		config:      config,
-		storage:     storage,
-		metrics:     metrics,
-		events:      events,
-		active:      make(map[string]*Correlation),
-		nodeReports: make(map[string]*NodeReport),
-		stopCh:      make(chan struct{}),
+		config:           config,
+		storage:          storage,
+		metrics:          metrics,
+		events:           events,
+		active:           make(map[string]*Correlation),
+		nodeReports:      make(map[string]*NodeReport),
+		injectedPatterns: make([]injectedPattern, 0),
+		stopCh:           make(chan struct{}),
 	}
 }
 
@@ -384,11 +400,7 @@ func (c *Correlator) detectInfrastructureCorrelation(reports []*NodeReport, tota
 // Example: Memory pressure + Disk pressure on same nodes = resource exhaustion.
 func (c *Correlator) detectCommonCauseCorrelation(reports []*NodeReport) []*Correlation {
 	// Known common-cause patterns
-	commonCausePatterns := []struct {
-		problems    []string
-		name        string
-		description string
-	}{
+	commonCausePatterns := []injectedPattern{
 		{
 			problems:    []string{"MemoryPressure", "DiskPressure"},
 			name:        "resource-exhaustion",
@@ -405,6 +417,21 @@ func (c *Correlator) detectCommonCauseCorrelation(reports []*NodeReport) []*Corr
 			description: "DNS and network failures indicate network infrastructure issue",
 		},
 	}
+
+	// Append runtime-injected patterns, deduping by name so an injected pattern
+	// cannot shadow or double-detect a built-in with the same name.
+	c.mu.RLock()
+	builtinNames := make(map[string]bool, len(commonCausePatterns))
+	for _, p := range commonCausePatterns {
+		builtinNames[p.name] = true
+	}
+	for _, p := range c.injectedPatterns {
+		if builtinNames[p.name] {
+			continue
+		}
+		commonCausePatterns = append(commonCausePatterns, p)
+	}
+	c.mu.RUnlock()
 
 	var correlations []*Correlation
 
@@ -662,11 +689,53 @@ func (c *Correlator) EvaluateNow(ctx context.Context) {
 	c.evaluate(ctx)
 }
 
-// InjectProblemPattern allows adding custom problem patterns for detection.
-// This is useful for extending the correlator with domain-specific patterns.
-func (c *Correlator) InjectProblemPattern(patternType string, problems []string, name, description string) {
-	// This is a hook for future extensibility
-	log.Printf("[DEBUG] Pattern injection not yet implemented: %s", name)
+// InjectProblemPattern registers a custom common-cause problem pattern for
+// detection. Injected patterns participate in common-cause correlation
+// detection alongside the built-in patterns: a node that has all of the
+// pattern's problem types active is considered a match, and when at least
+// MinNodesForCorrelation nodes match, a correlation is produced.
+//
+// The patternType argument is accepted for forward-compatibility and
+// callers should pass CorrelationTypeCommonCause; only common-cause patterns
+// are currently supported. A non-empty name and at least one problem type are
+// required. Re-injecting a pattern with an existing name replaces the previous
+// definition. An error is returned (and nothing is stored) when validation
+// fails so callers can surface the problem.
+func (c *Correlator) InjectProblemPattern(patternType string, problems []string, name, description string) error {
+	if strings.TrimSpace(name) == "" {
+		log.Printf("[WARN] InjectProblemPattern: ignoring pattern with empty name")
+		return fmt.Errorf("pattern name must not be empty")
+	}
+
+	if len(problems) == 0 {
+		log.Printf("[WARN] InjectProblemPattern: ignoring pattern %q with no problem types", name)
+		return fmt.Errorf("pattern %q must define at least one problem type", name)
+	}
+
+	// Copy the problem slice so the caller cannot mutate it after injection.
+	problemsCopy := append([]string{}, problems...)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Replace an existing injected pattern with the same name (idempotent
+	// re-injection) rather than appending a duplicate.
+	for i := range c.injectedPatterns {
+		if c.injectedPatterns[i].name == name {
+			c.injectedPatterns[i] = injectedPattern{problems: problemsCopy, name: name, description: description}
+			log.Printf("[INFO] InjectProblemPattern: updated pattern %q (problems=%v)", name, problemsCopy)
+			return nil
+		}
+	}
+
+	c.injectedPatterns = append(c.injectedPatterns, injectedPattern{
+		problems:    problemsCopy,
+		name:        name,
+		description: description,
+	})
+
+	log.Printf("[INFO] InjectProblemPattern: registered pattern %q (type=%s, problems=%v)", name, patternType, problemsCopy)
+	return nil
 }
 
 // ForceResolve forces a correlation to be resolved (for manual intervention).
@@ -697,9 +766,6 @@ func (c *Correlator) ForceResolve(ctx context.Context, correlationID string) err
 	log.Printf("[INFO] Correlation force-resolved: %s", correlationID)
 	return nil
 }
-
-// Ensure unused import doesn't cause issues
-var _ = strings.TrimSpace
 
 // SetStorage wires a storage backend into the correlator.  It must be called
 // before Start() so that the initial load of active correlations succeeds.
