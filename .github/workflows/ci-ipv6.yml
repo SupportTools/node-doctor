@@ -1,0 +1,205 @@
+name: CI - IPv6 / Dual-Stack
+
+# Runs IPv6 and dual-stack integration tests that require Docker with IPv6
+# enabled (for the kind cluster) and CAP_NET_RAW (for raw ICMPv6). Kept as a
+# separate workflow so these heavy/privileged jobs do not block the main CI
+# aggregate (ci-success) and so a kind cluster flake does not mask ICMP
+# results (and vice versa).
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - 'pkg/monitors/network/**'
+      - 'pkg/exporters/**'
+      - 'test/integration/**'
+      - '.github/workflows/ci-ipv6.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'pkg/monitors/network/**'
+      - 'pkg/exporters/**'
+      - 'test/integration/**'
+      - '.github/workflows/ci-ipv6.yml'
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.25'
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Cancel in-flight runs for the same PR / branch so stale runs don't waste
+# runner minutes when new commits are pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job: ipv6-icmp
+  #
+  # Compiles the network package test binary as the runner user (preserving the
+  # Go module cache) and then re-executes ONLY the IPv6 integration tests under
+  # sudo to obtain CAP_NET_RAW for raw ICMPv6 sockets.
+  #
+  # NODE_DOCTOR_ICMP_INTEGRATION=1 causes socket / permission errors to be hard
+  # failures rather than skips, so a misconfigured runner surfaces loudly.
+  #
+  # Kept separate from ipv6-kind-dualstack so a kind cluster flake does not
+  # hide ICMP failures and vice versa.
+  # ---------------------------------------------------------------------------
+  ipv6-icmp:
+    name: IPv6 ICMP Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # Enable the IPv6 loopback so ::1 is reachable inside the runner netns.
+      - name: Enable IPv6 loopback sysctl
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+          sudo sysctl -w net.ipv6.conf.lo.disable_ipv6=0
+
+      # Compile as the runner user so the binary inherits the Go env / module
+      # cache; the -tags flag includes the `integration` gate.
+      - name: Compile network test binary (with integration tag)
+        run: go test -c -tags=integration -o /tmp/nd-net.test ./pkg/monitors/network/
+
+      # Execute only the IPv6 integration tests under sudo for CAP_NET_RAW.
+      - name: Run IPv6 ICMP integration tests (privileged)
+        run: |
+          sudo NODE_DOCTOR_ICMP_INTEGRATION=1 /tmp/nd-net.test \
+            -test.run 'TestDefaultPinger_IPv6Loopback_Integration|TestDefaultPinger_IPv6LinkLocal_Integration' \
+            -test.v \
+            -test.timeout 2m
+
+  # ---------------------------------------------------------------------------
+  # Job: ipv6-kind-dualstack
+  #
+  # Enables Docker IPv6 on the GitHub runner, installs the kind binary and
+  # kubectl, then runs TestIPv6KindDualStackCluster which creates its own
+  # dual-stack kind cluster from test/integration/testdata/kind-dualstack.yaml.
+  #
+  # The Go test owns full cluster lifecycle (create + t.Cleanup delete).  A
+  # safety-net step with `if: always()` calls `kind delete clusters --all`
+  # after the test so lingering clusters do not consume runner resources on
+  # test failure / panic.
+  # ---------------------------------------------------------------------------
+  ipv6-kind-dualstack:
+    name: IPv6 Kind Dual-Stack Cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # -----------------------------------------------------------------------
+      # Enable Docker daemon IPv6 BEFORE kind creates the dual-stack cluster.
+      # Without this, kind's kindnet CNI cannot plumb IPv6 pod addresses and
+      # `kind create cluster --config kind-dualstack.yaml` fails or produces a
+      # single-stack cluster.
+      #
+      # We write daemon.json, restart Docker, and wait until the socket comes
+      # back before proceeding.  The `ip6tables` + `experimental` flags are
+      # required for kernel IPv6 NAT support inside the kind node containers.
+      # -----------------------------------------------------------------------
+      - name: Enable Docker daemon IPv6
+        run: |
+          sudo mkdir -p /etc/docker
+          # Merge our IPv6 settings into daemon.json (overwrite is safe on a
+          # fresh GitHub runner where /etc/docker/daemon.json does not exist).
+          cat <<'EOF' | sudo tee /etc/docker/daemon.json
+          {
+            "ipv6": true,
+            "fixed-cidr-v6": "2001:db8:1::/64",
+            "experimental": true,
+            "ip6tables": true
+          }
+          EOF
+          sudo systemctl restart docker
+          # Poll until the Docker socket is back (up to 30 s).
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon is back (attempt $i)"
+              break
+            fi
+            echo "Waiting for Docker daemon... ($i/30)"
+            sleep 1
+          done
+          docker info
+
+      # Enable IPv6 on the host so the runner's kernel and kind node containers
+      # can create IPv6 interfaces.
+      - name: Enable IPv6 sysctls
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+
+      # Install the kind binary directly so the Go test can call `kind` from
+      # PATH without kind-action creating its own cluster first (which would
+      # collide with the test's dynamically-named dual-stack cluster).
+      - name: Install kind binary
+        run: |
+          KIND_VERSION="v0.27.0"
+          curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" \
+            -o /tmp/kind
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+          kind version
+
+      # kubectl is available on ubuntu-latest runners but pin a version check
+      # so the step fails fast if the binary is unexpectedly missing.
+      - name: Verify kubectl is available
+        run: kubectl version --client
+
+      # Run ONLY the dual-stack kind integration test. The test constructs its
+      # own unique cluster name to avoid collisions with parallel runs.
+      # -timeout covers: cluster create (≤6 min) + node-ready wait (≤3 min)
+      # + assertions + cleanup (≤2 min) = 11 min with headroom to 20 min.
+      - name: Run dual-stack kind integration test
+        run: |
+          go test -tags=integration -v -timeout 20m \
+            ./test/integration/... \
+            -run TestIPv6KindDualStackCluster
+
+      # Safety-net cleanup: delete any kind clusters left over by a test
+      # failure or panic.  Runs unconditionally (if: always()) so a flaky
+      # cluster create does not leave a zombie cluster consuming runner resources.
+      - name: Cleanup kind clusters (safety net)
+        if: always()
+        run: |
+          echo "Existing kind clusters:"
+          kind get clusters || true
+          kind delete clusters --all || true
+          echo "Cleanup complete"
