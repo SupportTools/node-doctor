@@ -4,6 +4,8 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -421,12 +423,40 @@ func (m *APIServerMonitor) checkAPIServer(ctx context.Context) (*types.Status, e
 	// Set API server latency metrics for Prometheus export
 	status.SetLatencyMetrics(&types.LatencyMetrics{
 		APIServer: &types.APIServerLatency{
-			LatencyMs: float64(metrics.Latency.Microseconds()) / 1000.0,
-			Reachable: true,
+			LatencyMs:     float64(metrics.Latency.Microseconds()) / 1000.0,
+			Reachable:     true,
+			AddressFamily: classifyEndpointFamily(m.config.Endpoint),
 		},
 	})
 
 	return status, nil
+}
+
+// classifyEndpointFamily inspects an API server endpoint and returns the IP
+// address family it targets: "ipv4" or "ipv6" when the host is a literal IP,
+// or "" when the host is a DNS name (or otherwise cannot be classified). The
+// exporter normalizes an empty value to the "unknown" label.
+func classifyEndpointFamily(endpoint string) string {
+	host := endpoint
+	// Endpoints are typically URLs (e.g. "https://10.0.0.1:6443"); extract the
+	// host component when present so we classify the actual dial target.
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	// Strip any port (and brackets around IPv6 literals).
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		return "ipv4"
+	}
+	return "ipv6"
 }
 
 // ParseAPIServerConfig parses API server configuration from a generic config map.

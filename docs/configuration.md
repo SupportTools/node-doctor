@@ -241,6 +241,98 @@ See [docs/monitors.md](./monitors.md) for detailed configuration of all 11 monit
 2. **Network Monitors:** dns-check, gateway-check, connectivity-check
 3. **Kubernetes Monitors:** kubelet-check, apiserver-check, runtime-check, capacity-check
 4. **Custom Monitors:** plugin-check, log-pattern-check
+5. **IPv6 / Dual-Stack Monitors:** network-ipv6-sysctl, network-ipv6-route, network-ipv6-neighbor, network-ipv6-firewall (see [IPv6 / dual-stack](#ipv6--dual-stack))
+
+### IPv6 / Dual-Stack
+
+Node Doctor ships detection-only IPv6 monitors and dual-stack options for several existing monitors and the HTTP/health server. These are configured the same way as any other monitor/exporter — this section collects the IPv6-specific keys in one place. See [docs/monitors.md](./monitors.md#ipv6--dual-stack-monitors) for the conditions/events each monitor emits.
+
+**Graceful IPv4-only degradation:** the IPv6 monitors never modify host settings and degrade gracefully on IPv4-only nodes — a missing IPv6 stack is recorded as a non-actionable condition rather than a problem. On IPv4-only clusters, set `expectIPv6Enabled: false` (or `expectDefaultRoute: false` for the route monitor) to silence the warnings, or `enabled: false` to disable a monitor entirely.
+
+**IPv6 detection monitors** (mirrors the `monitors` block in `config/node-doctor.yaml`):
+
+```yaml
+monitors:
+  # IPv6 disable_ipv6 sysctl monitor — flags IPv6 disabled when expected on.
+  - name: ipv6-sysctl-check
+    type: network-ipv6-sysctl
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true      # Default: true
+      checkPerInterface: false     # Default: false
+      procPath: /proc              # Default: /proc
+
+  # IPv6 default-route monitor — flags a missing IPv6 default route when expected.
+  - name: ipv6-route-check
+    type: network-ipv6-route
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectDefaultRoute: true     # Default: true
+      procPath: /proc              # Default: /proc
+
+  # IPv6 RA/SLAAC + address-presence monitor (link-local/global address, accept_ra).
+  - name: ipv6-neighbor-check
+    type: network-ipv6-neighbor
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true      # Default: true
+      checkPerInterface: true      # Default: true
+      requireGlobalAddress: false  # Default: false
+      procPath: /proc              # Default: /proc
+
+  # IPv6 firewall sanity monitor (detection-only ip6tables/nft listing).
+  - name: ipv6-firewall-check
+    type: network-ipv6-firewall
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true      # Default: true
+      backend: auto                # Default: auto — one of "auto", "ip6tables", "nft"
+```
+
+**Gateway address family:** the gateway monitor (`network-gateway-check`) accepts an `addressFamily` key selecting which IP family's default route to probe:
+
+```yaml
+monitors:
+  - name: gateway-health
+    type: network-gateway-check
+    config:
+      addressFamily: ipv4          # "ipv4" (default), "ipv6", or "auto"
+```
+
+- `ipv4` (default) — probe the IPv4 default gateway only (preserves pre-dual-stack behavior).
+- `ipv6` — probe the IPv6 default route from `/proc/net/ipv6_route`.
+- `auto` — prefer the IPv4 default route and fall back to the IPv6 default route when no IPv4 default route exists.
+
+**DNS AAAA queries:** the DNS monitor (`network-dns-check`) accepts a per-query `recordType` of `AAAA` for IPv6 resolution checks (`A` is the default):
+
+```yaml
+monitors:
+  - name: dns-health
+    type: network-dns-check
+    config:
+      domains:
+        - domain: kubernetes.default.svc.cluster.local
+          recordType: AAAA         # "A" (default) or "AAAA"
+```
+
+Unsupported record types emit an `UnsupportedQueryType` event. Per-nameserver and consistency-check paths currently support `A` only; for `AAAA` queries they are skipped (an `AAAAFeatureUnsupported` event is emitted).
+
+**Dual-stack bind address:** the HTTP / health server binds dual-stack by default. The Helm chart exposes this as `exporters.http.bindAddress` (default `"::"`), which listens on both IPv4 and IPv6; the server falls back to IPv4 automatically if the host cannot bind `::`.
+
+```yaml
+# helm/node-doctor/values.yaml
+exporters:
+  http:
+    bindAddress: "::"              # Dual-stack (IPv4 + IPv6); falls back to IPv4
+```
 
 ### Monitor Validation
 

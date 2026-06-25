@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -266,18 +268,30 @@ func TestResolveTarget(t *testing.T) {
 	tests := []struct {
 		name       string
 		target     string
+		wantIP     string // expected IP string (empty = skip exact check)
+		wantZone   string
 		wantFamily string
 		wantErr    bool
 	}{
-		{name: "IPv4 literal", target: "192.0.2.1", wantFamily: FamilyIPv4},
-		{name: "IPv6 literal", target: "2001:db8::1", wantFamily: FamilyIPv6},
-		{name: "IPv6 loopback literal", target: "::1", wantFamily: FamilyIPv6},
-		{name: "IPv4-mapped literal collapses to v4", target: "::ffff:192.0.2.1", wantFamily: FamilyIPv4},
+		{name: "IPv4 literal", target: "192.0.2.1", wantIP: "192.0.2.1", wantZone: "", wantFamily: FamilyIPv4},
+		{name: "IPv6 literal", target: "2001:db8::1", wantIP: "2001:db8::1", wantZone: "", wantFamily: FamilyIPv6},
+		{name: "IPv6 loopback literal", target: "::1", wantIP: "::1", wantZone: "", wantFamily: FamilyIPv6},
+		{name: "IPv4-mapped literal collapses to v4", target: "::ffff:192.0.2.1", wantIP: "192.0.2.1", wantZone: "", wantFamily: FamilyIPv4},
+		// Link-local IPv6 with a zone/scope ID.
+		{name: "link-local with zone", target: "fe80::1%eth0", wantIP: "fe80::1", wantZone: "eth0", wantFamily: FamilyIPv6},
+		// Link-local IPv6 without a zone (bare).
+		{name: "link-local without zone", target: "fe80::1", wantIP: "fe80::1", wantZone: "", wantFamily: FamilyIPv6},
+		// Zones are retained for any IPv6, not only link-local.
+		{name: "global IPv6 with zone retained", target: "2001:db8::1%eth1", wantIP: "2001:db8::1", wantZone: "eth1", wantFamily: FamilyIPv6},
+		// Empty zone after '%': manual split leaves the address valid with an
+		// empty zone (the trailing '%' is not treated as a zone). This is the
+		// behavior we implement; assert it explicitly.
+		{name: "empty zone after percent", target: "fe80::1%", wantIP: "fe80::1", wantZone: "", wantFamily: FamilyIPv6},
 		{name: "empty target", target: "", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ip, family, err := resolveTarget(tt.target)
+			ip, zone, family, err := resolveTarget(tt.target)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("resolveTarget(%q) err=%v wantErr=%v", tt.target, err, tt.wantErr)
 			}
@@ -288,19 +302,187 @@ func TestResolveTarget(t *testing.T) {
 				t.Errorf("family = %q, want %q", family, tt.wantFamily)
 			}
 			if ip == nil {
-				t.Errorf("ip is nil for target %q", tt.target)
+				t.Fatalf("ip is nil for target %q", tt.target)
+			}
+			if tt.wantIP != "" && ip.String() != tt.wantIP {
+				t.Errorf("ip = %q, want %q", ip.String(), tt.wantIP)
+			}
+			if zone != tt.wantZone {
+				t.Errorf("zone = %q, want %q", zone, tt.wantZone)
 			}
 		})
 	}
 }
 
+// TestResolveTarget_HostnameDNSPath exercises the hostname-resolution branch of
+// resolveTarget (net.ParseIP fails -> net.LookupIP), which the IP-literal table
+// above does not reach. "localhost" resolves via /etc/hosts (no network
+// dependency, deterministic in CI). We assert a loopback address comes back and
+// that the reported family is consistent with the returned IP and never carries
+// a zone (hostname resolution must not invent one). The IP family of localhost
+// can vary by host (IPv4-preference yields 127.0.0.1 where an A record exists,
+// otherwise ::1), so we avoid pinning the exact address/family.
+func TestResolveTarget_HostnameDNSPath(t *testing.T) {
+	ip, zone, family, err := resolveTarget("localhost")
+	if err != nil {
+		t.Fatalf("resolveTarget(\"localhost\") returned error: %v", err)
+	}
+	if ip == nil {
+		t.Fatal("resolveTarget(\"localhost\") returned nil IP")
+	}
+	if !ip.IsLoopback() {
+		t.Errorf("resolveTarget(\"localhost\") IP = %q, want a loopback address", ip)
+	}
+	if zone != "" {
+		t.Errorf("hostname resolution invented a zone %q, want empty", zone)
+	}
+	// Family must match the actual returned address: IPv4-preference returns a
+	// 4-byte address tagged ipv4; otherwise an IPv6 loopback tagged ipv6.
+	if ip.To4() != nil {
+		if family != FamilyIPv4 {
+			t.Errorf("family = %q for IPv4 loopback, want %q", family, FamilyIPv4)
+		}
+	} else if family != FamilyIPv6 {
+		t.Errorf("family = %q for IPv6 loopback, want %q", family, FamilyIPv6)
+	}
+}
+
+// TestResolveTarget_HostnameResolutionFailure exercises the error branch of the
+// hostname path. The ".invalid" TLD is reserved by RFC 6761 to always fail
+// resolution, so this is deterministic and does not depend on external DNS.
+func TestResolveTarget_HostnameResolutionFailure(t *testing.T) {
+	ip, zone, family, err := resolveTarget("node-doctor-nonexistent.invalid")
+	if err == nil {
+		t.Fatalf("resolveTarget of an unresolvable .invalid name succeeded: ip=%v zone=%q family=%q", ip, zone, family)
+	}
+	if ip != nil {
+		t.Errorf("expected nil IP on resolution failure, got %v", ip)
+	}
+}
+
+// TestDestAddr verifies the zone reaches the *net.IPAddr used for sending.
+// Actually transmitting link-local ICMP requires privileges and a real
+// interface, so we unit-test the destination builder instead.
+func TestDestAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		zone string
+	}{
+		{name: "link-local with zone", ip: "fe80::1", zone: "eth0"},
+		{name: "ipv6 no zone", ip: "2001:db8::1", zone: ""},
+		{name: "ipv4 no zone", ip: "192.0.2.1", zone: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("bad test IP %q", tt.ip)
+			}
+			addr := destAddr(ip, tt.zone)
+			if addr.Zone != tt.zone {
+				t.Errorf("destAddr zone = %q, want %q", addr.Zone, tt.zone)
+			}
+			if !addr.IP.Equal(ip) {
+				t.Errorf("destAddr IP = %v, want %v", addr.IP, ip)
+			}
+		})
+	}
+}
+
+// TestPeerMatchesIP verifies that a link-local reply carrying a zone still
+// matches the zone-less target IP used by the receive loop.
+func TestPeerMatchesIP(t *testing.T) {
+	target := net.ParseIP("fe80::1")
+	if target == nil {
+		t.Fatal("bad target IP")
+	}
+	tests := []struct {
+		name string
+		peer net.Addr
+		want bool
+	}{
+		{name: "zoned peer matches", peer: &net.IPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0"}, want: true},
+		{name: "zoneless peer matches", peer: &net.IPAddr{IP: net.ParseIP("fe80::1")}, want: true},
+		{name: "different ip does not match", peer: &net.IPAddr{IP: net.ParseIP("fe80::2"), Zone: "eth0"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := peerMatchesIP(tt.peer, target); got != tt.want {
+				t.Errorf("peerMatchesIP(%v, %v) = %v, want %v", tt.peer, target, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNewDefaultPinger_UniqueID verifies that each defaultPinger instance is
+// assigned its own non-zero 16-bit ICMP echo ID, so concurrent pingers in the
+// same process cannot cross-match each other's echo replies. This is a pure
+// unit test and does not open any sockets, so it is safe under -short.
+func TestNewDefaultPinger_UniqueID(t *testing.T) {
+	p1, ok := newDefaultPinger().(*defaultPinger)
+	if !ok {
+		t.Fatal("newDefaultPinger() did not return *defaultPinger")
+	}
+	p2, ok := newDefaultPinger().(*defaultPinger)
+	if !ok {
+		t.Fatal("newDefaultPinger() did not return *defaultPinger")
+	}
+
+	if p1.id == 0 {
+		t.Errorf("first pinger id is zero, want non-zero")
+	}
+	if p2.id == 0 {
+		t.Errorf("second pinger id is zero, want non-zero")
+	}
+	if p1.id == p2.id {
+		t.Errorf("two pingers share id %d, want distinct ids", p1.id)
+	}
+}
+
+// icmpIntegrationRequired reports whether NODE_DOCTOR_ICMP_INTEGRATION is set to
+// a truthy value ("1"/"true"/etc). When true, TestDefaultPinger_Integration must
+// actually exercise the raw ICMP socket path and treats inability to do so as a
+// hard failure rather than a silent skip.
+func icmpIntegrationRequired() bool {
+	v, ok := os.LookupEnv("NODE_DOCTOR_ICMP_INTEGRATION")
+	if !ok {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
+}
+
 // TestDefaultPinger_Integration is an integration test for the real pinger.
-// This test requires ICMP permissions and may not run in all environments.
-// It exercises both IPv4 and IPv6 loopback paths so the dual-stack rewrite
-// is exercised when run in privileged mode.
+// This test requires raw ICMP socket permissions (CAP_NET_RAW) because the
+// default pinger opens icmp.ListenPacket("ip4:icmp"/"ip6:ipv6-icmp"). It
+// exercises both IPv4 and IPv6 loopback paths so the dual-stack rewrite is
+// exercised when run in privileged mode.
+//
+// This test has three modes, gated in order:
+//
+//  1. `go test -short`  -> SKIP. The Short() guard keeps fast/local CI from
+//     attempting raw sockets at all. This is the local fast path.
+//  2. NODE_DOCTOR_ICMP_INTEGRATION set/truthy (and not short) -> MUST RUN OR
+//     FAIL. This is the dedicated privileged CI job: inability to open the
+//     socket, a permission error, or a probe timeout is a HARD FAILURE
+//     (t.Fatalf) so a misconfigured runner surfaces loudly instead of silently
+//     passing without exercising real ICMP. A genuinely successful ping passes.
+//  3. Neither short nor the env set (e.g. a dev `make test-all` on an
+//     unprivileged box) -> BEST-EFFORT. Socket/permission errors gracefully
+//     t.Skip so dev machines without CAP_NET_RAW are not broken.
+//
+// We keep this here (rather than behind the //go:build integration tag used by
+// cni_integration_test.go) because it is a lightweight loopback check, not a
+// cluster-dependent integration test.
 func TestDefaultPinger_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
+	}
+
+	mustRun := icmpIntegrationRequired()
+	if mustRun {
+		t.Log("NODE_DOCTOR_ICMP_INTEGRATION set: ICMP socket/permission errors are HARD FAILURES")
 	}
 
 	cases := []struct {
@@ -322,10 +504,16 @@ func TestDefaultPinger_Integration(t *testing.T) {
 
 			if err != nil && (errors.Is(err, context.DeadlineExceeded) ||
 				errors.Is(err, context.Canceled)) {
+				if mustRun {
+					t.Fatalf("NODE_DOCTOR_ICMP_INTEGRATION set but ping to %s timed out/was canceled (CAP_NET_RAW or connectivity misconfigured): %v", tc.target, err)
+				}
 				t.Skipf("Skipping integration test due to permissions or timeout: %v", err)
 				return
 			}
 			if err != nil {
+				if mustRun {
+					t.Fatalf("NODE_DOCTOR_ICMP_INTEGRATION set but ping to %s failed to open raw ICMP socket / probe (CAP_NET_RAW required): %v", tc.target, err)
+				}
 				t.Logf("Warning: Ping failed (may require elevated privileges): %v", err)
 				t.Skip("Skipping test - ping requires elevated privileges")
 				return

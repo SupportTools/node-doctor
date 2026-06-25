@@ -1507,15 +1507,22 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 
 // recordDNSLatency records a DNS latency measurement for Prometheus export.
 func (m *DNSMonitor) recordDNSLatency(domain, domainType, dnsServer, recordType string, latency time.Duration, success bool) {
+	// Derive the address family from the record type: AAAA queries resolve
+	// IPv6 addresses, everything else (A and the default) resolves IPv4.
+	family := FamilyIPv4
+	if strings.EqualFold(strings.TrimSpace(recordType), "AAAA") {
+		family = FamilyIPv6
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.latencyMetrics = append(m.latencyMetrics, types.DNSLatency{
-		DNSServer:  dnsServer,
-		Domain:     domain,
-		RecordType: recordType,
-		DomainType: strings.ToLower(domainType),
-		LatencyMs:  float64(latency.Microseconds()) / 1000.0,
-		Success:    success,
+		DNSServer:     dnsServer,
+		Domain:        domain,
+		RecordType:    recordType,
+		DomainType:    strings.ToLower(domainType),
+		LatencyMs:     float64(latency.Microseconds()) / 1000.0,
+		Success:       success,
+		AddressFamily: family,
 	})
 }
 
@@ -1606,6 +1613,24 @@ func (m *DNSMonitor) checkCustomQueries(ctx context.Context, status *types.Statu
 		if recordType == "A" && query.ConsistencyCheck && m.config.ConsistencyChecking != nil && m.config.ConsistencyChecking.Enabled {
 			m.checkDomainConsistency(ctx, status, query.Domain)
 			continue
+		}
+
+		// TestEachNameserver and ConsistencyCheck are only implemented for A
+		// queries. For AAAA queries they are silently skipped, so emit a single
+		// warning per query naming the unsupported feature(s) and the domain.
+		if recordType == "AAAA" && (query.TestEachNameserver || query.ConsistencyCheck) {
+			var skipped []string
+			if query.TestEachNameserver {
+				skipped = append(skipped, "TestEachNameserver")
+			}
+			if query.ConsistencyCheck {
+				skipped = append(skipped, "ConsistencyCheck")
+			}
+			status.AddEvent(types.NewEvent(
+				types.EventWarning,
+				"AAAAFeatureUnsupported",
+				fmt.Sprintf("%s not supported for AAAA queries; skipping for domain %s (only the basic AAAA lookup runs)", strings.Join(skipped, " and "), query.Domain),
+			))
 		}
 
 		start := time.Now()

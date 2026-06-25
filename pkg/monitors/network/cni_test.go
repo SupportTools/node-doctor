@@ -1324,3 +1324,93 @@ func TestCNIMonitor_FamilyMixedResultsTakesFirstNonEmpty(t *testing.T) {
 		t.Errorf("Family = %q, want %q", status.Family, FamilyIPv4)
 	}
 }
+
+// TestCNIMonitor_FamilyRefreshesOnReIP verifies that a fresh probe which
+// resolves a family always wins over a previously-observed family. This covers
+// a peer re-IP (v4<->v6) and an overlay-test target toggle: the family must not
+// be monotonic-sticky (Task #17247 regression).
+func TestCNIMonitor_FamilyRefreshesOnReIP(t *testing.T) {
+	tests := []struct {
+		name        string
+		priorFamily string
+		pingResults []PingResult
+		wantFamily  string
+		wantReach   bool
+	}{
+		{
+			name:        "ipv4 to ipv6 re-IP refreshes family",
+			priorFamily: FamilyIPv4,
+			pingResults: []PingResult{
+				{Success: true, RTT: 8 * time.Millisecond, Family: FamilyIPv6},
+				{Success: true, RTT: 9 * time.Millisecond, Family: FamilyIPv6},
+				{Success: true, RTT: 10 * time.Millisecond, Family: FamilyIPv6},
+			},
+			wantFamily: FamilyIPv6,
+			wantReach:  true,
+		},
+		{
+			name:        "ipv6 to ipv4 re-IP refreshes family",
+			priorFamily: FamilyIPv6,
+			pingResults: []PingResult{
+				{Success: true, RTT: 8 * time.Millisecond, Family: FamilyIPv4},
+				{Success: true, RTT: 9 * time.Millisecond, Family: FamilyIPv4},
+				{Success: true, RTT: 10 * time.Millisecond, Family: FamilyIPv4},
+			},
+			wantFamily: FamilyIPv4,
+			wantReach:  true,
+		},
+		{
+			name:        "fresh family wins even when pings fail but listener bound",
+			priorFamily: FamilyIPv4,
+			pingResults: []PingResult{
+				{Success: false, Error: errors.New("timeout"), Family: FamilyIPv6},
+				{Success: false, Error: errors.New("timeout"), Family: FamilyIPv6},
+				{Success: false, Error: errors.New("timeout"), Family: FamilyIPv6},
+			},
+			wantFamily: FamilyIPv6,
+			wantReach:  false,
+		},
+		{
+			name:        "all-failure check with no family carries prior family forward",
+			priorFamily: FamilyIPv4,
+			pingResults: []PingResult{
+				{Success: false, Error: errors.New("timeout")},
+				{Success: false, Error: errors.New("timeout")},
+				{Success: false, Error: errors.New("timeout")},
+			},
+			wantFamily: FamilyIPv4,
+			wantReach:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peer := Peer{Name: "peer-1", NodeName: "node-2", NodeIP: "10.0.0.2"}
+			monitor := &CNIMonitor{
+				name: "test-cni",
+				config: &CNIMonitorConfig{
+					Connectivity: ConnectivityConfig{
+						PingCount:   3,
+						PingTimeout: 5 * time.Second,
+					},
+				},
+				pinger: newMockPinger(tt.pingResults, nil),
+				peerStatuses: map[string]*PeerStatus{
+					// Seed with a prior status that observed a (now stale) family.
+					"node-2": {
+						Peer:   peer,
+						Family: tt.priorFamily,
+					},
+				},
+			}
+
+			status := monitor.checkPeerConnectivity(context.Background(), peer)
+			if status.Reachable != tt.wantReach {
+				t.Errorf("Reachable = %v, want %v", status.Reachable, tt.wantReach)
+			}
+			if status.Family != tt.wantFamily {
+				t.Errorf("Family = %q, want %q", status.Family, tt.wantFamily)
+			}
+		})
+	}
+}

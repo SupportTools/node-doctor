@@ -36,7 +36,9 @@ type Config struct {
 	// Enabled controls whether the health server is running
 	Enabled bool
 
-	// BindAddress is the address to bind to (default: 0.0.0.0)
+	// BindAddress is the address to bind to (default: "::" for dual-stack,
+	// which accepts both IPv4 and IPv6 on Linux when net.ipv6.bindv6only=0).
+	// Falls back to "0.0.0.0" when the IPv6/dual-stack bind fails.
 	BindAddress string
 
 	// Port is the port to listen on (default: 8080)
@@ -100,6 +102,39 @@ type StatusResponse struct {
 	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
+// isDualStackHost reports whether host is a dual-stack/IPv6 wildcard bind that
+// may fail on nodes where IPv6 is disabled. Covers the empty host, the IPv6
+// unspecified address "::", and any other IPv6 literal.
+func isDualStackHost(host string) bool {
+	if host == "" || host == "::" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
+}
+
+// listenWithFallback opens a TCP listener on host:port using net.JoinHostPort
+// for correct IPv6 bracketing. When the host is a dual-stack/IPv6 wildcard and
+// the bind fails (typically because IPv6 is disabled on the node), it logs a
+// warning and retries on the IPv4 wildcard "0.0.0.0".
+func listenWithFallback(host string, port int) (net.Listener, error) {
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return ln, nil
+	}
+	if isDualStackHost(host) {
+		fallbackAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
+		log.Printf("[WARN] failed to bind %s (%v); falling back to IPv4 %s", addr, err, fallbackAddr)
+		fln, ferr := net.Listen("tcp", fallbackAddr)
+		if ferr != nil {
+			return nil, fmt.Errorf("bind failed on %s (%v) and IPv4 fallback %s (%w)", addr, err, fallbackAddr, ferr)
+		}
+		return fln, nil
+	}
+	return nil, fmt.Errorf("failed to bind %s: %w", addr, err)
+}
+
 // NewServer creates a new health server with the given configuration.
 func NewServer(config *Config) (*Server, error) {
 	if config == nil {
@@ -108,7 +143,10 @@ func NewServer(config *Config) (*Server, error) {
 
 	// Apply defaults
 	if config.BindAddress == "" {
-		config.BindAddress = "0.0.0.0"
+		// "::" binds dual-stack (both IPv4 and IPv6) on Linux when
+		// net.ipv6.bindv6only=0; Start() falls back to "0.0.0.0" if IPv6
+		// is disabled on the node.
+		config.BindAddress = "::"
 	}
 	// Port 0 is intentionally allowed — net.Listen("tcp", "host:0") lets the OS
 	// pick a free port atomically. Tests use Port: 0 to avoid TOCTOU port-grab races.
@@ -148,14 +186,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/remediation/history", s.handleRemediationHistory)
 
-	addr := fmt.Sprintf("%s:%d", s.config.BindAddress, s.config.Port)
-
 	// Eagerly bind the listener so bind failures propagate synchronously.
 	// Using net.Listen + Serve instead of ListenAndServe avoids the race where
 	// a goroutine fails silently after Start() returns success.
-	ln, err := net.Listen("tcp", addr)
+	// listenWithFallback uses net.JoinHostPort (correct IPv6 bracketing) and
+	// retries on "0.0.0.0" when a dual-stack/IPv6 bind fails.
+	ln, err := listenWithFallback(s.config.BindAddress, s.config.Port)
 	if err != nil {
-		return fmt.Errorf("health server failed to bind %s: %w", addr, err)
+		return fmt.Errorf("health server failed to bind: %w", err)
 	}
 
 	s.httpServer = &http.Server{

@@ -15,6 +15,7 @@ This document provides comprehensive information about all monitor types availab
   - [Gateway Monitor](#gateway-monitor)
   - [Connectivity Monitor](#connectivity-monitor)
   - [CNI Monitor](#cni-monitor)
+  - [IPv6 / Dual-Stack Monitors](#ipv6--dual-stack-monitors)
 - [Kubernetes Monitors](#kubernetes-monitors)
   - [Kubelet Monitor](#kubelet-monitor)
   - [API Server Monitor](#api-server-monitor)
@@ -1295,6 +1296,127 @@ Since node-doctor runs with `hostNetwork: true`, the CNI monitor:
 3. **Network Latency Alerting**: Identify network performance degradation
 4. **Cross-Node Connectivity**: Ensure nodes can communicate for pod-to-pod traffic
 5. **Node Health Correlation**: A node that can't reach other nodes should be considered unhealthy
+
+---
+
+## IPv6 / Dual-Stack Monitors
+
+Four detection-only monitors validate that an IPv6 / dual-stack node has a working IPv6 stack. They **never modify host settings** — they read kernel state (sysctls, `/proc/net/ipv6_route`, interface addresses, firewall listings) and emit conditions/events only.
+
+All four degrade gracefully on IPv4-only nodes: when `expectIPv6Enabled` (or `expectDefaultRoute` for the route monitor) is `false`, a missing IPv6 stack is recorded as a non-actionable `*NotExpected` condition rather than a problem. To silence a monitor entirely, set `enabled: false`. See [configuration.md](./configuration.md#ipv6--dual-stack) for the default config block and related dual-stack options (gateway `addressFamily`, DNS `recordType: AAAA`, dual-stack bind address).
+
+> **Metric label:** network metrics now carry an `address_family` label (`ipv4` / `ipv6` / `unknown`) so dual-stack probes can be distinguished in Prometheus. See `pkg/exporters/prometheus/metrics.go`.
+
+### IPv6 Sysctl Monitor
+
+Flags IPv6 being disabled via the `disable_ipv6` sysctl when it is expected to be enabled.
+
+**Monitor Type:** `network-ipv6-sysctl`
+
+**Source File:** `pkg/monitors/network/ipv6_sysctl.go`
+
+**Configuration:**
+
+```yaml
+monitors:
+  - name: ipv6-sysctl-check
+    type: network-ipv6-sysctl
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true       # Default: true
+      checkPerInterface: false      # Default: false — also glob per-interface disable_ipv6
+      procPath: /proc               # Default: /proc
+```
+
+**What It Checks:** Reads `net.ipv6.conf.all.disable_ipv6` (and per-interface `disable_ipv6` sysctls when `checkPerInterface: true`) under `procPath`.
+
+**Conditions:**
+- `IPv6SysctlMisconfigured`: True when IPv6 is disabled but `expectIPv6Enabled: true`; held at False (with an explanatory `*NotExpected`-style reason) when `expectIPv6Enabled: false`.
+
+### IPv6 Route Monitor
+
+Flags a missing IPv6 default route when one is expected.
+
+**Monitor Type:** `network-ipv6-route`
+
+**Source File:** `pkg/monitors/network/ipv6_route.go`
+
+**Configuration:**
+
+```yaml
+monitors:
+  - name: ipv6-route-check
+    type: network-ipv6-route
+    interval: 60s
+    timeout: 5s
+    config:
+      expectDefaultRoute: true      # Default: true
+      procPath: /proc               # Default: /proc
+```
+
+**What It Checks:** Parses `<procPath>/net/ipv6_route` for a `::/0` default route.
+
+**Conditions:**
+- `IPv6DefaultRouteMissing`: True when no IPv6 default route is present but `expectDefaultRoute: true`; held at False when `expectDefaultRoute: false`.
+
+### IPv6 Neighbor Monitor
+
+Checks IPv6 address presence (link-local / global / SLAAC) and Router Advertisement (RA / `accept_ra`) state per interface.
+
+**Monitor Type:** `network-ipv6-neighbor`
+
+**Source File:** `pkg/monitors/network/ipv6_neighbor.go`
+
+**Configuration:**
+
+```yaml
+monitors:
+  - name: ipv6-neighbor-check
+    type: network-ipv6-neighbor
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true       # Default: true
+      checkPerInterface: true       # Default: true — evaluate RA/autoconf per interface
+      requireGlobalAddress: false   # Default: false — when true, a missing global/SLAAC address is flagged
+      procPath: /proc               # Default: /proc
+```
+
+**What It Checks:** Per-interface IPv6 link-local and global/SLAAC address presence plus `accept_ra` state.
+
+**Conditions:**
+- `IPv6LinkLocalMissing`: True when an interface lacks an IPv6 link-local address and IPv6 is expected.
+- `IPv6GlobalAddressMissing`: True when an interface lacks a global/SLAAC IPv6 address and `requireGlobalAddress: true`.
+- `IPv6RouterAdvertisementDisabled`: True when `accept_ra` is disabled where RA-based autoconfiguration is expected.
+
+When `expectIPv6Enabled: false` (or `requireGlobalAddress: false` for the global-address case) these conditions are held at False with a non-actionable reason.
+
+### IPv6 Firewall Monitor
+
+Detection-only sanity check that the IPv6 firewall is not black-holing all IPv6 traffic.
+
+**Monitor Type:** `network-ipv6-firewall`
+
+**Source File:** `pkg/monitors/network/ipv6_firewall.go`
+
+**Configuration:**
+
+```yaml
+monitors:
+  - name: ipv6-firewall-check
+    type: network-ipv6-firewall
+    interval: 60s
+    timeout: 5s
+    config:
+      expectIPv6Enabled: true       # Default: true
+      backend: auto                 # Default: auto — one of "auto", "ip6tables", "nft"
+```
+
+**What It Checks:** Reads (does not modify) the IPv6 firewall ruleset. In `auto` mode it prefers `nft` when present and falls back to `ip6tables`.
+
+**Conditions:**
+- `IPv6FirewallBlackhole`: True when the IPv6 firewall appears to black-hole all IPv6 traffic and IPv6 is expected; held at False (`IPv6FirewallBlackholeNotExpected`) when `expectIPv6Enabled: false`. This monitor is detection-only and never edits firewall rules.
 
 ---
 

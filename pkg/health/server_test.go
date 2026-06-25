@@ -647,3 +647,125 @@ func TestServer_Stop_NoDeadlockWithInFlightHandler(t *testing.T) {
 		t.Fatal("Stop() did not return within 1 s after handler released — likely deadlock")
 	}
 }
+
+// TestNewServer_DualStackDefault verifies that an empty BindAddress defaults to
+// "::" (dual-stack), not the legacy "0.0.0.0".
+func TestNewServer_DualStackDefault(t *testing.T) {
+	server, err := NewServer(&Config{Enabled: true})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	if server.config.BindAddress != "::" {
+		t.Errorf("default BindAddress = %q, want %q", server.config.BindAddress, "::")
+	}
+}
+
+// TestServer_StartDualStackServesRequest verifies the health server binds with
+// the default "::" (dual-stack) BindAddress and serves a request. The bind has
+// an automatic IPv4 fallback, so this passes whether or not IPv6 is available.
+func TestServer_StartDualStackServesRequest(t *testing.T) {
+	// Empty BindAddress -> defaults to "::"; Port 0 -> ephemeral port.
+	server, err := NewServer(&Config{Enabled: true, Port: 0})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() { _ = server.Stop() }()
+
+	// httpServer.Addr is the actual bound address (host:port). Dial it via the
+	// loopback to confirm the listener is serving requests.
+	_, port, err := net.SplitHostPort(server.httpServer.Addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q) error = %v", server.httpServer.Addr, err)
+	}
+	resp, err := http.Get("http://127.0.0.1:" + port + "/healthz") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /healthz error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// TestServer_StartExplicitBindAddressHonored verifies an explicit BindAddress is
+// used as-is (no fallback) and serves a request.
+func TestServer_StartExplicitBindAddressHonored(t *testing.T) {
+	server, err := NewServer(&Config{Enabled: true, BindAddress: "127.0.0.1", Port: 0})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	if err := server.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() { _ = server.Stop() }()
+
+	host, port, err := net.SplitHostPort(server.httpServer.Addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q) error = %v", server.httpServer.Addr, err)
+	}
+	if host != "127.0.0.1" {
+		t.Errorf("bound host = %q, want 127.0.0.1", host)
+	}
+	resp, err := http.Get("http://127.0.0.1:" + port + "/healthz") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /healthz error = %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestIsDualStackHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"", true},
+		{"::", true},
+		{"::1", true},
+		{"fe80::1", true},
+		{"0.0.0.0", false},
+		{"127.0.0.1", false},
+		{"192.168.1.1", false},
+	}
+	for _, tt := range tests {
+		if got := isDualStackHost(tt.host); got != tt.want {
+			t.Errorf("isDualStackHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+}
+
+// TestListenWithFallback_Success confirms a bindable host returns a listener.
+func TestListenWithFallback_Success(t *testing.T) {
+	ln, err := listenWithFallback("127.0.0.1", 0)
+	if err != nil {
+		t.Fatalf("listenWithFallback() error = %v", err)
+	}
+	defer ln.Close()
+	if ln.Addr() == nil {
+		t.Fatal("listenWithFallback() returned nil Addr")
+	}
+}
+
+// TestListenWithFallback_NonDualStackNoFallback confirms that a bind failure on
+// a non-dual-stack host (e.g. 127.0.0.1) is returned as an error WITHOUT
+// retrying on 0.0.0.0 — the fallback only applies to dual-stack/IPv6 hosts.
+func TestListenWithFallback_NonDualStackNoFallback(t *testing.T) {
+	// Occupy a port on 127.0.0.1 so a second bind on the same host:port fails.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to grab a free port: %v", err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	ln, err := listenWithFallback("127.0.0.1", port)
+	if err == nil {
+		ln.Close()
+		t.Fatal("expected bind error for occupied 127.0.0.1 port, got nil")
+	}
+}

@@ -193,6 +193,14 @@ prometheusRule:
       thresholdPercent: 90
     apiServerLatencyHigh:
       for: 10m
+    # IPv6 misconfiguration alert - fires on any active IPv6* node condition
+    # (sysctl, default route, link-local, global address, RA, firewall blackhole).
+    # Carries address_family=ipv6 so Alertmanager can route IPv6 issues separately.
+    ipv6Misconfigured:
+      enabled: true
+      for: 10m
+      labels: {}
+      annotations: {}
 
   # Informational alerts - for awareness
   info:
@@ -354,6 +362,48 @@ monitors:
     checkIPv6: true
     checkPerInterface: false
 
+  # IPv6 / dual-stack monitors (detection-only — never modify host settings).
+  # These degrade gracefully on IPv4-only nodes: a missing IPv6 stack is
+  # reported as a warning, not an error. On IPv4-only clusters set
+  # expectIPv6Enabled: false (or enabled: false) to silence them entirely.
+
+  # Checks disable_ipv6 sysctl — flags IPv6 disabled when it is expected on.
+  ipv6Sysctl:
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    expectIPv6Enabled: true
+    checkPerInterface: false
+    # procPath is always /host/proc inside the container (host fs is bind-mounted)
+    procPath: /host/proc
+
+  # Checks for a valid IPv6 default route — flags missing route when expected.
+  ipv6Route:
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    expectDefaultRoute: true
+    procPath: /host/proc
+
+  # Checks RA/SLAAC address presence (link-local/global) and accept_ra sysctl.
+  ipv6Neighbor:
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    expectIPv6Enabled: true
+    checkPerInterface: true
+    requireGlobalAddress: false
+    procPath: /host/proc
+
+  # Detection-only ip6tables/nftables listing — flags unexpected firewall state.
+  ipv6Firewall:
+    enabled: true
+    interval: 60s
+    timeout: 5s
+    expectIPv6Enabled: true
+    # backend: auto selects ip6tables or nftables based on what is present on the node
+    backend: auto
+
 # Exporters configuration
 exporters:
   kubernetes:
@@ -374,7 +424,9 @@ exporters:
 
   http:
     enabled: false
-    bindAddress: "0.0.0.0"
+    # "::" = dual-stack (listens on IPv4 and IPv6); the server falls back to
+    # "0.0.0.0" automatically if the host kernel has IPv6 disabled.
+    bindAddress: "::"
     port: 8080
     tlsEnabled: false
 

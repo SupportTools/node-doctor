@@ -15,6 +15,7 @@ type Metrics struct {
 	ConditionsTotal       *prometheus.CounterVec
 	ExportOperationsTotal *prometheus.CounterVec
 	ExportErrorsTotal     *prometheus.CounterVec
+	MonitorCyclesTotal    *prometheus.CounterVec
 
 	// Gauge metrics
 	ProblemsActive   *prometheus.GaugeVec
@@ -23,6 +24,32 @@ type Metrics struct {
 	Info             *prometheus.GaugeVec
 	StartTimeSeconds *prometheus.GaugeVec
 	UptimeSeconds    *prometheus.GaugeVec
+
+	// MonitorCycleLastTimestamp records the unix-seconds time of each monitor's
+	// most recently completed check cycle. Used as a per-monitor "last run"
+	// heartbeat for staleness alerting.
+	MonitorCycleLastTimestamp *prometheus.GaugeVec
+
+	// Exporter-health self-metrics. These make the exporter's own health
+	// observable so operators can alert on a stuck or failing exporter.
+	// They are keyed by the exporter identity label only (not operation),
+	// since health is per-exporter.
+	ExporterHealthy              *prometheus.GaugeVec
+	ExporterLastSuccessTimestamp *prometheus.GaugeVec
+	ExporterConsecutiveFailures  *prometheus.GaugeVec
+
+	// Config hot-reload self-metrics. These make the configuration hot-reload
+	// path observable so operators can alert on reload failures or a reload
+	// loop that has gone quiet. All are keyed by the node label only.
+	//
+	// Timestamp semantics: ConfigReloadLastTimestamp records the time of the most
+	// recent reload ATTEMPT (success or failure), updated at the end of every
+	// attempt. Pair it with ConfigReloadLastSuccess (1 if that most-recent attempt
+	// succeeded, 0 if it failed) to distinguish "reloaded recently and it worked"
+	// from "tried recently and it failed".
+	ConfigReloadsTotal        *prometheus.CounterVec
+	ConfigReloadLastTimestamp *prometheus.GaugeVec
+	ConfigReloadLastSuccess   *prometheus.GaugeVec
 
 	// Network latency gauge metrics
 	GatewayLatencySeconds         *prometheus.GaugeVec
@@ -44,6 +71,13 @@ type Metrics struct {
 
 	APIServerLatencySeconds *prometheus.GaugeVec
 
+	// RemediatorCircuitBreakerState exposes the remediator registry's circuit
+	// breaker state. The value encodes the state as: 0=closed (normal operation),
+	// 1=open (remediations blocked after too many failures), 2=half-open (testing
+	// recovery). This encoding matches the CircuitBreakerState iota in
+	// pkg/remediators/registry.go exactly.
+	RemediatorCircuitBreakerState *prometheus.GaugeVec
+
 	// Histogram metrics
 	MonitorCheckDuration      *prometheus.HistogramVec
 	ExportDuration            *prometheus.HistogramVec
@@ -51,6 +85,10 @@ type Metrics struct {
 	PeerLatencyHistogram      *prometheus.HistogramVec
 	DNSLatencyHistogram       *prometheus.HistogramVec
 	APIServerLatencyHistogram *prometheus.HistogramVec
+
+	// ConfigReloadDuration observes the wall-clock time of each completed config
+	// reload attempt (performReload), keyed by the node label.
+	ConfigReloadDuration *prometheus.HistogramVec
 }
 
 // NewMetrics creates a new Metrics instance with all metric definitions
@@ -136,6 +174,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node", "exporter", "error_type"},
 		),
 
+		MonitorCyclesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "monitor_cycles_total",
+				Help:        "Total number of completed monitor check cycles, partitioned by result (success/error)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "monitor_name", "result"},
+		),
+
 		// Gauge metrics
 		ConditionStatus: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -203,6 +252,84 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node"},
 		),
 
+		MonitorCycleLastTimestamp: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "monitor_cycle_last_timestamp_seconds",
+				Help:        "Unix timestamp (seconds) of each monitor's most recently completed check cycle",
+				ConstLabels: labels,
+			},
+			[]string{"node", "monitor_name"},
+		),
+
+		ExporterHealthy: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "exporter_healthy",
+				Help:        "Whether the most recent export succeeded (1 = success, 0 = failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "exporter"},
+		),
+
+		ExporterLastSuccessTimestamp: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "exporter_last_success_timestamp_seconds",
+				Help:        "Unix timestamp (seconds) of the most recent successful export (last-success heartbeat for staleness alerting)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "exporter"},
+		),
+
+		ExporterConsecutiveFailures: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "exporter_consecutive_failures",
+				Help:        "Number of consecutive failed exports since the last successful export (reset to 0 on success)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "exporter"},
+		),
+
+		// Config hot-reload self-metrics
+		ConfigReloadsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reloads_total",
+				Help:        "Total number of completed configuration reload attempts, partitioned by result (success/failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "result"},
+		),
+
+		ConfigReloadLastTimestamp: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reload_last_timestamp_seconds",
+				Help:        "Unix timestamp (seconds) of the most recent configuration reload attempt (success or failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
+		ConfigReloadLastSuccess: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reload_last_success",
+				Help:        "Whether the most recent configuration reload attempt succeeded (1 = success, 0 = failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
 		// Network latency gauge metrics
 		GatewayLatencySeconds: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -212,7 +339,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Current latency to the default gateway in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "gateway_ip"},
+			[]string{"node", "gateway_ip", "address_family"},
 		),
 
 		PeerLatencySeconds: prometheus.NewGaugeVec(
@@ -223,7 +350,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Last measured latency to peer node in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "peer_node", "peer_ip"},
+			[]string{"node", "peer_node", "peer_ip", "address_family"},
 		),
 
 		PeerLatencyAvgSeconds: prometheus.NewGaugeVec(
@@ -234,7 +361,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Average latency to peer node in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "peer_node", "peer_ip"},
+			[]string{"node", "peer_node", "peer_ip", "address_family"},
 		),
 
 		PeerReachable: prometheus.NewGaugeVec(
@@ -245,7 +372,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Whether peer node is reachable (1 = reachable, 0 = unreachable)",
 				ConstLabels: labels,
 			},
-			[]string{"node", "peer_node", "peer_ip"},
+			[]string{"node", "peer_node", "peer_ip", "address_family"},
 		),
 
 		PeersTotal: prometheus.NewGaugeVec(
@@ -278,7 +405,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "DNS resolution latency in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "dns_server", "domain", "record_type"},
+			[]string{"node", "dns_server", "domain", "record_type", "address_family"},
 		),
 
 		DNSNameserverHealthScore: prometheus.NewGaugeVec(
@@ -365,6 +492,17 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node"},
 		),
 
+		RemediatorCircuitBreakerState: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "remediator_circuit_breaker_state",
+				Help:        "Current remediator circuit breaker state (0=closed, 1=open, 2=half-open)",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
 		// Histogram metrics
 		MonitorCheckDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -437,6 +575,18 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			},
 			[]string{"node"},
 		),
+
+		ConfigReloadDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "config_reload_duration_seconds",
+				Help:        "Duration of configuration reload attempts in seconds",
+				ConstLabels: labels,
+				Buckets:     prometheus.DefBuckets,
+			},
+			[]string{"node"},
+		),
 	}
 
 	return m, nil
@@ -451,14 +601,23 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.ConditionsTotal,
 		m.ExportOperationsTotal,
 		m.ExportErrorsTotal,
+		m.MonitorCyclesTotal,
 		m.ProblemsActive,
 		m.MonitorUp,
 		m.ConditionStatus,
 		m.Info,
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
+		m.MonitorCycleLastTimestamp,
+		m.ExporterHealthy,
+		m.ExporterLastSuccessTimestamp,
+		m.ExporterConsecutiveFailures,
+		m.ConfigReloadsTotal,
+		m.ConfigReloadLastTimestamp,
+		m.ConfigReloadLastSuccess,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
+		m.ConfigReloadDuration,
 		// Network latency metrics
 		m.GatewayLatencySeconds,
 		m.PeerLatencySeconds,
@@ -475,6 +634,7 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.DNSPredictedBreachSeconds,
 		m.DNSPredictionConfidence,
 		m.APIServerLatencySeconds,
+		m.RemediatorCircuitBreakerState,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
 		m.DNSLatencyHistogram,
@@ -499,14 +659,23 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.ConditionsTotal,
 		m.ExportOperationsTotal,
 		m.ExportErrorsTotal,
+		m.MonitorCyclesTotal,
 		m.ProblemsActive,
 		m.MonitorUp,
 		m.ConditionStatus,
 		m.Info,
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
+		m.MonitorCycleLastTimestamp,
+		m.ExporterHealthy,
+		m.ExporterLastSuccessTimestamp,
+		m.ExporterConsecutiveFailures,
+		m.ConfigReloadsTotal,
+		m.ConfigReloadLastTimestamp,
+		m.ConfigReloadLastSuccess,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
+		m.ConfigReloadDuration,
 		// Network latency metrics
 		m.GatewayLatencySeconds,
 		m.PeerLatencySeconds,
@@ -523,6 +692,7 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.DNSPredictedBreachSeconds,
 		m.DNSPredictionConfidence,
 		m.APIServerLatencySeconds,
+		m.RemediatorCircuitBreakerState,
 		m.GatewayLatencyHistogram,
 		m.PeerLatencyHistogram,
 		m.DNSLatencyHistogram,

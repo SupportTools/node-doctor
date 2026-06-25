@@ -182,26 +182,30 @@ spec:
             description: "Node {{`{{ $labels.node }}`}} is experiencing network degradation (high latency or partial connectivity)."
 
         - alert: NodeDoctorHighPeerLatency
+          # Per-family: max P95-equivalent peer latency grouped by address_family so
+          # IPv4 and IPv6 alert independently and the firing alert carries the family.
           expr: |
-            histogram_quantile(0.95, sum(rate(node_doctor_monitor_peer_latency_histogram_seconds_bucket[5m])) by (le, node)) * 1000 > {{ .Values.prometheusRule.warning.highPeerLatency.thresholdMs }}
+            max by (node, address_family) (node_doctor_monitor_peer_latency_seconds) * 1000 > {{ .Values.prometheusRule.warning.highPeerLatency.thresholdMs }}
           for: {{ .Values.prometheusRule.warning.highPeerLatency.for }}
           labels:
             severity: warning
             component: network
           annotations:
-            summary: "High peer latency on {{`{{ $labels.node }}`}}"
-            description: "Node {{`{{ $labels.node }}`}} P95 peer latency exceeds {{ .Values.prometheusRule.warning.highPeerLatency.thresholdMs }}ms."
+            summary: "High peer latency ({{`{{ $labels.address_family }}`}}) on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} peer latency over {{`{{ $labels.address_family }}`}} exceeds {{ .Values.prometheusRule.warning.highPeerLatency.thresholdMs }}ms."
 
         - alert: NodeDoctorLowPeerConnectivity
+          # Per-family: percentage of reachable peers grouped by address_family so a
+          # single-stack outage (e.g. IPv6 down) is not masked by a healthy IPv4 path.
           expr: |
-            (sum by (node) (node_doctor_monitor_peers_reachable_total) / sum by (node) (node_doctor_monitor_peers_total)) * 100 < {{ .Values.prometheusRule.warning.lowPeerConnectivity.thresholdPercent }}
+            (avg by (node, address_family) (node_doctor_monitor_peer_reachable)) * 100 < {{ .Values.prometheusRule.warning.lowPeerConnectivity.thresholdPercent }}
           for: {{ .Values.prometheusRule.warning.lowPeerConnectivity.for }}
           labels:
             severity: warning
             component: network
           annotations:
-            summary: "Low peer connectivity on {{`{{ $labels.node }}`}}"
-            description: "Node {{`{{ $labels.node }}`}} can only reach {{`{{ $value | printf \"%.1f\" }}`}}% of peers."
+            summary: "Low peer connectivity ({{`{{ $labels.address_family }}`}}) on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} can only reach {{`{{ $value | printf \"%.1f\" }}`}}% of peers over {{`{{ $labels.address_family }}`}}."
 
         - alert: NodeDoctorAPIServerLatencyHigh
           expr: |
@@ -213,6 +217,31 @@ spec:
           annotations:
             summary: "High API server latency on {{`{{ $labels.node }}`}}"
             description: "Node {{`{{ $labels.node }}`}} is experiencing high latency communicating with the API server."
+        {{- if .Values.prometheusRule.warning.ipv6Misconfigured.enabled }}
+
+        - alert: NodeDoctorIPv6Misconfigured
+          # Covers all IPv6-specific conditions (IPv6SysctlMisconfigured,
+          # IPv6DefaultRouteMissing, IPv6LinkLocalMissing, IPv6GlobalAddressMissing,
+          # IPv6RouterAdvertisementDisabled, IPv6FirewallBlackhole). These conditions
+          # are not family-labeled metrics; condition_status carries only
+          # {node,condition_type}, so the address_family label is fixed to ipv6 here.
+          expr: |
+            node_doctor_monitor_condition_status{condition_type=~"IPv6.*"} == 1
+          for: {{ .Values.prometheusRule.warning.ipv6Misconfigured.for }}
+          labels:
+            severity: warning
+            component: network
+            address_family: ipv6
+            {{- with .Values.prometheusRule.warning.ipv6Misconfigured.labels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "IPv6 misconfiguration ({{`{{ $labels.condition_type }}`}}) on {{`{{ $labels.node }}`}}"
+            description: "Node {{`{{ $labels.node }}`}} has an active IPv6 condition {{`{{ $labels.condition_type }}`}}. IPv6 connectivity may be impaired."
+            {{- with .Values.prometheusRule.warning.ipv6Misconfigured.annotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
     {{- end }}
 
     {{- if .Values.prometheusRule.info.enabled }}

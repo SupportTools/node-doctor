@@ -3101,3 +3101,36 @@ func TestValidateWithRegistry_DependsOnCrossValidation(t *testing.T) {
 		}
 	})
 }
+
+// TestPrometheusExporterConfigApplyDefaults verifies defaults, including the
+// dual-stack BindAddress ("::") applied when the field is empty.
+func TestPrometheusExporterConfigApplyDefaults(t *testing.T) {
+	t.Run("empty config gets dual-stack defaults", func(t *testing.T) {
+		p := &PrometheusExporterConfig{Enabled: true}
+		if err := p.ApplyDefaults(); err != nil {
+			t.Fatalf("ApplyDefaults() error = %v", err)
+		}
+		if p.BindAddress != "::" {
+			t.Errorf("BindAddress = %q, want %q", p.BindAddress, "::")
+		}
+		if p.BindAddress != DefaultHTTPBindAddress {
+			t.Errorf("BindAddress = %q, want DefaultHTTPBindAddress %q", p.BindAddress, DefaultHTTPBindAddress)
+		}
+		if p.Port != DefaultPrometheusPort {
+			t.Errorf("Port = %d, want %d", p.Port, DefaultPrometheusPort)
+		}
+		if p.Path != DefaultPrometheusPath {
+			t.Errorf("Path = %q, want %q", p.Path, DefaultPrometheusPath)
+		}
+	})
+
+	t.Run("explicit BindAddress is preserved", func(t *testing.T) {
+		p := &PrometheusExporterConfig{Enabled: true, BindAddress: "127.0.0.1"}
+		if err := p.ApplyDefaults(); err != nil {
+			t.Fatalf("ApplyDefaults() error = %v", err)
+		}
+		if p.BindAddress != "127.0.0.1" {
+			t.Errorf("BindAddress = %q, want 127.0.0.1 (should not be overridden)", p.BindAddress)
+		}
+	})
+}

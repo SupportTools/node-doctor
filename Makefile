@@ -22,6 +22,7 @@
 	gh-status gh-watch gh-logs gh-builds \
 	check-prerequisites check-docker check-kubectl \
 	build test test-integration test-e2e test-all \
+	test-net-icmp-integration \
 	lint fmt clean install-deps \
 	docker-build docker-push \
 	coverage-check
@@ -231,6 +232,20 @@ test-e2e:
 		$(call print_warning,"E2E tests not yet implemented (test/e2e/ does not exist)"); \
 	fi
 	@$(call print_success,"E2E tests completed")
+
+# Run the real ICMP pinger integration test under privilege.
+#
+# The default pinger opens RAW ICMP sockets (CAP_NET_RAW), so this must run as
+# root. We compile the test binary as the normal user first (preserving the Go
+# environment / module cache) and then run ONLY this test under sudo with the
+# integration env var set, so socket/permission failures are HARD failures
+# instead of silent skips.
+test-net-icmp-integration:
+	@$(call print_status,"Compiling network test binary...")
+	@go test -c -o /tmp/nd-network.test ./pkg/monitors/network/
+	@$(call print_status,"Running ICMP integration test as root (CAP_NET_RAW)...")
+	@sudo NODE_DOCTOR_ICMP_INTEGRATION=1 /tmp/nd-network.test -test.run '^TestDefaultPinger_Integration$$' -test.v
+	@$(call print_success,"ICMP integration test passed")
 
 # Run all tests with coverage
 test-all:

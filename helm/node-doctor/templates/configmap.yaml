@@ -93,6 +93,57 @@ data:
           procPath: /host/proc
       {{- end }}
 
+      {{- if .Values.monitors.ipv6Sysctl.enabled }}
+      # IPv6 sysctl Monitor — detection-only, degrades gracefully on IPv4-only nodes
+      - name: ipv6-sysctl-check
+        type: network-ipv6-sysctl
+        enabled: true
+        interval: {{ .Values.monitors.ipv6Sysctl.interval }}
+        timeout: {{ .Values.monitors.ipv6Sysctl.timeout }}
+        config:
+          expectIPv6Enabled: {{ .Values.monitors.ipv6Sysctl.expectIPv6Enabled }}
+          checkPerInterface: {{ .Values.monitors.ipv6Sysctl.checkPerInterface }}
+          procPath: {{ .Values.monitors.ipv6Sysctl.procPath }}
+      {{- end }}
+
+      {{- if .Values.monitors.ipv6Route.enabled }}
+      # IPv6 Route Monitor — detection-only, degrades gracefully on IPv4-only nodes
+      - name: ipv6-route-check
+        type: network-ipv6-route
+        enabled: true
+        interval: {{ .Values.monitors.ipv6Route.interval }}
+        timeout: {{ .Values.monitors.ipv6Route.timeout }}
+        config:
+          expectDefaultRoute: {{ .Values.monitors.ipv6Route.expectDefaultRoute }}
+          procPath: {{ .Values.monitors.ipv6Route.procPath }}
+      {{- end }}
+
+      {{- if .Values.monitors.ipv6Neighbor.enabled }}
+      # IPv6 Neighbor Monitor — detection-only, degrades gracefully on IPv4-only nodes
+      - name: ipv6-neighbor-check
+        type: network-ipv6-neighbor
+        enabled: true
+        interval: {{ .Values.monitors.ipv6Neighbor.interval }}
+        timeout: {{ .Values.monitors.ipv6Neighbor.timeout }}
+        config:
+          expectIPv6Enabled: {{ .Values.monitors.ipv6Neighbor.expectIPv6Enabled }}
+          checkPerInterface: {{ .Values.monitors.ipv6Neighbor.checkPerInterface }}
+          requireGlobalAddress: {{ .Values.monitors.ipv6Neighbor.requireGlobalAddress }}
+          procPath: {{ .Values.monitors.ipv6Neighbor.procPath }}
+      {{- end }}
+
+      {{- if .Values.monitors.ipv6Firewall.enabled }}
+      # IPv6 Firewall Monitor — detection-only, degrades gracefully on IPv4-only nodes
+      - name: ipv6-firewall-check
+        type: network-ipv6-firewall
+        enabled: true
+        interval: {{ .Values.monitors.ipv6Firewall.interval }}
+        timeout: {{ .Values.monitors.ipv6Firewall.timeout }}
+        config:
+          expectIPv6Enabled: {{ .Values.monitors.ipv6Firewall.expectIPv6Enabled }}
+          backend: {{ .Values.monitors.ipv6Firewall.backend }}
+      {{- end }}
+
       {{- if .Values.overlayTest.enabled }}
       # CNI Connectivity Monitor - Tests overlay network connectivity
       # Uses overlay-test pods for accurate CNI testing

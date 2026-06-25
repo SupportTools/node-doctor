@@ -221,6 +221,20 @@ func (pd *ProblemDetector) SetRemediatorRegistry(r RemediationExecutor) {
 	pd.remediatorRegistry = r
 }
 
+// SetReloadMetricsRecorder wires a config hot-reload self-metrics recorder into
+// the detector's reload coordinator. The detector only sees exporters via the
+// types.Exporter interface and does not hold the concrete Prometheus exporter,
+// so the recorder is injected here as a decoupled closure (mirroring the
+// EventEmitter pattern). Nil-safe: a nil recorder disables recording, and the
+// call is a no-op if the coordinator has not been constructed.
+func (pd *ProblemDetector) SetReloadMetricsRecorder(recorder reload.ReloadMetricsRecorder) {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+	if pd.reloadCoordinator != nil {
+		pd.reloadCoordinator.SetMetricsRecorder(recorder)
+	}
+}
+
 // IsRunning returns true if the detector is currently running
 func (pd *ProblemDetector) IsRunning() bool {
 	pd.mu.RLock()

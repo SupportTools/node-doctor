@@ -41,6 +41,32 @@ func (m *mockAPIServerClient) GetVersion(ctx context.Context) (*version.Info, er
 	}, m.err
 }
 
+// TestClassifyEndpointFamily verifies address-family classification of API
+// server endpoints.
+func TestClassifyEndpointFamily(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{"ipv4 url with port", "https://10.0.0.1:6443", "ipv4"},
+		{"ipv4 url no port", "https://10.0.0.1", "ipv4"},
+		{"ipv6 url bracketed with port", "https://[fd00::1]:6443", "ipv6"},
+		{"ipv6 url bracketed no port", "https://[2001:db8::1]", "ipv6"},
+		{"hostname url", "https://kubernetes.default.svc.cluster.local", ""},
+		{"bare ipv4", "10.0.0.1", "ipv4"},
+		{"bare ipv6", "fd00::1", "ipv6"},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := classifyEndpointFamily(c.endpoint); got != c.want {
+				t.Errorf("classifyEndpointFamily(%q) = %q, want %q", c.endpoint, got, c.want)
+			}
+		})
+	}
+}
+
 // TestParseAPIServerConfig tests configuration parsing.
 func TestParseAPIServerConfig(t *testing.T) {
 	tests := []struct {
