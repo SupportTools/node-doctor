@@ -1398,6 +1398,58 @@ func TestCheckCustomQueries(t *testing.T) {
 	}
 }
 
+// TestCheckCustomQueries_AAAAScopedAddresses covers the AAAA path when the
+// resolver returns non-global / scoped IPv6 addresses (link-local fe80::/10,
+// unique-local fc00::/7, loopback ::1, and a multi-address mix). These are
+// valid resolution results and must be treated as a successful AAAA lookup —
+// no error / no-records event — i.e. the monitor must not reject scoped
+// addresses. Spawned from Task #17201 (AAAA probe path).
+func TestCheckCustomQueries_AAAAScopedAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		ips  []net.IP
+	}{
+		{name: "link-local only", ips: []net.IP{net.ParseIP("fe80::1")}},
+		{name: "unique-local only", ips: []net.IP{net.ParseIP("fc00::1")}},
+		{name: "unique-local fd00", ips: []net.IP{net.ParseIP("fd12:3456::1")}},
+		{name: "ipv6 loopback", ips: []net.IP{net.ParseIP("::1")}},
+		{name: "mix of scoped and global", ips: []net.IP{net.ParseIP("fe80::1"), net.ParseIP("2606:4700::1")}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, ip := range tt.ips {
+				if ip == nil {
+					t.Fatal("test setup error: nil IP in fixture")
+				}
+			}
+
+			mock := newMockResolver()
+			mock.ipResponses["ip6|scoped.example.com"] = tt.ips
+
+			monitor := &DNSMonitor{
+				config: &DNSMonitorConfig{
+					CustomQueries:    []DNSQuery{{Domain: "scoped.example.com", RecordType: "AAAA"}},
+					LatencyThreshold: 500 * time.Millisecond,
+				},
+				resolver: mock,
+			}
+
+			status := types.NewStatus("test-dns")
+			monitor.checkCustomQueries(context.Background(), status)
+
+			// A successful AAAA resolution of scoped addresses emits no events.
+			if len(status.Events) != 0 {
+				reasons := make([]string, len(status.Events))
+				for i, e := range status.Events {
+					reasons[i] = e.Reason
+				}
+				t.Errorf("scoped AAAA resolution emitted unexpected events %v; want none (scoped addresses must count as a successful lookup)", reasons)
+			}
+		})
+	}
+}
+
 // TestParseDNSConfigTestEachNameserver tests parsing of testEachNameserver field.
 func TestParseDNSConfigTestEachNameserver(t *testing.T) {
 	tests := []struct {
