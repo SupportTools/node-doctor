@@ -335,11 +335,11 @@ func TestBuildStrategyList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildStrategyList(tt.remCfg)
 			if len(got) != len(tt.want) {
-				t.Fatalf("buildStrategyList() = %v, want %v", got, tt.want)
+				t.Fatalf("buildStrategyList() len = %d (%v), want %d (%v)", len(got), got, len(tt.want), tt.want)
 			}
 			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("buildStrategyList()[%d] = %q, want %q", i, got[i], tt.want[i])
+				if got[i].Strategy != tt.want[i] {
+					t.Errorf("buildStrategyList()[%d].Strategy = %q, want %q", i, got[i].Strategy, tt.want[i])
 				}
 			}
 		})
@@ -397,6 +397,104 @@ func TestEvaluateRemediation_MultiStrategyDispatch(t *testing.T) {
 	snap := pd.GetStatistics()
 	if got := snap.GetRemediationsTriggered(); got != 0 {
 		t.Errorf("expected remediationsTriggered=0, got %d", got)
+	}
+}
+
+// TestEvaluateRemediation_ThreadsServiceMetadata verifies that a single-strategy
+// systemd-restart config with a Service threads that service into the dispatched
+// Problem.Metadata["service"] (TaskForge #19263 Phase 1).
+func TestEvaluateRemediation_ThreadsServiceMetadata(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+
+	monCfg := types.MonitorConfig{
+		Name:     "svc-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:  true,
+			Strategy: "systemd-restart",
+			Service:  "kubelet",
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+
+	mon.AddStatusUpdate(unhealthyStatus("svc-monitor", "KubeletHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected 1 executor call within 1s, got %d", exec.CallCount())
+	}
+	_ = pd
+
+	call := exec.Calls()[0]
+	if call.RemediatorType != "systemd-restart" {
+		t.Errorf("strategy = %q, want systemd-restart", call.RemediatorType)
+	}
+	if got := call.Problem.Metadata["service"]; got != "kubelet" {
+		t.Errorf("Problem.Metadata[service] = %q, want kubelet", got)
+	}
+	// Source/condition/reason context preserved.
+	if got := call.Problem.Metadata["condition"]; got != "KubeletHealthy" {
+		t.Errorf("Problem.Metadata[condition] = %q, want KubeletHealthy", got)
+	}
+}
+
+// TestEvaluateRemediation_MultiStrategyThreadsPerStrategyParams verifies that a
+// multi-strategy list with DIFFERING params threads each strategy's own params
+// into its dispatched Problem.Metadata (service for systemd-restart, scriptPath
+// + JSON-encoded args for custom-script).
+func TestEvaluateRemediation_MultiStrategyThreadsPerStrategyParams(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+	// Force every attempt to fail so the detector walks all strategies in order.
+	exec.SetError(fmt.Errorf("simulated failure"))
+
+	monCfg := types.MonitorConfig{
+		Name:     "multi-param-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:  true,
+			Strategy: "node-reboot", // top-level (param-free) required by validation; ignored in favor of Strategies
+			Strategies: []types.MonitorRemediationConfig{
+				{Strategy: "systemd-restart", Service: "containerd"},
+				{Strategy: "custom-script", ScriptPath: "/opt/fix.sh", Args: []string{"--force", "a b"}},
+			},
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+	_ = pd
+
+	mon.AddStatusUpdate(unhealthyStatus("multi-param-monitor", "ServiceHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 2 }) {
+		t.Fatalf("expected 2 ordered executor calls within 1s, got %d", exec.CallCount())
+	}
+
+	calls := exec.Calls()
+	// First strategy: systemd-restart with service=containerd, no scriptPath/args.
+	if calls[0].RemediatorType != "systemd-restart" {
+		t.Errorf("first strategy = %q, want systemd-restart", calls[0].RemediatorType)
+	}
+	if got := calls[0].Problem.Metadata["service"]; got != "containerd" {
+		t.Errorf("first Problem.Metadata[service] = %q, want containerd", got)
+	}
+	if _, ok := calls[0].Problem.Metadata["scriptPath"]; ok {
+		t.Errorf("first Problem.Metadata should not carry scriptPath, got %v", calls[0].Problem.Metadata)
+	}
+
+	// Second strategy: custom-script with scriptPath + JSON-encoded args, no service.
+	if calls[1].RemediatorType != "custom-script" {
+		t.Errorf("second strategy = %q, want custom-script", calls[1].RemediatorType)
+	}
+	if got := calls[1].Problem.Metadata["scriptPath"]; got != "/opt/fix.sh" {
+		t.Errorf("second Problem.Metadata[scriptPath] = %q, want /opt/fix.sh", got)
+	}
+	if got := calls[1].Problem.Metadata["args"]; got != `["--force","a b"]` {
+		t.Errorf("second Problem.Metadata[args] = %q, want JSON array", got)
+	}
+	if _, ok := calls[1].Problem.Metadata["service"]; ok {
+		t.Errorf("second Problem.Metadata should not carry service, got %v", calls[1].Problem.Metadata)
 	}
 }
 

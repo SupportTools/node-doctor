@@ -222,6 +222,17 @@ func main() {
 		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d, maxPerMinute=%d)",
 			remediatorRegistry.IsDryRun(), maxPerHour, config.Remediation.MaxRemediationsPerMinute)
 
+		// Register the built-in remediator strategies so the detector's dispatch
+		// (which addresses a remediator by its strategy type) can find one.
+		// TaskForge #19263 Phase 1 registers ONLY the two SAFE strategies
+		// (systemd-restart, custom-script); the destructive node-reboot/pod-delete
+		// strategies are deferred to Phase 2 and remain unregistered (a config
+		// naming them fails dispatch, which is the desired fail-safe). SetDryRun
+		// is applied above so the closures pick up the correct dry-run state.
+		remediators.RegisterBuiltinRemediators(remediatorRegistry, config)
+		log.Printf("[INFO] Registered built-in remediators: %v (node-reboot/pod-delete deferred to Phase 2)",
+			remediatorRegistry.GetRegisteredTypes())
+
 		// Wire the controller lease client when coordination is opted in.
 		// The registry's Remediate path checks for a non-nil lease client and
 		// performs RequestLease/ReleaseLease internally; nothing else to wire.

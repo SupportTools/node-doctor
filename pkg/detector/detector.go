@@ -2,6 +2,7 @@ package detector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -517,13 +518,23 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 
 	remCfg := monitorCfg.Remediation
 
-	// Build the ordered list of remediation strategy types to attempt.
+	// Build the ordered list of remediation strategies to attempt. Each entry
+	// carries its OWN per-strategy parameters (Service for systemd-restart,
+	// ScriptPath/Args for custom-script) so that a multi-strategy list with
+	// differing params threads each strategy's params independently.
+	//
 	// When Strategies is non-empty, dispatch each nested strategy in order
-	// (first-success-wins). Otherwise fall back to the single Strategy so that
+	// (first-success-wins). Otherwise fall back to the single top-level config so
 	// existing single-strategy configs behave exactly as before.
-	strategyTypes := buildStrategyList(remCfg)
-	if len(strategyTypes) == 0 {
+	strategies := buildStrategyList(remCfg)
+	if len(strategies) == 0 {
 		return
+	}
+
+	// strategyTypes is kept purely for logging context (the ordered type names).
+	strategyTypes := make([]string, len(strategies))
+	for i, s := range strategies {
+		strategyTypes[i] = s.Strategy
 	}
 
 	for _, cond := range status.Conditions {
@@ -531,23 +542,37 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 			continue
 		}
 
-		problem := types.Problem{
-			Type:       strategyTypes[0],
-			Resource:   cond.Type,
-			Severity:   types.ProblemWarning,
-			Message:    cond.Message,
-			DetectedAt: cond.Transition,
-			Metadata: map[string]string{
-				"source":    status.Source,
-				"condition": cond.Type,
-				"reason":    cond.Reason,
-			},
+		// Dispatch the ordered strategies, threading each strategy's own params
+		// into the Problem.Metadata before attempting it. First success wins; the
+		// single-strategy case is just a one-element loop, preserving prior
+		// single-Strategy behavior.
+		var lastErr error
+		succeeded := false
+		for i, strat := range strategies {
+			problem := types.Problem{
+				Type:       strat.Strategy,
+				Resource:   cond.Type,
+				Severity:   types.ProblemWarning,
+				Message:    cond.Message,
+				DetectedAt: cond.Transition,
+				Metadata:   buildProblemMetadata(status.Source, cond, strat),
+			}
+
+			err := registry.Remediate(pd.ctx, strat.Strategy, problem)
+			if err == nil {
+				succeeded = true
+				break
+			}
+			lastErr = err
+			slog.Debug("remediation strategy failed, trying next",
+				"monitor", status.Source, "condition", cond.Type,
+				"strategy", strat.Strategy, "index", i+1, "of", len(strategies), "error", err)
 		}
 
-		if err := registry.RemediateWithStrategies(pd.ctx, strategyTypes, problem); err != nil {
+		if !succeeded {
 			slog.Warn("remediation failed",
 				"monitor", status.Source, "condition", cond.Type,
-				"strategies", strategyTypes, "error", err)
+				"strategies", strategyTypes, "error", lastErr)
 			pd.stats.IncrementRemediationsFailed()
 		} else {
 			slog.Info("remediation triggered",
@@ -558,23 +583,57 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 	}
 }
 
-// buildStrategyList returns the ordered list of remediation strategy types to
-// attempt for a monitor's remediation config.
+// buildProblemMetadata builds the Problem.Metadata carrier for a single
+// remediation strategy attempt. It always includes the source/condition/reason
+// context the detector has always set, and additionally threads the strategy's
+// OWN per-strategy parameters so the registered remediator can resolve them at
+// Remediate time:
+//   - "service"    : strat.Service     (systemd-restart target service)
+//   - "scriptPath" : strat.ScriptPath  (custom-script script path)
+//   - "args"       : JSON-encoded strat.Args (custom-script arguments)
 //
-// When remCfg.Strategies is non-empty, the nested strategies are dispatched in
-// order (each strategy's Strategy field, skipping empties). Otherwise it falls
-// back to the single remCfg.Strategy, preserving backward compatibility:
-// a config with only Strategy set yields []string{Strategy}.
-func buildStrategyList(remCfg *types.MonitorRemediationConfig) []string {
+// Only non-empty params are added so a strategy that does not use a given param
+// does not pollute the metadata.
+func buildProblemMetadata(source string, cond types.Condition, strat types.MonitorRemediationConfig) map[string]string {
+	meta := map[string]string{
+		"source":    source,
+		"condition": cond.Type,
+		"reason":    cond.Reason,
+	}
+	if strat.Service != "" {
+		meta["service"] = strat.Service
+	}
+	if strat.ScriptPath != "" {
+		meta["scriptPath"] = strat.ScriptPath
+	}
+	if len(strat.Args) > 0 {
+		// JSON-encode args so values containing commas/spaces survive intact.
+		if encoded, err := json.Marshal(strat.Args); err == nil {
+			meta["args"] = string(encoded)
+		}
+	}
+	return meta
+}
+
+// buildStrategyList returns the ordered list of remediation strategies to
+// attempt for a monitor's remediation config, each carrying its own per-strategy
+// parameters (Strategy, Service, ScriptPath, Args).
+//
+// When remCfg.Strategies is non-empty, the nested strategies are returned in
+// order (skipping entries with an empty Strategy). Otherwise it falls back to a
+// single entry built from the top-level remCfg fields, preserving backward
+// compatibility: a config with only Strategy/Service/ScriptPath set yields a
+// one-element list carrying those params.
+func buildStrategyList(remCfg *types.MonitorRemediationConfig) []types.MonitorRemediationConfig {
 	if remCfg == nil {
 		return nil
 	}
 
 	if len(remCfg.Strategies) > 0 {
-		strategies := make([]string, 0, len(remCfg.Strategies))
+		strategies := make([]types.MonitorRemediationConfig, 0, len(remCfg.Strategies))
 		for _, s := range remCfg.Strategies {
 			if s.Strategy != "" {
-				strategies = append(strategies, s.Strategy)
+				strategies = append(strategies, s)
 			}
 		}
 		if len(strategies) > 0 {
@@ -583,7 +642,13 @@ func buildStrategyList(remCfg *types.MonitorRemediationConfig) []string {
 	}
 
 	if remCfg.Strategy != "" {
-		return []string{remCfg.Strategy}
+		// Carry the top-level per-strategy params for the single-strategy fallback.
+		return []types.MonitorRemediationConfig{{
+			Strategy:   remCfg.Strategy,
+			Service:    remCfg.Service,
+			ScriptPath: remCfg.ScriptPath,
+			Args:       remCfg.Args,
+		}}
 	}
 
 	return nil

@@ -106,9 +106,16 @@ func NewSystemdRemediator(config SystemdConfig) (*SystemdRemediator, error) {
 		return nil, fmt.Errorf("invalid systemd config: %w", err)
 	}
 
-	// Create base remediator with medium cooldown (5 minutes default for systemd services)
+	// Create base remediator with medium cooldown (5 minutes default for systemd services).
+	// When ServiceName is empty the remediator is a metadata-driven singleton (the
+	// service is resolved per-call from Problem.Metadata["service"]); use a stable
+	// name so the base remediator is still uniquely identifiable.
+	serviceLabel := config.ServiceName
+	if serviceLabel == "" {
+		serviceLabel = "dynamic"
+	}
 	base, err := NewBaseRemediator(
-		fmt.Sprintf("systemd-%s-%s", config.Operation, config.ServiceName),
+		fmt.Sprintf("systemd-%s-%s", config.Operation, serviceLabel),
 		CooldownMedium,
 	)
 	if err != nil {
@@ -130,11 +137,13 @@ func NewSystemdRemediator(config SystemdConfig) (*SystemdRemediator, error) {
 }
 
 // validateSystemdConfig validates the systemd remediator configuration.
+//
+// ServiceName is intentionally NOT required here: a systemd remediator may be
+// registered as a metadata-driven singleton whose target service is supplied
+// per-call via Problem.Metadata["service"]. When neither config.ServiceName nor
+// the per-call metadata is set, remediate() fails with a clear error at
+// dispatch time rather than at construction time.
 func validateSystemdConfig(config SystemdConfig) error {
-	if config.ServiceName == "" {
-		return fmt.Errorf("service name is required")
-	}
-
 	// Validate operation
 	switch config.Operation {
 	case SystemdRestart, SystemdStop, SystemdStart, SystemdReload:
@@ -152,31 +161,44 @@ func validateSystemdConfig(config SystemdConfig) error {
 }
 
 // remediate performs the actual systemd service remediation.
+//
+// The target service name is resolved per-call: when the Problem carries a
+// "service" metadata key (set by the detector from the strategy's
+// MonitorRemediationConfig.Service), that value is used; otherwise the
+// remediator falls back to its construction-time config.ServiceName. This lets
+// a single registered systemd-restart remediator act on whatever service the
+// triggering monitor declared (kubelet, containerd, etc.) without registering
+// one remediator per service.
 func (r *SystemdRemediator) remediate(ctx context.Context, problem types.Problem) error {
+	serviceName := r.resolveServiceName(problem)
+	if serviceName == "" {
+		return fmt.Errorf("no systemd service specified (neither problem metadata %q nor config.ServiceName set)", metadataKeyService)
+	}
+
 	// Dry-run mode
 	if r.config.DryRun {
-		r.logInfof("DRY-RUN: Would execute systemctl %s %s", r.config.Operation, r.config.ServiceName)
+		r.logInfof("DRY-RUN: Would execute systemctl %s %s", r.config.Operation, serviceName)
 		return nil
 	}
 
 	// Check service status before remediation
-	wasActive, err := r.systemdExecutor.IsActive(ctx, r.config.ServiceName)
+	wasActive, err := r.systemdExecutor.IsActive(ctx, serviceName)
 	if err != nil {
 		r.logWarnf("Failed to check service status before remediation: %v", err)
 	} else {
-		r.logInfof("Service %s status before remediation: active=%v", r.config.ServiceName, wasActive)
+		r.logInfof("Service %s status before remediation: active=%v", serviceName, wasActive)
 	}
 
 	// Execute the systemd operation
-	if err := r.executeOperation(ctx); err != nil {
-		return fmt.Errorf("failed to execute %s on %s: %w", r.config.Operation, r.config.ServiceName, err)
+	if err := r.executeOperation(ctx, serviceName); err != nil {
+		return fmt.Errorf("failed to execute %s on %s: %w", r.config.Operation, serviceName, err)
 	}
 
-	r.logInfof("Successfully executed systemctl %s %s", r.config.Operation, r.config.ServiceName)
+	r.logInfof("Successfully executed systemctl %s %s", r.config.Operation, serviceName)
 
 	// Verify service status after remediation if configured
 	if r.config.VerifyStatus {
-		if err := r.verifyServiceStatus(ctx); err != nil {
+		if err := r.verifyServiceStatus(ctx, serviceName); err != nil {
 			return fmt.Errorf("service verification failed after %s: %w", r.config.Operation, err)
 		}
 	}
@@ -184,26 +206,39 @@ func (r *SystemdRemediator) remediate(ctx context.Context, problem types.Problem
 	return nil
 }
 
-// executeOperation executes the configured systemd operation.
-func (r *SystemdRemediator) executeOperation(ctx context.Context) error {
+// resolveServiceName returns the systemd service to act on for this remediation.
+// It prefers the per-call "service" metadata key (threaded from the strategy's
+// MonitorRemediationConfig.Service) and falls back to the construction-time
+// config.ServiceName when the metadata is absent.
+func (r *SystemdRemediator) resolveServiceName(problem types.Problem) string {
+	if problem.Metadata != nil {
+		if svc := problem.Metadata[metadataKeyService]; svc != "" {
+			return svc
+		}
+	}
+	return r.config.ServiceName
+}
+
+// executeOperation executes the configured systemd operation against serviceName.
+func (r *SystemdRemediator) executeOperation(ctx context.Context, serviceName string) error {
 	switch r.config.Operation {
 	case SystemdRestart:
-		return r.restart(ctx)
+		return r.restart(ctx, serviceName)
 	case SystemdStop:
-		return r.stop(ctx)
+		return r.stop(ctx, serviceName)
 	case SystemdStart:
-		return r.start(ctx)
+		return r.start(ctx, serviceName)
 	case SystemdReload:
-		return r.reload(ctx)
+		return r.reload(ctx, serviceName)
 	default:
 		return fmt.Errorf("unknown operation: %s", r.config.Operation)
 	}
 }
 
 // restart restarts the systemd service.
-func (r *SystemdRemediator) restart(ctx context.Context) error {
-	r.logInfof("Restarting service: %s", r.config.ServiceName)
-	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "restart", r.config.ServiceName)
+func (r *SystemdRemediator) restart(ctx context.Context, serviceName string) error {
+	r.logInfof("Restarting service: %s", serviceName)
+	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "restart", serviceName)
 	if err != nil {
 		return fmt.Errorf("systemctl restart failed: %w (output: %s)", err, output)
 	}
@@ -211,9 +246,9 @@ func (r *SystemdRemediator) restart(ctx context.Context) error {
 }
 
 // stop stops the systemd service.
-func (r *SystemdRemediator) stop(ctx context.Context) error {
-	r.logInfof("Stopping service: %s", r.config.ServiceName)
-	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "stop", r.config.ServiceName)
+func (r *SystemdRemediator) stop(ctx context.Context, serviceName string) error {
+	r.logInfof("Stopping service: %s", serviceName)
+	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "stop", serviceName)
 	if err != nil {
 		return fmt.Errorf("systemctl stop failed: %w (output: %s)", err, output)
 	}
@@ -221,9 +256,9 @@ func (r *SystemdRemediator) stop(ctx context.Context) error {
 }
 
 // start starts the systemd service.
-func (r *SystemdRemediator) start(ctx context.Context) error {
-	r.logInfof("Starting service: %s", r.config.ServiceName)
-	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "start", r.config.ServiceName)
+func (r *SystemdRemediator) start(ctx context.Context, serviceName string) error {
+	r.logInfof("Starting service: %s", serviceName)
+	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "start", serviceName)
 	if err != nil {
 		return fmt.Errorf("systemctl start failed: %w (output: %s)", err, output)
 	}
@@ -231,9 +266,9 @@ func (r *SystemdRemediator) start(ctx context.Context) error {
 }
 
 // reload reloads the systemd service configuration.
-func (r *SystemdRemediator) reload(ctx context.Context) error {
-	r.logInfof("Reloading service: %s", r.config.ServiceName)
-	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "reload", r.config.ServiceName)
+func (r *SystemdRemediator) reload(ctx context.Context, serviceName string) error {
+	r.logInfof("Reloading service: %s", serviceName)
+	output, err := r.systemdExecutor.ExecuteSystemctl(ctx, "reload", serviceName)
 	if err != nil {
 		return fmt.Errorf("systemctl reload failed: %w (output: %s)", err, output)
 	}
@@ -241,7 +276,7 @@ func (r *SystemdRemediator) reload(ctx context.Context) error {
 }
 
 // verifyServiceStatus verifies that the service is active after remediation.
-func (r *SystemdRemediator) verifyServiceStatus(ctx context.Context) error {
+func (r *SystemdRemediator) verifyServiceStatus(ctx context.Context, serviceName string) error {
 	// Create a context with timeout for verification
 	verifyCtx, cancel := context.WithTimeout(ctx, r.config.VerifyTimeout)
 	defer cancel()
@@ -256,18 +291,18 @@ func (r *SystemdRemediator) verifyServiceStatus(ctx context.Context) error {
 			return fmt.Errorf("timeout waiting for service to become active after %v", r.config.VerifyTimeout)
 
 		case <-ticker.C:
-			isActive, err := r.systemdExecutor.IsActive(verifyCtx, r.config.ServiceName)
+			isActive, err := r.systemdExecutor.IsActive(verifyCtx, serviceName)
 			if err != nil {
 				r.logWarnf("Error checking service status during verification: %v", err)
 				continue
 			}
 
 			if isActive {
-				r.logInfof("Service %s is now active", r.config.ServiceName)
+				r.logInfof("Service %s is now active", serviceName)
 				return nil
 			}
 
-			r.logInfof("Waiting for service %s to become active...", r.config.ServiceName)
+			r.logInfof("Waiting for service %s to become active...", serviceName)
 		}
 	}
 }

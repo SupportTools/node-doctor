@@ -40,6 +40,26 @@ import (
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
+// Problem.Metadata keys used to thread per-strategy remediation parameters from
+// the detector to the registered remediator at dispatch time. The detector
+// populates these from the triggering monitor's MonitorRemediationConfig so a
+// single registered remediator (built via RegisterBuiltinRemediators) can act
+// on per-monitor parameters without registering one remediator per service or
+// script.
+const (
+	// metadataKeyService carries the systemd service name for the
+	// systemd-restart strategy (from MonitorRemediationConfig.Service).
+	metadataKeyService = "service"
+
+	// metadataKeyScriptPath carries the absolute script path for the
+	// custom-script strategy (from MonitorRemediationConfig.ScriptPath).
+	metadataKeyScriptPath = "scriptPath"
+
+	// metadataKeyArgs carries the JSON-encoded script arguments for the
+	// custom-script strategy (from MonitorRemediationConfig.Args).
+	metadataKeyArgs = "args"
+)
+
 // CircuitBreakerState represents the state of the circuit breaker.
 type CircuitBreakerState int
 

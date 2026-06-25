@@ -142,11 +142,14 @@ func TestNewSystemdRemediator(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing service name",
+			// Empty ServiceName is now valid: it produces a metadata-driven
+			// singleton whose target service is resolved per-call from
+			// Problem.Metadata["service"] at Remediate time.
+			name: "missing service name (metadata-driven singleton)",
 			config: SystemdConfig{
 				Operation: SystemdRestart,
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "invalid operation",
