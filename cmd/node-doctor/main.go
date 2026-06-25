@@ -202,8 +202,11 @@ func main() {
 		}
 		remediatorRegistry = remediators.NewRegistry(maxPerHour, historySize)
 		remediatorRegistry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
-		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d)",
-			remediatorRegistry.IsDryRun(), maxPerHour)
+		// Wire the per-minute token-bucket burst limit. A value of 0 leaves the
+		// per-minute check disabled (only the per-hour window applies).
+		remediatorRegistry.SetMaxRemediationsPerMinute(config.Remediation.MaxRemediationsPerMinute)
+		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d, maxPerMinute=%d)",
+			remediatorRegistry.IsDryRun(), maxPerHour, config.Remediation.MaxRemediationsPerMinute)
 
 		// Wire the controller lease client when coordination is opted in.
 		// The registry's Remediate path checks for a non-nil lease client and

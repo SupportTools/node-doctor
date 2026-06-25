@@ -566,6 +566,98 @@ func TestRateLimit(t *testing.T) {
 	})
 }
 
+// TestPerMinuteRateLimit tests the per-minute token-bucket rate limit wired via
+// SetMaxRemediationsPerMinute (config.RemediationConfig.MaxRemediationsPerMinute).
+func TestPerMinuteRateLimit(t *testing.T) {
+	t.Run("per-minute limit enforced: N succeed, N+1 rejected", func(t *testing.T) {
+		const n = 2
+		// maxPerHour high enough that it does not interfere; per-minute is the gate.
+		registry := NewRegistry(1000, 100)
+		registry.SetMaxRemediationsPerMinute(n)
+
+		mock := newMockRemediator("test", false)
+		registry.Register(RemediatorInfo{
+			Type:    "test",
+			Factory: func() (types.Remediator, error) { return mock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		// The limiter starts full (burst == n), so the first n immediate
+		// remediations pass.
+		for i := 0; i < n; i++ {
+			mock.ClearCooldown(problem)
+			mock.ResetAttempts(problem)
+			if err := registry.Remediate(context.Background(), "test", problem); err != nil {
+				t.Fatalf("Remediation %d failed: %v", i+1, err)
+			}
+		}
+
+		// The (N+1)th within the same minute must be rejected with a rate-limit error.
+		mock.ClearCooldown(problem)
+		mock.ResetAttempts(problem)
+		err := registry.Remediate(context.Background(), "test", problem)
+		if err == nil {
+			t.Fatal("Expected per-minute rate limit error on (N+1)th remediation, got nil")
+		}
+
+		// The rejected remediation must NOT be executed: the mock's remediate func
+		// is never invoked for it, so callCount stays at n.
+		if got := mock.getCallCount(); got != n {
+			t.Errorf("mock call count = %d, want %d (rejected remediation must not execute)", got, n)
+		}
+
+		// And it must not be counted against the per-hour window (only n recorded).
+		stats := registry.GetStats()
+		if stats.RecentRemediations != n {
+			t.Errorf("RecentRemediations = %d, want %d (rejected remediation must not consume per-hour window)",
+				stats.RecentRemediations, n)
+		}
+
+		// History records the rejected attempt as a failed (not executed) record.
+		// There should be n+1 records: n successes + 1 failed attempt.
+		history := registry.GetHistory(0)
+		if len(history) != n+1 {
+			t.Fatalf("history length = %d, want %d", len(history), n+1)
+		}
+		last := history[len(history)-1]
+		if last.Success {
+			t.Error("last history record should be a failed (rejected) attempt, got Success=true")
+		}
+		if last.Error == "" {
+			t.Error("last history record should carry the rate-limit error")
+		}
+	})
+
+	t.Run("per-minute limit 0 is unlimited", func(t *testing.T) {
+		registry := NewRegistry(1000, 100)
+		registry.SetMaxRemediationsPerMinute(0) // unlimited
+
+		mock := newMockRemediator("test", false)
+		registry.Register(RemediatorInfo{
+			Type:    "test",
+			Factory: func() (types.Remediator, error) { return mock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		// Execute well more than any default per-minute allowance; none should be
+		// rejected by the per-minute check (per-hour is high too).
+		const attempts = 20
+		for i := 0; i < attempts; i++ {
+			mock.ClearCooldown(problem)
+			mock.ResetAttempts(problem)
+			if err := registry.Remediate(context.Background(), "test", problem); err != nil {
+				t.Fatalf("Remediation %d unexpectedly failed with per-minute disabled: %v", i+1, err)
+			}
+		}
+
+		if got := mock.getCallCount(); got != attempts {
+			t.Errorf("mock call count = %d, want %d", got, attempts)
+		}
+	})
+}
+
 // TestHistory tests remediation history tracking.
 func TestHistory(t *testing.T) {
 	t.Run("history records success and failure", func(t *testing.T) {

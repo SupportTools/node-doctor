@@ -405,9 +405,11 @@ type RemediationConfig struct {
 
 	// Safety limits.
 	MaxRemediationsPerHour int `json:"maxRemediationsPerHour,omitempty" yaml:"maxRemediationsPerHour,omitempty"`
-	// MaxRemediationsPerMinute is parsed but not enforced at runtime; only the
-	// per-hour bucket (maxPerHour) is wired to RemediatorRegistry. Reserved for
-	// a future fine-grained burst-limiting feature.
+	// MaxRemediationsPerMinute is enforced at runtime via the RemediatorRegistry's
+	// per-minute token bucket (wired through SetMaxRemediationsPerMinute). It caps
+	// the burst rate of remediations within any one minute, complementing the
+	// per-hour sliding window (maxPerHour). A value of 0 means unlimited (the
+	// per-minute check is skipped).
 	MaxRemediationsPerMinute int `json:"maxRemediationsPerMinute,omitempty" yaml:"maxRemediationsPerMinute,omitempty"`
 
 	// Cooldown configuration
