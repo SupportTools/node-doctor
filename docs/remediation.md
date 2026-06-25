@@ -540,15 +540,16 @@ remediator, err := NewCustomRemediator(config)
 
 **Purpose**: Fixes network connectivity issues through DNS cache flushing, interface restarts, and routing table operations.
 
-**Supported Operations** (`pkg/remediators/network.go:13-25`):
-- `flush-dns` - Flushes DNS resolver cache
+**Supported Operations** (`pkg/remediators/network.go`):
+- `flush-dns` - Flushes DNS resolver cache (address-family agnostic — clears IPv4 **and** IPv6/AAAA records; see below)
 - `restart-interface` - Restarts network interface (down/up)
 - `reset-routing` - Resets routing table to defaults
+- `flush-ipv6-route` - Flushes the IPv6 routing cache via `ip -6 route flush cache`
 
 **Configuration**:
 ```go
 type NetworkConfig struct {
-    Operation       NetworkOperation  // flush-dns, restart-interface, reset-routing
+    Operation       NetworkOperation  // flush-dns, restart-interface, reset-routing, flush-ipv6-route
     InterfaceName   string           // Required for restart-interface (e.g., "eth0")
     BackupRouting   bool             // Backup routing table before reset
     VerifyAfter     bool             // Verify operation succeeded
@@ -557,13 +558,21 @@ type NetworkConfig struct {
 }
 ```
 
-**DNS Cache Flush** (`pkg/remediators/network.go:212-230`):
+**DNS Cache Flush** (`pkg/remediators/network.go`):
 
 Tries multiple methods in order:
 1. `resolvectl flush-caches` (modern systemd)
 2. `systemd-resolve --flush-caches` (older systemd)
 
-**Interface Restart** (`pkg/remediators/network.go:233-263`):
+Both methods clear the resolver's **entire** cache, including AAAA (IPv6) records as well as A (IPv4). The flush is therefore address-family agnostic — there is no separate IPv6 DNS-flush operation, because `flush-dns` already covers both families.
+
+**IPv6 Route Cache Flush** (`pkg/remediators/network.go`):
+
+The `flush-ipv6-route` operation (`NetworkFlushIPv6Route`) flushes the IPv6 routing **cache** — it runs `ip -6 route flush cache` and does not alter routing-table entries. When `BackupRouting` is set it first captures `ip -6 route show`. Unlike the cache flush that is one step of `reset-routing` (where a flush failure is a non-fatal warning), this dedicated operation treats a failed flush as a failed remediation and returns the error.
+
+> **Note:** Only the network *operation* `flush-ipv6-route` exists. There is no separately registered top-level remediator type for IPv6 route flushing — it is invoked via `NetworkConfig.Operation` on the `NetworkRemediator`.
+
+**Interface Restart** (`pkg/remediators/network.go`):
 ```go
 // Safety: Verify interface exists first
 // 1. Bring interface down: ip link set <iface> down
@@ -588,7 +597,17 @@ Tries multiple methods in order:
 ```go
 config := NetworkConfig{
     Operation:   NetworkFlushDNS,
-    VerifyAfter: false,  // DNS flush is immediate
+    VerifyAfter: false,  // DNS flush is immediate; clears A and AAAA records
+}
+
+remediator, err := NewNetworkRemediator(config)
+```
+
+**Example - IPv6 Route Cache Flush**:
+```go
+config := NetworkConfig{
+    Operation:     NetworkFlushIPv6Route,  // "flush-ipv6-route"
+    BackupRouting: true,                   // Capture "ip -6 route show" first
 }
 
 remediator, err := NewNetworkRemediator(config)
