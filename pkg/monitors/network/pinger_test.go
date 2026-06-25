@@ -314,6 +314,52 @@ func TestResolveTarget(t *testing.T) {
 	}
 }
 
+// TestResolveTarget_HostnameDNSPath exercises the hostname-resolution branch of
+// resolveTarget (net.ParseIP fails -> net.LookupIP), which the IP-literal table
+// above does not reach. "localhost" resolves via /etc/hosts (no network
+// dependency, deterministic in CI). We assert a loopback address comes back and
+// that the reported family is consistent with the returned IP and never carries
+// a zone (hostname resolution must not invent one). The IP family of localhost
+// can vary by host (IPv4-preference yields 127.0.0.1 where an A record exists,
+// otherwise ::1), so we avoid pinning the exact address/family.
+func TestResolveTarget_HostnameDNSPath(t *testing.T) {
+	ip, zone, family, err := resolveTarget("localhost")
+	if err != nil {
+		t.Fatalf("resolveTarget(\"localhost\") returned error: %v", err)
+	}
+	if ip == nil {
+		t.Fatal("resolveTarget(\"localhost\") returned nil IP")
+	}
+	if !ip.IsLoopback() {
+		t.Errorf("resolveTarget(\"localhost\") IP = %q, want a loopback address", ip)
+	}
+	if zone != "" {
+		t.Errorf("hostname resolution invented a zone %q, want empty", zone)
+	}
+	// Family must match the actual returned address: IPv4-preference returns a
+	// 4-byte address tagged ipv4; otherwise an IPv6 loopback tagged ipv6.
+	if ip.To4() != nil {
+		if family != FamilyIPv4 {
+			t.Errorf("family = %q for IPv4 loopback, want %q", family, FamilyIPv4)
+		}
+	} else if family != FamilyIPv6 {
+		t.Errorf("family = %q for IPv6 loopback, want %q", family, FamilyIPv6)
+	}
+}
+
+// TestResolveTarget_HostnameResolutionFailure exercises the error branch of the
+// hostname path. The ".invalid" TLD is reserved by RFC 6761 to always fail
+// resolution, so this is deterministic and does not depend on external DNS.
+func TestResolveTarget_HostnameResolutionFailure(t *testing.T) {
+	ip, zone, family, err := resolveTarget("node-doctor-nonexistent.invalid")
+	if err == nil {
+		t.Fatalf("resolveTarget of an unresolvable .invalid name succeeded: ip=%v zone=%q family=%q", ip, zone, family)
+	}
+	if ip != nil {
+		t.Errorf("expected nil IP on resolution failure, got %v", ip)
+	}
+}
+
 // TestDestAddr verifies the zone reaches the *net.IPAddr used for sending.
 // Actually transmitting link-local ICMP requires privileges and a real
 // interface, so we unit-test the destination builder instead.
