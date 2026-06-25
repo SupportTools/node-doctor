@@ -1507,15 +1507,22 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 
 // recordDNSLatency records a DNS latency measurement for Prometheus export.
 func (m *DNSMonitor) recordDNSLatency(domain, domainType, dnsServer, recordType string, latency time.Duration, success bool) {
+	// Derive the address family from the record type: AAAA queries resolve
+	// IPv6 addresses, everything else (A and the default) resolves IPv4.
+	family := FamilyIPv4
+	if strings.EqualFold(strings.TrimSpace(recordType), "AAAA") {
+		family = FamilyIPv6
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.latencyMetrics = append(m.latencyMetrics, types.DNSLatency{
-		DNSServer:  dnsServer,
-		Domain:     domain,
-		RecordType: recordType,
-		DomainType: strings.ToLower(domainType),
-		LatencyMs:  float64(latency.Microseconds()) / 1000.0,
-		Success:    success,
+		DNSServer:     dnsServer,
+		Domain:        domain,
+		RecordType:    recordType,
+		DomainType:    strings.ToLower(domainType),
+		LatencyMs:     float64(latency.Microseconds()) / 1000.0,
+		Success:       success,
+		AddressFamily: family,
 	})
 }
 

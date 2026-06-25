@@ -5,6 +5,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+
+	"github.com/supporttools/node-doctor/pkg/types"
 )
 
 func TestNewMetrics(t *testing.T) {
@@ -296,6 +298,146 @@ func TestMetricLabels(t *testing.T) {
 	}
 	if labelMap["source"] != "disk-monitor" {
 		t.Errorf("expected source label to be 'disk-monitor', got '%s'", labelMap["source"])
+	}
+}
+
+func TestFamilyLabel(t *testing.T) {
+	cases := map[string]string{
+		"ipv4":      "ipv4",
+		"ipv6":      "ipv6",
+		"":          "unknown",
+		"IPv4":      "unknown", // case-sensitive: only exact "ipv4"/"ipv6" pass through
+		"dualstack": "unknown",
+	}
+	for in, want := range cases {
+		if got := familyLabel(in); got != want {
+			t.Errorf("familyLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// findLabelValue returns the value of the named label on the first sample of the
+// metric family with the given name, or "" if not found.
+func findLabelValue(t *testing.T, families []*dto.MetricFamily, metricName, labelName string) (string, bool) {
+	t.Helper()
+	for _, mf := range families {
+		if mf.GetName() != metricName {
+			continue
+		}
+		for _, metric := range mf.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == labelName {
+					return label.GetValue(), true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func TestAddressFamilyLabelEmitted(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := NewMetrics("test", "", nil)
+	if err != nil {
+		t.Fatalf("failed to create metrics: %v", err)
+	}
+	if err := metrics.Register(registry); err != nil {
+		t.Fatalf("failed to register metrics: %v", err)
+	}
+
+	e := &PrometheusExporter{
+		nodeName: "test-node",
+		registry: registry,
+		metrics:  metrics,
+	}
+
+	status := (&types.Status{Source: "test"}).SetLatencyMetrics(&types.LatencyMetrics{
+		Gateway: &types.GatewayLatency{
+			GatewayIP:     "10.0.0.1",
+			LatencyMs:     1.0,
+			AddressFamily: "ipv4",
+		},
+		Peers: []types.PeerLatency{
+			{
+				PeerNode:      "peer-v6",
+				PeerIP:        "fd00::1",
+				LatencyMs:     2.0,
+				AvgLatencyMs:  2.0,
+				Reachable:     true,
+				AddressFamily: "ipv6",
+			},
+			{
+				PeerNode:     "peer-unknown",
+				PeerIP:       "10.0.0.9",
+				LatencyMs:    3.0,
+				AvgLatencyMs: 3.0,
+				Reachable:    true,
+				// AddressFamily intentionally empty -> "unknown"
+			},
+		},
+		DNS: []types.DNSLatency{
+			{
+				DNSServer:     "8.8.8.8",
+				Domain:        "example.com",
+				RecordType:    "AAAA",
+				DomainType:    "external",
+				LatencyMs:     4.0,
+				Success:       true,
+				AddressFamily: "ipv6",
+			},
+		},
+	})
+
+	e.recordLatencyMetrics(status)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	checks := []struct {
+		metric string
+		want   string
+	}{
+		{"test_gateway_latency_seconds", "ipv4"},
+		{"test_peer_latency_seconds", ""}, // multiple series; checked below
+		{"test_dns_latency_seconds", "ipv6"},
+	}
+	// Gateway and DNS each have a single series, so the first-sample lookup is deterministic.
+	for _, c := range checks {
+		if c.metric == "test_peer_latency_seconds" {
+			continue
+		}
+		got, ok := findLabelValue(t, families, c.metric, "address_family")
+		if !ok {
+			t.Errorf("%s: address_family label not found", c.metric)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: address_family = %q, want %q", c.metric, got, c.want)
+		}
+	}
+
+	// Peer metric has two series; assert that both expected family labels are present.
+	wantPeerFamilies := map[string]bool{"ipv6": false, "unknown": false}
+	for _, mf := range families {
+		if mf.GetName() != "test_peer_latency_seconds" {
+			continue
+		}
+		for _, metric := range mf.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "address_family" {
+					if _, expected := wantPeerFamilies[label.GetValue()]; expected {
+						wantPeerFamilies[label.GetValue()] = true
+					}
+				}
+			}
+		}
+	}
+	for fam, seen := range wantPeerFamilies {
+		if !seen {
+			t.Errorf("peer_latency_seconds: expected an address_family=%q series, none found", fam)
+		}
 	}
 }
 

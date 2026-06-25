@@ -465,6 +465,11 @@ type PeerLatency struct {
 	LatencyMs    float64 `json:"latency_ms"`
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
 	Reachable    bool    `json:"reachable"`
+	// AddressFamily records which IP family the probed peer belongs to
+	// ("ipv4" or "ipv6"). It lets downstream consumers distinguish dual-stack
+	// peer probes. Empty when the family is unknown (e.g. a peer whose family
+	// could not be classified).
+	AddressFamily string `json:"address_family,omitempty"`
 }
 
 // DNSLatency represents DNS resolution latency.
@@ -475,12 +480,22 @@ type DNSLatency struct {
 	DomainType string  `json:"domain_type"` // "cluster", "external", "custom"
 	LatencyMs  float64 `json:"latency_ms"`
 	Success    bool    `json:"success"`
+	// AddressFamily records which IP family the query resolves
+	// ("ipv4" for A records, "ipv6" for AAAA records). It lets downstream
+	// consumers distinguish dual-stack DNS probes. Empty when the family is
+	// unknown.
+	AddressFamily string `json:"address_family,omitempty"`
 }
 
 // APIServerLatency represents Kubernetes API server response latency.
 type APIServerLatency struct {
 	LatencyMs float64 `json:"latency_ms"`
 	Reachable bool    `json:"reachable"`
+	// AddressFamily records which IP family the probed API server endpoint
+	// belongs to ("ipv4" or "ipv6"). It lets downstream consumers distinguish
+	// dual-stack API server probes. Empty when the family is unknown (e.g. a
+	// hostname endpoint whose family could not be classified).
+	AddressFamily string `json:"address_family,omitempty"`
 }
 
 // SetLatencyMetrics is a helper to set latency metrics in Status.Metadata.

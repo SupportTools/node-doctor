@@ -212,7 +212,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Current latency to the default gateway in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "gateway_ip"},
+			[]string{"node", "gateway_ip", "address_family"},
 		),
 
 		PeerLatencySeconds: prometheus.NewGaugeVec(
@@ -223,7 +223,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Last measured latency to peer node in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "peer_node", "peer_ip"},
+			[]string{"node", "peer_node", "peer_ip", "address_family"},
 		),
 
 		PeerLatencyAvgSeconds: prometheus.NewGaugeVec(
@@ -234,7 +234,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Average latency to peer node in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "peer_node", "peer_ip"},
+			[]string{"node", "peer_node", "peer_ip", "address_family"},
 		),
 
 		PeerReachable: prometheus.NewGaugeVec(
@@ -245,7 +245,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "Whether peer node is reachable (1 = reachable, 0 = unreachable)",
 				ConstLabels: labels,
 			},
-			[]string{"node", "peer_node", "peer_ip"},
+			[]string{"node", "peer_node", "peer_ip", "address_family"},
 		),
 
 		PeersTotal: prometheus.NewGaugeVec(
@@ -278,7 +278,7 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Help:        "DNS resolution latency in seconds",
 				ConstLabels: labels,
 			},
-			[]string{"node", "dns_server", "domain", "record_type"},
+			[]string{"node", "dns_server", "domain", "record_type", "address_family"},
 		),
 
 		DNSNameserverHealthScore: prometheus.NewGaugeVec(

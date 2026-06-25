@@ -227,7 +227,7 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 		latencySeconds := gw.LatencyMs / 1000.0
 
 		e.metrics.GatewayLatencySeconds.WithLabelValues(
-			e.nodeName, gw.GatewayIP).Set(latencySeconds)
+			e.nodeName, gw.GatewayIP, familyLabel(gw.AddressFamily)).Set(latencySeconds)
 
 		e.metrics.GatewayLatencyHistogram.WithLabelValues(
 			e.nodeName, gw.GatewayIP).Observe(latencySeconds)
@@ -240,11 +240,13 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 			latencySeconds := peer.LatencyMs / 1000.0
 			avgLatencySeconds := peer.AvgLatencyMs / 1000.0
 
+			family := familyLabel(peer.AddressFamily)
+
 			e.metrics.PeerLatencySeconds.WithLabelValues(
-				e.nodeName, peer.PeerNode, peer.PeerIP).Set(latencySeconds)
+				e.nodeName, peer.PeerNode, peer.PeerIP, family).Set(latencySeconds)
 
 			e.metrics.PeerLatencyAvgSeconds.WithLabelValues(
-				e.nodeName, peer.PeerNode, peer.PeerIP).Set(avgLatencySeconds)
+				e.nodeName, peer.PeerNode, peer.PeerIP, family).Set(avgLatencySeconds)
 
 			reachable := 0.0
 			if peer.Reachable {
@@ -252,7 +254,7 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 				reachableCount++
 			}
 			e.metrics.PeerReachable.WithLabelValues(
-				e.nodeName, peer.PeerNode, peer.PeerIP).Set(reachable)
+				e.nodeName, peer.PeerNode, peer.PeerIP, family).Set(reachable)
 
 			e.metrics.PeerLatencyHistogram.WithLabelValues(
 				e.nodeName, peer.PeerNode).Observe(latencySeconds)
@@ -267,7 +269,7 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 		latencySeconds := dns.LatencyMs / 1000.0
 
 		e.metrics.DNSLatencySeconds.WithLabelValues(
-			e.nodeName, dns.DNSServer, dns.Domain, dns.RecordType).Set(latencySeconds)
+			e.nodeName, dns.DNSServer, dns.Domain, dns.RecordType, familyLabel(dns.AddressFamily)).Set(latencySeconds)
 
 		e.metrics.DNSLatencyHistogram.WithLabelValues(
 			e.nodeName, dns.DomainType).Observe(latencySeconds)
@@ -321,6 +323,19 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 
 		e.metrics.APIServerLatencySeconds.WithLabelValues(e.nodeName).Set(latencySeconds)
 		e.metrics.APIServerLatencyHistogram.WithLabelValues(e.nodeName).Observe(latencySeconds)
+	}
+}
+
+// familyLabel normalizes an address-family string for use as a Prometheus
+// label value. It returns "ipv4" or "ipv6" only when the input matches one of
+// those exactly; any other value (including an empty string) maps to "unknown"
+// so the address_family label is never emitted empty.
+func familyLabel(s string) string {
+	switch s {
+	case "ipv4", "ipv6":
+		return s
+	default:
+		return "unknown"
 	}
 }
 

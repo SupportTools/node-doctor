@@ -611,11 +611,12 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	peerLatencies := make([]types.PeerLatency, 0, len(m.peerStatuses))
 	for _, ps := range m.peerStatuses {
 		peerLatencies = append(peerLatencies, types.PeerLatency{
-			PeerNode:     ps.Peer.NodeName,
-			PeerIP:       ps.Peer.NodeIP,
-			LatencyMs:    float64(ps.LastLatency.Microseconds()) / 1000.0,
-			AvgLatencyMs: float64(ps.AvgLatency.Microseconds()) / 1000.0,
-			Reachable:    ps.Reachable,
+			PeerNode:      ps.Peer.NodeName,
+			PeerIP:        ps.Peer.NodeIP,
+			LatencyMs:     float64(ps.LastLatency.Microseconds()) / 1000.0,
+			AvgLatencyMs:  float64(ps.AvgLatency.Microseconds()) / 1000.0,
+			Reachable:     ps.Reachable,
+			AddressFamily: ps.Family,
 		})
 	}
 	m.mu.Unlock()
