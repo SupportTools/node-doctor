@@ -11,16 +11,19 @@ import (
 
 // Package-level defaults
 const (
-	DefaultLogLevel                 = "info"
-	DefaultLogFormat                = "json"
-	DefaultLogOutput                = "stdout"
-	DefaultUpdateInterval           = "10s"
-	DefaultResyncInterval           = "60s"
-	DefaultHeartbeatInterval        = "5m"
-	DefaultQPS                      = 50
-	DefaultBurst                    = 100
-	DefaultHTTPPort                 = 8080
-	DefaultHTTPBindAddress          = "0.0.0.0"
+	DefaultLogLevel          = "info"
+	DefaultLogFormat         = "json"
+	DefaultLogOutput         = "stdout"
+	DefaultUpdateInterval    = "10s"
+	DefaultResyncInterval    = "60s"
+	DefaultHeartbeatInterval = "5m"
+	DefaultQPS               = 50
+	DefaultBurst             = 100
+	DefaultHTTPPort          = 8080
+	// DefaultHTTPBindAddress binds all interfaces dual-stack. On Linux with the
+	// default net.ipv6.bindv6only=0, binding to "::" accepts BOTH IPv4 and IPv6
+	// connections. Callers fall back to "0.0.0.0" when IPv6 is unavailable.
+	DefaultHTTPBindAddress          = "::"
 	DefaultPrometheusPort           = 9100
 	DefaultPrometheusPath           = "/metrics"
 	DefaultMonitorInterval          = "30s"
@@ -381,12 +384,17 @@ type RetryConfig struct {
 
 // PrometheusExporterConfig configures the Prometheus exporter.
 type PrometheusExporterConfig struct {
-	Enabled   bool              `json:"enabled" yaml:"enabled"`
-	Port      int               `json:"port,omitempty" yaml:"port,omitempty"`
-	Path      string            `json:"path,omitempty" yaml:"path,omitempty"`
-	Namespace string            `json:"namespace,omitempty" yaml:"namespace,omitempty"`
-	Subsystem string            `json:"subsystem,omitempty" yaml:"subsystem,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	Port    int  `json:"port,omitempty" yaml:"port,omitempty"`
+	// BindAddress is the address the metrics HTTP server binds to.
+	// Defaults to "::" (dual-stack: accepts both IPv4 and IPv6 on Linux when
+	// net.ipv6.bindv6only=0). The exporter falls back to "0.0.0.0" if the
+	// IPv6/dual-stack bind fails (e.g. IPv6 disabled on the node).
+	BindAddress string            `json:"bindAddress,omitempty" yaml:"bindAddress,omitempty"`
+	Path        string            `json:"path,omitempty" yaml:"path,omitempty"`
+	Namespace   string            `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	Subsystem   string            `json:"subsystem,omitempty" yaml:"subsystem,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 
 // RemediationConfig contains global remediation settings.
@@ -927,6 +935,9 @@ func (w *WebhookEndpoint) ApplyDefaults(parent *HTTPExporterConfig) error {
 func (p *PrometheusExporterConfig) ApplyDefaults() error {
 	if p.Port == 0 {
 		p.Port = DefaultPrometheusPort
+	}
+	if p.BindAddress == "" {
+		p.BindAddress = DefaultHTTPBindAddress
 	}
 	if p.Path == "" {
 		p.Path = DefaultPrometheusPath
@@ -1742,6 +1753,7 @@ func (w *WebhookEndpoint) SubstituteEnvVars() {
 
 // SubstituteEnvVars performs environment variable substitution on PrometheusExporterConfig.
 func (p *PrometheusExporterConfig) SubstituteEnvVars() {
+	p.BindAddress = os.ExpandEnv(p.BindAddress)
 	p.Namespace = os.ExpandEnv(p.Namespace)
 	p.Subsystem = os.ExpandEnv(p.Subsystem)
 

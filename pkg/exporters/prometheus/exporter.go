@@ -53,6 +53,9 @@ func NewPrometheusExporter(config *types.PrometheusExporterConfig, settings *typ
 	if config.Port == 0 {
 		config.Port = 9100
 	}
+	if config.BindAddress == "" {
+		config.BindAddress = types.DefaultHTTPBindAddress
+	}
 	if config.Path == "" {
 		config.Path = "/metrics"
 	}
@@ -110,9 +113,9 @@ func (e *PrometheusExporter) Start(ctx context.Context) error {
 	// Initialize static metrics
 	e.initializeStaticMetrics()
 
-	// Start HTTP server
-	addr := fmt.Sprintf("0.0.0.0:%d", e.config.Port)
-	server, err := startHTTPServer(ctx, addr, e.config.Path, e.registry)
+	// Start HTTP server. Binds to the configured BindAddress ("::" by default
+	// for dual-stack), with graceful IPv4 fallback handled by startHTTPServer.
+	server, err := startHTTPServer(ctx, e.config.BindAddress, e.config.Port, e.config.Path, e.registry)
 	if err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
@@ -406,6 +409,9 @@ func (e *PrometheusExporter) Reload(config interface{}) error {
 	if prometheusConfig.Port == 0 {
 		prometheusConfig.Port = 9100
 	}
+	if prometheusConfig.BindAddress == "" {
+		prometheusConfig.BindAddress = types.DefaultHTTPBindAddress
+	}
 	if prometheusConfig.Path == "" {
 		prometheusConfig.Path = "/metrics"
 	}
@@ -462,8 +468,7 @@ func (e *PrometheusExporter) Reload(config interface{}) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			addr := fmt.Sprintf("0.0.0.0:%d", prometheusConfig.Port)
-			server, err := startHTTPServer(ctx, addr, prometheusConfig.Path, e.registry)
+			server, err := startHTTPServer(ctx, prometheusConfig.BindAddress, prometheusConfig.Port, prometheusConfig.Path, e.registry)
 			if err != nil {
 				return fmt.Errorf("failed to start new HTTP server: %w", err)
 			}
@@ -500,6 +505,11 @@ func (e *PrometheusExporter) needsServerRestart(oldConfig, newConfig *types.Prom
 
 	// Check if port changed
 	if oldConfig.Port != newConfig.Port {
+		return true
+	}
+
+	// Check if bind address changed
+	if oldConfig.BindAddress != newConfig.BindAddress {
 		return true
 	}
 

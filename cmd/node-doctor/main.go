@@ -375,8 +375,10 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 	// Create Health Server (always enabled for Kubernetes probes)
 	log.Printf("[INFO] Creating health server...")
 	healthServer, err := health.NewServer(&health.Config{
-		Enabled:      true,
-		BindAddress:  "0.0.0.0",
+		Enabled: true,
+		// "::" binds dual-stack (IPv4 + IPv6) with graceful fallback to
+		// "0.0.0.0" when IPv6 is disabled on the node (handled in Start()).
+		BindAddress:  "::",
 		Port:         8080,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,

@@ -1180,3 +1180,133 @@ func TestPrometheusExporter_StartBindFailure(t *testing.T) {
 		t.Error("exporter.started should be false after a bind failure")
 	}
 }
+
+// TestNewPrometheusExporter_DualStackDefault verifies an empty BindAddress
+// defaults to "::" (dual-stack) in the constructor.
+func TestNewPrometheusExporter_DualStackDefault(t *testing.T) {
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      freePort(t),
+		Namespace: "test",
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("failed to create exporter: %v", err)
+	}
+	if exporter.config.BindAddress != "::" {
+		t.Errorf("default BindAddress = %q, want %q", exporter.config.BindAddress, "::")
+	}
+}
+
+// TestPrometheusExporter_DualStackServesRequest verifies the exporter binds with
+// the default "::" (dual-stack) BindAddress and serves /metrics. The bind has an
+// automatic IPv4 fallback, so this passes whether or not IPv6 is available.
+func TestPrometheusExporter_DualStackServesRequest(t *testing.T) {
+	port := freePort(t)
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      port,
+		Path:      "/metrics",
+		Namespace: "test",
+		// BindAddress intentionally left empty -> defaults to "::".
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("failed to create exporter: %v", err)
+	}
+	if err := exporter.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start exporter: %v", err)
+	}
+	defer func() { _ = exporter.Stop() }()
+
+	addr := fmt.Sprintf("localhost:%d", port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, config.Path))
+	if err != nil {
+		t.Fatalf("failed to connect to metrics server: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestPrometheusExporter_ExplicitBindAddressHonored verifies an explicit
+// BindAddress is used as-is and serves a request.
+func TestPrometheusExporter_ExplicitBindAddressHonored(t *testing.T) {
+	port := freePort(t)
+	config := &types.PrometheusExporterConfig{
+		Enabled:     true,
+		BindAddress: "127.0.0.1",
+		Port:        port,
+		Path:        "/metrics",
+		Namespace:   "test",
+	}
+	settings := &types.GlobalSettings{NodeName: "test-node"}
+
+	exporter, err := NewPrometheusExporter(config, settings)
+	if err != nil {
+		t.Fatalf("failed to create exporter: %v", err)
+	}
+	if err := exporter.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start exporter: %v", err)
+	}
+	defer func() { _ = exporter.Stop() }()
+
+	host, _, err := net.SplitHostPort(exporter.server.Addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q) error = %v", exporter.server.Addr, err)
+	}
+	if host != "127.0.0.1" {
+		t.Errorf("bound host = %q, want 127.0.0.1", host)
+	}
+
+	addr := fmt.Sprintf("localhost:%d", port)
+	if err := waitForServerReady(addr, 5*time.Second); err != nil {
+		t.Fatalf("server never became ready: %v", err)
+	}
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, config.Path))
+	if err != nil {
+		t.Fatalf("failed to connect to metrics server: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestIsDualStackHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"", true},
+		{"::", true},
+		{"::1", true},
+		{"fe80::1", true},
+		{"0.0.0.0", false},
+		{"127.0.0.1", false},
+	}
+	for _, tt := range tests {
+		if got := isDualStackHost(tt.host); got != tt.want {
+			t.Errorf("isDualStackHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+}
+
+func TestListenWithFallback_Success(t *testing.T) {
+	ln, err := listenWithFallback("127.0.0.1", 0)
+	if err != nil {
+		t.Fatalf("listenWithFallback() error = %v", err)
+	}
+	defer ln.Close()
+	if ln.Addr() == nil {
+		t.Fatal("listenWithFallback() returned nil Addr")
+	}
+}
