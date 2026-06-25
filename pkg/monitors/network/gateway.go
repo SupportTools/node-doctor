@@ -22,6 +22,9 @@ const (
 	// procNetRoute is the path to the Linux IPv4 routing table.
 	procNetRoute = "/proc/net/route"
 
+	// procNetIPv6Route is the path to the Linux IPv6 routing table.
+	procNetIPv6Route = "/proc/net/ipv6_route"
+
 	// ipv6RouteHexLen is the number of hex chars representing a 16-byte
 	// IPv6 address as written by the kernel in /proc/net/ipv6_route.
 	ipv6RouteHexLen = 32
@@ -37,6 +40,21 @@ const (
 	defaultLatencyThreshold      = 100 * time.Millisecond
 	defaultFailureCountThreshold = 3
 	defaultAutoDetectGateway     = true
+
+	// Address family selection modes for the gateway monitor.
+	//
+	//	familyIPv4 selects the IPv4 default route only (default; preserves the
+	//	           historical behavior of probing /proc/net/route).
+	//	familyIPv6 selects the IPv6 default route only (/proc/net/ipv6_route).
+	//	familyAuto prefers the IPv4 default route and falls back to the IPv6
+	//	           default route when no IPv4 default route exists.
+	familyIPv4 = FamilyIPv4 // "ipv4"
+	familyIPv6 = FamilyIPv6 // "ipv6"
+	familyAuto = "auto"
+
+	// defaultAddressFamily preserves the pre-dual-stack behavior: probe the
+	// IPv4 default gateway only.
+	defaultAddressFamily = familyIPv4
 )
 
 // GatewayMonitorConfig holds the configuration for the gateway monitor.
@@ -53,6 +71,16 @@ type GatewayMonitorConfig struct {
 	ManualGateway string
 	// FailureCountThreshold is the number of consecutive failures before reporting NetworkUnreachable.
 	FailureCountThreshold int
+	// AddressFamily selects which IP family's default route to probe when
+	// auto-detecting the gateway. Accepted values are "ipv4" (default),
+	// "ipv6", and "auto" (prefer IPv4, fall back to IPv6).
+	AddressFamily string
+
+	// procRoutePath and procIPv6RoutePath override the kernel route-table
+	// paths for testing. When empty the canonical /proc paths are used.
+	// They are unexported so they are never settable from user config.
+	procRoutePath     string
+	procIPv6RoutePath string
 }
 
 // GatewayMonitor monitors the default gateway's reachability and latency.
@@ -86,6 +114,7 @@ func init() {
 				"latencyThreshold":      "100ms",
 				"autoDetectGateway":     true,
 				"failureCountThreshold": 3,
+				"addressFamily":         "ipv4",
 			},
 		},
 	})
@@ -130,6 +159,7 @@ func parseGatewayConfig(configMap map[string]interface{}) (*GatewayMonitorConfig
 		AutoDetectGateway:     defaultAutoDetectGateway,
 		ManualGateway:         "",
 		FailureCountThreshold: defaultFailureCountThreshold,
+		AddressFamily:         defaultAddressFamily,
 	}
 
 	if configMap == nil {
@@ -206,6 +236,25 @@ func parseGatewayConfig(configMap map[string]interface{}) (*GatewayMonitorConfig
 		}
 	}
 
+	// Parse address family selection (ipv4 | ipv6 | auto).
+	if v, ok := configMap["addressFamily"]; ok {
+		strVal, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("addressFamily must be a string, got %T", v)
+		}
+		switch strings.ToLower(strings.TrimSpace(strVal)) {
+		case familyIPv4:
+			config.AddressFamily = familyIPv4
+		case familyIPv6:
+			config.AddressFamily = familyIPv6
+		case familyAuto:
+			config.AddressFamily = familyAuto
+		default:
+			return nil, fmt.Errorf("addressFamily must be one of %q, %q, or %q, got %q",
+				familyIPv4, familyIPv6, familyAuto, strVal)
+		}
+	}
+
 	return config, nil
 }
 
@@ -233,8 +282,8 @@ func ValidateGatewayConfig(config types.MonitorConfig) error {
 func (m *GatewayMonitor) checkGateway(ctx context.Context) (*types.Status, error) {
 	status := types.NewStatus(m.name)
 
-	// Determine gateway IP
-	gatewayIP, err := m.getGatewayIP()
+	// Determine gateway IP and the address family it belongs to.
+	gatewayIP, family, err := m.getGatewayIP()
 	if err != nil {
 		m.updateFailureTracking(false, status)
 		status.AddEvent(types.NewEvent(
@@ -297,13 +346,14 @@ func (m *GatewayMonitor) checkGateway(ctx context.Context) (*types.Status, error
 	// Set latency metrics for Prometheus export
 	status.SetLatencyMetrics(&types.LatencyMetrics{
 		Gateway: &types.GatewayLatency{
-			GatewayIP:    gatewayIP,
-			LatencyMs:    float64(avgLatency.Microseconds()) / 1000.0,
-			AvgLatencyMs: float64(avgLatency.Microseconds()) / 1000.0,
-			MaxLatencyMs: float64(maxRTT.Microseconds()) / 1000.0,
-			Reachable:    true,
-			PingCount:    len(results),
-			SuccessCount: successCount,
+			GatewayIP:     gatewayIP,
+			LatencyMs:     float64(avgLatency.Microseconds()) / 1000.0,
+			AvgLatencyMs:  float64(avgLatency.Microseconds()) / 1000.0,
+			MaxLatencyMs:  float64(maxRTT.Microseconds()) / 1000.0,
+			Reachable:     true,
+			PingCount:     len(results),
+			SuccessCount:  successCount,
+			AddressFamily: family,
 		},
 	})
 
@@ -328,24 +378,82 @@ func (m *GatewayMonitor) checkGateway(ctx context.Context) (*types.Status, error
 	return status, nil
 }
 
-// getGatewayIP determines the gateway IP to ping.
-func (m *GatewayMonitor) getGatewayIP() (string, error) {
-	// Use manual gateway if configured
+// getGatewayIP determines the gateway IP to ping along with the address family
+// ("ipv4" or "ipv6") it belongs to. The family is empty only when it cannot be
+// classified (e.g. a malformed manual gateway, which should already have been
+// rejected during config parsing).
+func (m *GatewayMonitor) getGatewayIP() (string, string, error) {
+	// Use manual gateway if configured. Classify its family from the literal.
 	if m.config.ManualGateway != "" {
-		return m.config.ManualGateway, nil
+		return m.config.ManualGateway, classifyIPFamily(m.config.ManualGateway), nil
 	}
 
-	// Auto-detect gateway if enabled
+	// Auto-detect gateway if enabled.
 	if m.config.AutoDetectGateway {
-		return detectDefaultGateway()
+		return m.detectGatewayForFamily()
 	}
 
-	return "", fmt.Errorf("no gateway configured and auto-detection is disabled")
+	return "", "", fmt.Errorf("no gateway configured and auto-detection is disabled")
 }
 
-// detectDefaultGateway detects the default IPv4 gateway from /proc/net/route.
-func detectDefaultGateway() (string, error) {
-	return detectDefaultGatewayFromFile(procNetRoute)
+// detectGatewayForFamily resolves the default gateway according to the
+// configured address family selection mode.
+func (m *GatewayMonitor) detectGatewayForFamily() (string, string, error) {
+	switch m.config.AddressFamily {
+	case familyIPv6:
+		ip, err := detectDefaultIPv6GatewayFromFile(m.ipv6RoutePath())
+		if err != nil {
+			return "", "", err
+		}
+		return ip, familyIPv6, nil
+
+	case familyAuto:
+		// Prefer IPv4; fall back to IPv6 when no IPv4 default route exists.
+		if ip, err := detectDefaultGatewayFromFile(m.routePath()); err == nil {
+			return ip, familyIPv4, nil
+		}
+		ip, err := detectDefaultIPv6GatewayFromFile(m.ipv6RoutePath())
+		if err != nil {
+			return "", "", fmt.Errorf("no default gateway found for either address family: %w", err)
+		}
+		return ip, familyIPv6, nil
+
+	default: // familyIPv4 (also the zero value / unset case)
+		ip, err := detectDefaultGatewayFromFile(m.routePath())
+		if err != nil {
+			return "", "", err
+		}
+		return ip, familyIPv4, nil
+	}
+}
+
+// routePath returns the IPv4 route-table path, honoring the test override.
+func (m *GatewayMonitor) routePath() string {
+	if m.config.procRoutePath != "" {
+		return m.config.procRoutePath
+	}
+	return procNetRoute
+}
+
+// ipv6RoutePath returns the IPv6 route-table path, honoring the test override.
+func (m *GatewayMonitor) ipv6RoutePath() string {
+	if m.config.procIPv6RoutePath != "" {
+		return m.config.procIPv6RoutePath
+	}
+	return procNetIPv6Route
+}
+
+// classifyIPFamily returns FamilyIPv4 / FamilyIPv6 for a literal IP string, or
+// "" when the string is not a valid IP address.
+func classifyIPFamily(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	if parsed.To4() != nil {
+		return FamilyIPv4
+	}
+	return FamilyIPv6
 }
 
 // detectDefaultGatewayFromFile opens the given path and parses it as a Linux

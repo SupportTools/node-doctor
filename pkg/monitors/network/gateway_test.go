@@ -914,6 +914,7 @@ func TestGatewayMonitor_getGatewayIP(t *testing.T) {
 		name       string
 		config     *GatewayMonitorConfig
 		wantIP     string
+		wantFamily string
 		wantErr    bool
 		errContain string
 	}{
@@ -923,8 +924,9 @@ func TestGatewayMonitor_getGatewayIP(t *testing.T) {
 				ManualGateway:     "192.168.1.1",
 				AutoDetectGateway: false,
 			},
-			wantIP:  "192.168.1.1",
-			wantErr: false,
+			wantIP:     "192.168.1.1",
+			wantFamily: FamilyIPv4,
+			wantErr:    false,
 		},
 		{
 			name: "manual gateway takes precedence over auto-detect",
@@ -932,8 +934,19 @@ func TestGatewayMonitor_getGatewayIP(t *testing.T) {
 				ManualGateway:     "10.0.0.1",
 				AutoDetectGateway: true, // should be ignored when manual is set
 			},
-			wantIP:  "10.0.0.1",
-			wantErr: false,
+			wantIP:     "10.0.0.1",
+			wantFamily: FamilyIPv4,
+			wantErr:    false,
+		},
+		{
+			name: "manual IPv6 gateway classified as ipv6",
+			config: &GatewayMonitorConfig{
+				ManualGateway:     "fe80::1",
+				AutoDetectGateway: false,
+			},
+			wantIP:     "fe80::1",
+			wantFamily: FamilyIPv6,
+			wantErr:    false,
 		},
 		{
 			name: "no gateway and auto-detect disabled",
@@ -953,7 +966,7 @@ func TestGatewayMonitor_getGatewayIP(t *testing.T) {
 				config: tt.config,
 			}
 
-			ip, err := monitor.getGatewayIP()
+			ip, family, err := monitor.getGatewayIP()
 
 			if tt.wantErr {
 				if err == nil {
@@ -972,8 +985,209 @@ func TestGatewayMonitor_getGatewayIP(t *testing.T) {
 			}
 
 			if ip != tt.wantIP {
-				t.Errorf("getGatewayIP() = %q, want %q", ip, tt.wantIP)
+				t.Errorf("getGatewayIP() ip = %q, want %q", ip, tt.wantIP)
+			}
+			if family != tt.wantFamily {
+				t.Errorf("getGatewayIP() family = %q, want %q", family, tt.wantFamily)
 			}
 		})
+	}
+}
+
+// TestParseGatewayConfig_AddressFamily covers parsing/validation of the
+// addressFamily config key (ipv4 | ipv6 | auto | invalid) and the default.
+func TestParseGatewayConfig_AddressFamily(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     map[string]interface{}
+		wantFamily string
+		wantErr    bool
+	}{
+		{
+			name:       "unset defaults to ipv4",
+			config:     map[string]interface{}{},
+			wantFamily: familyIPv4,
+		},
+		{
+			name:       "nil config defaults to ipv4",
+			config:     nil,
+			wantFamily: familyIPv4,
+		},
+		{
+			name:       "explicit ipv4",
+			config:     map[string]interface{}{"addressFamily": "ipv4"},
+			wantFamily: familyIPv4,
+		},
+		{
+			name:       "explicit ipv6",
+			config:     map[string]interface{}{"addressFamily": "ipv6"},
+			wantFamily: familyIPv6,
+		},
+		{
+			name:       "auto",
+			config:     map[string]interface{}{"addressFamily": "auto"},
+			wantFamily: familyAuto,
+		},
+		{
+			name:       "case-insensitive and whitespace tolerant",
+			config:     map[string]interface{}{"addressFamily": "  IPv6 "},
+			wantFamily: familyIPv6,
+		},
+		{
+			name:    "invalid value rejected",
+			config:  map[string]interface{}{"addressFamily": "ipv7"},
+			wantErr: true,
+		},
+		{
+			name:    "non-string type rejected",
+			config:  map[string]interface{}{"addressFamily": 6},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGatewayConfig(tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseGatewayConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if got.AddressFamily != tt.wantFamily {
+				t.Errorf("AddressFamily = %q, want %q", got.AddressFamily, tt.wantFamily)
+			}
+		})
+	}
+}
+
+// TestGatewayMonitor_getGatewayIP_DualStack exercises the auto-detection path
+// across address families using fixture route tables instead of /proc.
+func TestGatewayMonitor_getGatewayIP_DualStack(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// IPv4 route table with a default gateway 192.168.1.1 (hex 0101A8C0).
+	ipv4Route := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+	ipv4RoutePath := filepath.Join(tmpDir, "route")
+	if err := os.WriteFile(ipv4RoutePath, []byte(ipv4Route), 0o644); err != nil {
+		t.Fatalf("write ipv4 route fixture: %v", err)
+	}
+
+	// IPv4 route table WITHOUT any default route (only an on-link subnet).
+	ipv4NoDefault := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+	ipv4NoDefaultPath := filepath.Join(tmpDir, "route_nodefault")
+	if err := os.WriteFile(ipv4NoDefaultPath, []byte(ipv4NoDefault), 0o644); err != nil {
+		t.Fatalf("write ipv4 no-default fixture: %v", err)
+	}
+
+	// Reuse the committed IPv6 fixture (default route via fe80::1).
+	const ipv6FixturePath = "testdata/proc/net/ipv6_route"
+
+	tests := []struct {
+		name              string
+		addressFamily     string
+		procRoutePath     string
+		procIPv6RoutePath string
+		wantIP            string
+		wantFamily        string
+		wantErr           bool
+	}{
+		{
+			name:          "family ipv4 selects IPv4 default route",
+			addressFamily: familyIPv4,
+			procRoutePath: ipv4RoutePath,
+			wantIP:        "192.168.1.1",
+			wantFamily:    FamilyIPv4,
+		},
+		{
+			name:              "family ipv6 selects IPv6 default route",
+			addressFamily:     familyIPv6,
+			procIPv6RoutePath: ipv6FixturePath,
+			wantIP:            "fe80::1",
+			wantFamily:        FamilyIPv6,
+		},
+		{
+			name:              "auto prefers IPv4 when present",
+			addressFamily:     familyAuto,
+			procRoutePath:     ipv4RoutePath,
+			procIPv6RoutePath: ipv6FixturePath,
+			wantIP:            "192.168.1.1",
+			wantFamily:        FamilyIPv4,
+		},
+		{
+			name:              "auto falls back to IPv6 when no IPv4 default route",
+			addressFamily:     familyAuto,
+			procRoutePath:     ipv4NoDefaultPath,
+			procIPv6RoutePath: ipv6FixturePath,
+			wantIP:            "fe80::1",
+			wantFamily:        FamilyIPv6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			monitor := &GatewayMonitor{
+				name: "test-gateway",
+				config: &GatewayMonitorConfig{
+					AutoDetectGateway: true,
+					AddressFamily:     tt.addressFamily,
+					procRoutePath:     tt.procRoutePath,
+					procIPv6RoutePath: tt.procIPv6RoutePath,
+				},
+			}
+
+			ip, family, err := monitor.getGatewayIP()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("getGatewayIP() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if ip != tt.wantIP {
+				t.Errorf("getGatewayIP() ip = %q, want %q", ip, tt.wantIP)
+			}
+			if family != tt.wantFamily {
+				t.Errorf("getGatewayIP() family = %q, want %q", family, tt.wantFamily)
+			}
+		})
+	}
+}
+
+// TestGatewayMonitor_DefaultFamilyUnchanged verifies that with no addressFamily
+// configured, auto-detection probes IPv4 only (preserving historical behavior).
+func TestGatewayMonitor_DefaultFamilyUnchanged(t *testing.T) {
+	tmpDir := t.TempDir()
+	ipv4Route := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+	ipv4RoutePath := filepath.Join(tmpDir, "route")
+	if err := os.WriteFile(ipv4RoutePath, []byte(ipv4Route), 0o644); err != nil {
+		t.Fatalf("write ipv4 route fixture: %v", err)
+	}
+
+	// Parse an empty config so AddressFamily picks up the package default.
+	cfg, err := parseGatewayConfig(map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("parseGatewayConfig() error: %v", err)
+	}
+	if cfg.AddressFamily != familyIPv4 {
+		t.Fatalf("default AddressFamily = %q, want %q", cfg.AddressFamily, familyIPv4)
+	}
+
+	cfg.AutoDetectGateway = true
+	cfg.procRoutePath = ipv4RoutePath
+	// Deliberately do NOT set procIPv6RoutePath; IPv4-only must not touch it.
+
+	monitor := &GatewayMonitor{name: "test-gateway", config: cfg}
+	ip, family, err := monitor.getGatewayIP()
+	if err != nil {
+		t.Fatalf("getGatewayIP() unexpected error: %v", err)
+	}
+	if ip != "192.168.1.1" {
+		t.Errorf("getGatewayIP() ip = %q, want %q", ip, "192.168.1.1")
+	}
+	if family != FamilyIPv4 {
+		t.Errorf("getGatewayIP() family = %q, want %q", family, FamilyIPv4)
 	}
 }

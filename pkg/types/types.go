@@ -451,6 +451,11 @@ type GatewayLatency struct {
 	Reachable    bool    `json:"reachable"`
 	PingCount    int     `json:"ping_count"`
 	SuccessCount int     `json:"success_count"`
+	// AddressFamily records which IP family the probed gateway belongs to
+	// ("ipv4" or "ipv6"). It lets downstream consumers distinguish dual-stack
+	// gateway probes. Empty when the family is unknown (e.g. a manually
+	// configured gateway whose family could not be classified).
+	AddressFamily string `json:"address_family,omitempty"`
 }
 
 // PeerLatency represents latency to a peer node.
