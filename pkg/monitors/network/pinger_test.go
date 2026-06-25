@@ -367,10 +367,44 @@ func TestPeerMatchesIP(t *testing.T) {
 	}
 }
 
+// TestNewDefaultPinger_UniqueID verifies that each defaultPinger instance is
+// assigned its own non-zero 16-bit ICMP echo ID, so concurrent pingers in the
+// same process cannot cross-match each other's echo replies. This is a pure
+// unit test and does not open any sockets, so it is safe under -short.
+func TestNewDefaultPinger_UniqueID(t *testing.T) {
+	p1, ok := newDefaultPinger().(*defaultPinger)
+	if !ok {
+		t.Fatal("newDefaultPinger() did not return *defaultPinger")
+	}
+	p2, ok := newDefaultPinger().(*defaultPinger)
+	if !ok {
+		t.Fatal("newDefaultPinger() did not return *defaultPinger")
+	}
+
+	if p1.id == 0 {
+		t.Errorf("first pinger id is zero, want non-zero")
+	}
+	if p2.id == 0 {
+		t.Errorf("second pinger id is zero, want non-zero")
+	}
+	if p1.id == p2.id {
+		t.Errorf("two pingers share id %d, want distinct ids", p1.id)
+	}
+}
+
 // TestDefaultPinger_Integration is an integration test for the real pinger.
 // This test requires ICMP permissions and may not run in all environments.
 // It exercises both IPv4 and IPv6 loopback paths so the dual-stack rewrite
 // is exercised when run in privileged mode.
+//
+// Gating: this lives in the default (non-tagged) test file but opens raw ICMP
+// sockets, so it must NOT run under `go test -short`. The testing.Short() guard
+// below is the gate of record — it keeps `-short` CI from attempting raw
+// sockets while still letting a normal `go test` run exercise the live path
+// where privileges allow. We keep it here (rather than behind the
+// //go:build integration tag used by cni_integration_test.go) because it is a
+// lightweight loopback check, not a cluster-dependent integration test, and the
+// existing Short() guard already satisfies the requirement with the least churn.
 func TestDefaultPinger_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")

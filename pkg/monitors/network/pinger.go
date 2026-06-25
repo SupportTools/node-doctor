@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -33,9 +33,25 @@ const (
 // pingSequence is a global counter for ICMP sequence numbers
 var pingSequence uint32
 
-// pingID is a random ID generated at startup to avoid collisions with other processes.
-// Using math/rand is acceptable here - cryptographic randomness is not required for ICMP ping IDs.
-var pingID = uint16(rand.Uint32()) //nolint:gosec // ping ID doesn't require crypto/rand
+// pingerInstanceCounter is an atomically-incremented package counter used to
+// derive a stable, unique 16-bit ICMP echo ID for each defaultPinger instance.
+// Mixing the counter with the process ID keeps IDs distinct both across
+// instances in this process and (best-effort) across processes on the host,
+// avoiding cross-matching of echo replies between concurrent pingers.
+var pingerInstanceCounter uint32
+
+// nextPingerID returns a unique, non-zero 16-bit ICMP echo ID for a new pinger
+// instance. It mixes the process ID with an atomically-incremented counter so
+// the value is deterministic and unique per instance (no randomness required).
+func nextPingerID() uint16 {
+	n := atomic.AddUint32(&pingerInstanceCounter, 1)
+	id := uint16(os.Getpid()) + uint16(n)
+	if id == 0 {
+		// Avoid an all-zero ID, which is a poor discriminator on the wire.
+		id = uint16(n) | 0x8000
+	}
+	return id
+}
 
 // PingResult represents the result of a single ping operation.
 type PingResult struct {
@@ -62,12 +78,15 @@ type Pinger interface {
 // It supports both IPv4 (ICMP) and IPv6 (ICMPv6) probes, dispatching
 // based on the resolved target address family.
 type defaultPinger struct {
-	// No state needed for default implementation
+	// id is this instance's stable 16-bit ICMP echo identifier. Each pinger
+	// gets its own ID so replies destined for one pinger are not accepted by
+	// another pinger running in the same process.
+	id uint16
 }
 
 // newDefaultPinger creates a new default pinger that uses ICMP echo requests.
 func newDefaultPinger() Pinger {
-	return &defaultPinger{}
+	return &defaultPinger{id: nextPingerID()}
 }
 
 // resolveTarget parses the target as an IP literal (optionally carrying an
@@ -155,6 +174,21 @@ func listenICMP(family string) (*icmp.PacketConn, int, icmp.Type, error) {
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("failed to create IPv6 ICMP listener (may require elevated privileges): %w", err)
 		}
+		// Install a kernel-side ICMPv6 filter so the socket only wakes us for
+		// echo replies, avoiding parsing of unrelated ICMPv6 traffic (router
+		// advertisements, neighbor discovery, MLD, ICMP errors). This is a
+		// best-effort optimization: some environments/sockets do not support
+		// setting the filter, so a failure here is non-fatal and we continue
+		// with an unfiltered socket (the receive loop still discards non-echo
+		// replies via isEchoReply).
+		if pc := conn.IPv6PacketConn(); pc != nil {
+			var f ipv6.ICMPFilter
+			f.SetAll(true)
+			f.Accept(ipv6.ICMPTypeEchoReply)
+			if err := pc.SetICMPFilter(&f); err != nil {
+				log.Printf("[DEBUG] IPv6 ICMP listener: could not set echo-reply filter (continuing unfiltered): %v", err)
+			}
+		}
 		return conn, protocolICMPv6, ipv6.ICMPTypeEchoRequest, nil
 	default:
 		return nil, 0, nil, fmt.Errorf("unsupported address family %q", family)
@@ -236,7 +270,7 @@ func (p *defaultPinger) singlePing(
 		Type: echoType,
 		Code: 0,
 		Body: &icmp.Echo{
-			ID:   int(pingID),
+			ID:   int(p.id),
 			Seq:  int(seq),
 			Data: []byte("node-doctor-ping"),
 		},
@@ -330,7 +364,7 @@ func (p *defaultPinger) singlePing(
 			continue
 		}
 
-		if echoReply.ID != int(pingID) || echoReply.Seq != int(seq) {
+		if echoReply.ID != int(p.id) || echoReply.Seq != int(seq) {
 			continue
 		}
 
