@@ -25,6 +25,11 @@ type PrometheusExporter struct {
 	activeProblems map[string]*types.Problem // key is problem ID for tracking active problems
 	mu             sync.RWMutex
 	started        bool
+
+	// consecutiveFailures tracks the running count of failed exports since the
+	// last successful export. It backs the ExporterConsecutiveFailures gauge and
+	// is guarded by mu to avoid racy read-modify-write on the gauge itself.
+	consecutiveFailures int
 }
 
 // NewPrometheusExporter creates a new Prometheus exporter with the given configuration
@@ -167,6 +172,11 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 
 	// Validate status
 	if err := status.Validate(); err != nil {
+		e.metrics.ExportErrorsTotal.WithLabelValues(
+			e.nodeName, "prometheus", "validation").Inc()
+		e.mu.Lock()
+		e.recordExportHealth(false)
+		e.mu.Unlock()
 		return fmt.Errorf("status validation failed: %w", err)
 	}
 
@@ -214,6 +224,9 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 	// Record successful export
 	e.metrics.ExportOperationsTotal.WithLabelValues(
 		e.nodeName, "prometheus", "status", "success").Inc()
+	e.mu.Lock()
+	e.recordExportHealth(true)
+	e.mu.Unlock()
 
 	// Record monitor-cycle self-metrics. status.Source is the monitor name.
 	// A status carrying any ConditionFalse is treated as a failed cycle.
@@ -257,6 +270,32 @@ func (e *PrometheusExporter) RecordMonitorCycle(monitorName string, duration tim
 	e.metrics.MonitorCyclesTotal.WithLabelValues(e.nodeName, monitorName, result).Inc()
 	e.metrics.MonitorCheckDuration.WithLabelValues(e.nodeName, monitorName).Observe(duration.Seconds())
 	e.metrics.MonitorCycleLastTimestamp.WithLabelValues(e.nodeName, monitorName).Set(float64(time.Now().Unix()))
+}
+
+// recordExportHealth updates the exporter-health self-metrics for the
+// "prometheus" exporter after an export attempt:
+//   - on success: ExporterHealthy=1, ExporterLastSuccessTimestamp=now, and the
+//     consecutive-failure counter is reset to 0 (ExporterConsecutiveFailures=0).
+//   - on failure: ExporterHealthy=0 and the consecutive-failure counter is
+//     incremented (ExporterConsecutiveFailures=count).
+//
+// The running failure count is tracked in the exporter's consecutiveFailures
+// field rather than via a racy gauge read-modify-write. The caller MUST hold
+// e.mu (write lock) so the field update is safe.
+func (e *PrometheusExporter) recordExportHealth(success bool) {
+	const exporterLabel = "prometheus"
+
+	if success {
+		e.consecutiveFailures = 0
+		e.metrics.ExporterHealthy.WithLabelValues(e.nodeName, exporterLabel).Set(1)
+		e.metrics.ExporterLastSuccessTimestamp.WithLabelValues(e.nodeName, exporterLabel).Set(float64(time.Now().Unix()))
+		e.metrics.ExporterConsecutiveFailures.WithLabelValues(e.nodeName, exporterLabel).Set(0)
+		return
+	}
+
+	e.consecutiveFailures++
+	e.metrics.ExporterHealthy.WithLabelValues(e.nodeName, exporterLabel).Set(0)
+	e.metrics.ExporterConsecutiveFailures.WithLabelValues(e.nodeName, exporterLabel).Set(float64(e.consecutiveFailures))
 }
 
 // recordLatencyMetrics extracts latency metrics from status metadata and records them
@@ -400,6 +439,11 @@ func (e *PrometheusExporter) ExportProblem(ctx context.Context, problem *types.P
 
 	// Validate problem
 	if err := problem.Validate(); err != nil {
+		e.metrics.ExportErrorsTotal.WithLabelValues(
+			e.nodeName, "prometheus", "validation").Inc()
+		e.mu.Lock()
+		e.recordExportHealth(false)
+		e.mu.Unlock()
 		return fmt.Errorf("problem validation failed: %w", err)
 	}
 
@@ -431,9 +475,11 @@ func (e *PrometheusExporter) ExportProblem(ctx context.Context, problem *types.P
 	uptime := time.Since(e.startTime).Seconds()
 	e.metrics.UptimeSeconds.WithLabelValues(e.nodeName).Set(uptime)
 
-	// Record successful export
+	// Record successful export. mu is already held here, so recordExportHealth
+	// is called directly (it must not re-acquire the lock).
 	e.metrics.ExportOperationsTotal.WithLabelValues(
 		e.nodeName, "prometheus", "problem", "success").Inc()
+	e.recordExportHealth(true)
 
 	log.Printf("[DEBUG] Exported problem %s on %s to Prometheus", problem.Type, problem.Resource)
 

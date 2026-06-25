@@ -30,6 +30,14 @@ type Metrics struct {
 	// heartbeat for staleness alerting.
 	MonitorCycleLastTimestamp *prometheus.GaugeVec
 
+	// Exporter-health self-metrics. These make the exporter's own health
+	// observable so operators can alert on a stuck or failing exporter.
+	// They are keyed by the exporter identity label only (not operation),
+	// since health is per-exporter.
+	ExporterHealthy              *prometheus.GaugeVec
+	ExporterLastSuccessTimestamp *prometheus.GaugeVec
+	ExporterConsecutiveFailures  *prometheus.GaugeVec
+
 	// Network latency gauge metrics
 	GatewayLatencySeconds         *prometheus.GaugeVec
 	PeerLatencySeconds            *prometheus.GaugeVec
@@ -229,6 +237,39 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				ConstLabels: labels,
 			},
 			[]string{"node", "monitor_name"},
+		),
+
+		ExporterHealthy: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "exporter_healthy",
+				Help:        "Whether the most recent export succeeded (1 = success, 0 = failure)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "exporter"},
+		),
+
+		ExporterLastSuccessTimestamp: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "exporter_last_success_timestamp_seconds",
+				Help:        "Unix timestamp (seconds) of the most recent successful export (last-success heartbeat for staleness alerting)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "exporter"},
+		),
+
+		ExporterConsecutiveFailures: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "exporter_consecutive_failures",
+				Help:        "Number of consecutive failed exports since the last successful export (reset to 0 on success)",
+				ConstLabels: labels,
+			},
+			[]string{"node", "exporter"},
 		),
 
 		// Network latency gauge metrics
@@ -487,6 +528,9 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
 		m.MonitorCycleLastTimestamp,
+		m.ExporterHealthy,
+		m.ExporterLastSuccessTimestamp,
+		m.ExporterConsecutiveFailures,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
 		// Network latency metrics
@@ -537,6 +581,9 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.StartTimeSeconds,
 		m.UptimeSeconds,
 		m.MonitorCycleLastTimestamp,
+		m.ExporterHealthy,
+		m.ExporterLastSuccessTimestamp,
+		m.ExporterConsecutiveFailures,
 		m.MonitorCheckDuration,
 		m.ExportDuration,
 		// Network latency metrics

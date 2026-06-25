@@ -112,6 +112,15 @@ func TestNewMetrics(t *testing.T) {
 			if metrics.MonitorCycleLastTimestamp == nil {
 				t.Error("MonitorCycleLastTimestamp metric not created")
 			}
+			if metrics.ExporterHealthy == nil {
+				t.Error("ExporterHealthy metric not created")
+			}
+			if metrics.ExporterLastSuccessTimestamp == nil {
+				t.Error("ExporterLastSuccessTimestamp metric not created")
+			}
+			if metrics.ExporterConsecutiveFailures == nil {
+				t.Error("ExporterConsecutiveFailures metric not created")
+			}
 		})
 	}
 }
@@ -205,6 +214,11 @@ func TestMetricUpdates(t *testing.T) {
 	metrics.MonitorCyclesTotal.WithLabelValues("test-node", "disk-monitor", "success").Inc()
 	metrics.MonitorCycleLastTimestamp.WithLabelValues("test-node", "disk-monitor").Set(1640995200)
 
+	// Exporter-health self-metrics
+	metrics.ExporterHealthy.WithLabelValues("test-node", "prometheus").Set(1)
+	metrics.ExporterLastSuccessTimestamp.WithLabelValues("test-node", "prometheus").Set(1640995200)
+	metrics.ExporterConsecutiveFailures.WithLabelValues("test-node", "prometheus").Set(0)
+
 	// Gather metrics to verify they were updated
 	metricFamilies, err := registry.Gather()
 	if err != nil {
@@ -238,6 +252,9 @@ func TestMetricUpdates(t *testing.T) {
 		"test_export_duration_seconds",
 		"test_monitor_cycles_total",
 		"test_monitor_cycle_last_timestamp_seconds",
+		"test_exporter_healthy",
+		"test_exporter_last_success_timestamp_seconds",
+		"test_exporter_consecutive_failures",
 	}
 
 	for _, expectedMetric := range expectedMetrics {
@@ -588,6 +605,88 @@ func TestRecordMonitorCycle(t *testing.T) {
 		"monitor_name": "disk-monitor",
 	}); !ok || got <= 0 {
 		t.Errorf("monitor_cycle_last_timestamp_seconds = %v (found=%v), want > 0", got, ok)
+	}
+}
+
+func TestRecordExportHealth(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics, err := NewMetrics("test", "", nil)
+	if err != nil {
+		t.Fatalf("failed to create metrics: %v", err)
+	}
+	if err := metrics.Register(registry); err != nil {
+		t.Fatalf("failed to register metrics: %v", err)
+	}
+
+	e := &PrometheusExporter{
+		nodeName: "test-node",
+		registry: registry,
+		metrics:  metrics,
+	}
+
+	healthLabels := map[string]string{"node": "test-node", "exporter": "prometheus"}
+
+	// recordExportHealth requires the caller to hold e.mu; mirror real usage.
+	record := func(success bool) {
+		e.mu.Lock()
+		e.recordExportHealth(success)
+		e.mu.Unlock()
+	}
+
+	// A successful export: Healthy=1, timestamp>0, consecutive failures=0.
+	record(true)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	if got, ok := gaugeValue(families, "test_exporter_healthy", healthLabels); !ok || got != 1 {
+		t.Errorf("exporter_healthy after success = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := gaugeValue(families, "test_exporter_last_success_timestamp_seconds", healthLabels); !ok || got <= 0 {
+		t.Errorf("exporter_last_success_timestamp_seconds after success = %v (found=%v), want > 0", got, ok)
+	}
+	if got, ok := gaugeValue(families, "test_exporter_consecutive_failures", healthLabels); !ok || got != 0 {
+		t.Errorf("exporter_consecutive_failures after success = %v (found=%v), want 0", got, ok)
+	}
+
+	// Capture the last-success timestamp so we can confirm failures don't bump it.
+	lastSuccess, _ := gaugeValue(families, "test_exporter_last_success_timestamp_seconds", healthLabels)
+
+	// Two consecutive failures: Healthy=0, consecutive failures increments to 2.
+	record(false)
+	record(false)
+
+	families, err = registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	if got, ok := gaugeValue(families, "test_exporter_healthy", healthLabels); !ok || got != 0 {
+		t.Errorf("exporter_healthy after failures = %v (found=%v), want 0", got, ok)
+	}
+	if got, ok := gaugeValue(families, "test_exporter_consecutive_failures", healthLabels); !ok || got != 2 {
+		t.Errorf("exporter_consecutive_failures after 2 failures = %v (found=%v), want 2", got, ok)
+	}
+	// Last-success timestamp must not change on failure.
+	if got, ok := gaugeValue(families, "test_exporter_last_success_timestamp_seconds", healthLabels); !ok || got != lastSuccess {
+		t.Errorf("exporter_last_success_timestamp_seconds changed on failure = %v, want %v", got, lastSuccess)
+	}
+
+	// A success after failures: Healthy=1, consecutive failures reset to 0.
+	record(true)
+
+	families, err = registry.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	if got, ok := gaugeValue(families, "test_exporter_healthy", healthLabels); !ok || got != 1 {
+		t.Errorf("exporter_healthy after recovery = %v (found=%v), want 1", got, ok)
+	}
+	if got, ok := gaugeValue(families, "test_exporter_consecutive_failures", healthLabels); !ok || got != 0 {
+		t.Errorf("exporter_consecutive_failures after recovery = %v (found=%v), want 0", got, ok)
 	}
 }
 
