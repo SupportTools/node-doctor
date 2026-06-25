@@ -1,7 +1,10 @@
 package remediators
 
 import (
+	"log"
 	"time"
+
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/supporttools/node-doctor/pkg/types"
 )
@@ -18,11 +21,14 @@ const (
 	// supplied per-call via Problem.Metadata["scriptPath"]/["args"].
 	StrategyCustomScript = "custom-script"
 
-	// StrategyNodeReboot and StrategyPodDelete are DESTRUCTIVE strategies that are
-	// intentionally NOT registered by RegisterBuiltinRemediators (Phase 1). They
-	// are deferred to Phase 2 (TaskForge #19263 Phase 2). Until then, a config
-	// that names them will fail dispatch with "unknown remediator type", which is
-	// the desired fail-safe behavior for un-implemented destructive actions.
+	// StrategyNodeReboot and StrategyPodDelete are DESTRUCTIVE strategies. They are
+	// intentionally NOT registered by RegisterBuiltinRemediators; they are
+	// registered separately by RegisterClusterRemediators (TaskForge #19263 Phase
+	// 2) and ONLY when a real Kubernetes client and node name are available. When
+	// the cluster client is unavailable (e.g. out-of-cluster) they remain
+	// unregistered and a config naming them fails dispatch with "unknown
+	// remediator type" — the desired fail-closed behavior for un-actionable
+	// destructive actions.
 	StrategyNodeReboot = "node-reboot"
 	StrategyPodDelete  = "pod-delete"
 )
@@ -95,4 +101,82 @@ func RegisterBuiltinRemediators(registry *RemediatorRegistry, cfg *types.NodeDoc
 		},
 		Description: "Runs the remediation script named in the triggering monitor's remediation config (Problem.Metadata[\"scriptPath\"]/[\"args\"]).",
 	})
+}
+
+// RegisterClusterRemediators registers the DESTRUCTIVE cluster-scoped remediator
+// strategies "node-reboot" and "pod-delete" (TaskForge #19263 Phase 2).
+//
+// These are registered ONLY when a real Kubernetes client AND a non-empty node
+// name are available. If either is missing (e.g. node-doctor is running
+// out-of-cluster, or the in-cluster client could not be built), they are NOT
+// registered and a clear warning is logged. This is the intended fail-closed
+// behavior: a config naming a destructive strategy then fails dispatch with
+// "unknown remediator type" rather than silently doing something dangerous (or
+// nothing).
+//
+// Both remediators honor the registry's dry-run state (registry.IsDryRun()): in
+// dry-run every destructive step is logged but never executed.
+//
+//   - "node-reboot" -> NodeRebootRemediator: cordons the node, drains its pods
+//     (skipping DaemonSet-owned, mirror/static, and node-doctor's OWN pod), then
+//     reboots via an injected command runner. Cordon-before-drain-before-reboot
+//     ordering is enforced; cordon failure aborts the reboot.
+//
+//   - "pod-delete" -> PodDeleteRemediator: deletes the single pod named in
+//     Problem.Metadata["namespace"]/["pod"]; refuses mirror/static pods and
+//     node-doctor's own pod; missing metadata is a hard error.
+//
+// selfPodName/selfPodNamespace identify node-doctor's own pod (typically from
+// the downward-API POD_NAME/POD_NAMESPACE env vars) so neither remediator can
+// act on the pod running this very process. They may be empty (self-skip simply
+// disabled), but supplying them is strongly recommended.
+//
+// Register panics on duplicate types, so RegisterClusterRemediators must be
+// called at most once per registry, after RegisterBuiltinRemediators.
+func RegisterClusterRemediators(registry *RemediatorRegistry, cfg *types.NodeDoctorConfig, client kubernetes.Interface, nodeName string, selfPodName, selfPodNamespace string) {
+	if registry == nil {
+		return
+	}
+
+	// Fail closed: without a real client and node name we cannot safely cordon,
+	// drain, or reboot. Leave the destructive strategies unregistered so any
+	// config naming them fails dispatch instead of doing something dangerous.
+	if client == nil || nodeName == "" {
+		log.Printf("[WARN] Destructive remediators (node-reboot, pod-delete) NOT registered: "+
+			"Kubernetes client available=%v, nodeName=%q. A config naming these strategies will "+
+			"fail dispatch (fail-closed).", client != nil, nodeName)
+		return
+	}
+
+	dryRun := registry.IsDryRun()
+
+	// node-reboot: cordon + drain + reboot (destructive, dry-run-aware).
+	registry.Register(RemediatorInfo{
+		Type: StrategyNodeReboot,
+		Factory: func() (types.Remediator, error) {
+			return NewNodeRebootRemediator(client, NodeRebootConfig{
+				NodeName:         nodeName,
+				DryRun:           dryRun,
+				SelfPodName:      selfPodName,
+				SelfPodNamespace: selfPodNamespace,
+			})
+		},
+		Description: "DESTRUCTIVE (dry-run-aware): cordons, drains (skipping DaemonSet/mirror/self pods), and reboots this node.",
+	})
+
+	// pod-delete: deletes the pod named in Problem.Metadata (destructive, dry-run-aware).
+	registry.Register(RemediatorInfo{
+		Type: StrategyPodDelete,
+		Factory: func() (types.Remediator, error) {
+			return NewPodDeleteRemediator(client, PodDeleteConfig{
+				DryRun:           dryRun,
+				SelfPodName:      selfPodName,
+				SelfPodNamespace: selfPodNamespace,
+			})
+		},
+		Description: "DESTRUCTIVE (dry-run-aware): deletes the pod named in Problem.Metadata[\"namespace\"]/[\"pod\"]; refuses mirror/self pods.",
+	})
+
+	log.Printf("[INFO] Registered destructive cluster remediators: [%s %s] (dry-run=%v, node=%q)",
+		StrategyNodeReboot, StrategyPodDelete, dryRun, nodeName)
 }

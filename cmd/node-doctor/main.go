@@ -13,6 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+
 	"github.com/supporttools/node-doctor/pkg/detector"
 	httpexporter "github.com/supporttools/node-doctor/pkg/exporters/http"
 	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
@@ -230,7 +234,25 @@ func main() {
 		// naming them fails dispatch, which is the desired fail-safe). SetDryRun
 		// is applied above so the closures pick up the correct dry-run state.
 		remediators.RegisterBuiltinRemediators(remediatorRegistry, config)
-		log.Printf("[INFO] Registered built-in remediators: %v (node-reboot/pod-delete deferred to Phase 2)",
+		log.Printf("[INFO] Registered built-in remediators: %v",
+			remediatorRegistry.GetRegisteredTypes())
+
+		// Register the DESTRUCTIVE cluster-scoped remediators (node-reboot,
+		// pod-delete) ONLY when a real in-cluster Kubernetes client and node name
+		// are available. buildClusterClient returns a nil client (non-fatal) when
+		// running out-of-cluster; RegisterClusterRemediators then registers
+		// nothing and logs a warning, so a config naming a destructive strategy
+		// fails dispatch (fail-closed) rather than doing something dangerous.
+		clusterClient := buildClusterClient(config)
+		remediators.RegisterClusterRemediators(
+			remediatorRegistry,
+			config,
+			clusterClient,
+			config.Settings.NodeName,
+			os.Getenv("POD_NAME"),
+			os.Getenv("POD_NAMESPACE"),
+		)
+		log.Printf("[INFO] Remediators registered after cluster wiring: %v",
 			remediatorRegistry.GetRegisteredTypes())
 
 		// Wire the controller lease client when coordination is opted in.
@@ -531,4 +553,51 @@ func wireLeaseClient(registry *remediators.RemediatorRegistry, config *types.Nod
 	log.Printf("[INFO] Lease client wired (controller=%s node=%s leaseTimeout=%v)",
 		coord.ControllerURL, config.Settings.NodeName, coord.LeaseTimeout)
 	return nil
+}
+
+// buildClusterClient builds a Kubernetes clientset for the DESTRUCTIVE
+// cluster-scoped remediators (node-reboot, pod-delete). It mirrors the
+// auto-detection used by pkg/exporters/kubernetes/client.go (explicit kubeconfig
+// if set, otherwise in-cluster config).
+//
+// On ANY error (no kubeconfig + not in a pod, clientset build failure) it logs
+// and returns nil — this is non-fatal. A nil client causes
+// RegisterClusterRemediators to skip the destructive strategies (fail-closed),
+// which is strictly safer than registering remediators that cannot reach the
+// API.
+func buildClusterClient(config *types.NodeDoctorConfig) kubernetes.Interface {
+	var restConfig *rest.Config
+	var err error
+
+	if config.Settings.Kubeconfig != "" {
+		restConfig, err = clientcmd.BuildConfigFromFlags("", config.Settings.Kubeconfig)
+		if err != nil {
+			log.Printf("[WARN] Could not build Kubernetes config from kubeconfig %q: %v "+
+				"(destructive remediators will be skipped)", config.Settings.Kubeconfig, err)
+			return nil
+		}
+	} else {
+		restConfig, err = rest.InClusterConfig()
+		if err != nil {
+			log.Printf("[WARN] Could not build in-cluster Kubernetes config: %v "+
+				"(destructive remediators will be skipped — are you running inside a pod?)", err)
+			return nil
+		}
+	}
+
+	if config.Settings.QPS > 0 {
+		restConfig.QPS = config.Settings.QPS
+	}
+	if config.Settings.Burst > 0 {
+		restConfig.Burst = config.Settings.Burst
+	}
+
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		log.Printf("[WARN] Could not create Kubernetes clientset: %v "+
+			"(destructive remediators will be skipped)", err)
+		return nil
+	}
+
+	return clientset
 }
