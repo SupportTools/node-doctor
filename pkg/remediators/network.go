@@ -22,6 +22,9 @@ const (
 
 	// NetworkResetRouting resets the routing table to defaults
 	NetworkResetRouting NetworkOperation = "reset-routing"
+
+	// NetworkFlushIPv6Route flushes the IPv6 route cache
+	NetworkFlushIPv6Route NetworkOperation = "flush-ipv6-route"
 )
 
 // NetworkConfig contains configuration for the network remediator.
@@ -150,10 +153,10 @@ func NewNetworkRemediator(config NetworkConfig) (*NetworkRemediator, error) {
 func validateNetworkConfig(config NetworkConfig) error {
 	// Validate operation
 	switch config.Operation {
-	case NetworkFlushDNS, NetworkRestartInterface, NetworkResetRouting:
+	case NetworkFlushDNS, NetworkRestartInterface, NetworkResetRouting, NetworkFlushIPv6Route:
 		// Valid operation
 	default:
-		return fmt.Errorf("invalid operation: %s (must be flush-dns, restart-interface, or reset-routing)", config.Operation)
+		return fmt.Errorf("invalid operation: %s (must be flush-dns, restart-interface, reset-routing, or flush-ipv6-route)", config.Operation)
 	}
 
 	// RestartInterface requires an interface name
@@ -203,6 +206,8 @@ func (r *NetworkRemediator) executeOperation(ctx context.Context) error {
 		return r.restartInterface(ctx)
 	case NetworkResetRouting:
 		return r.resetRouting(ctx)
+	case NetworkFlushIPv6Route:
+		return r.flushIPv6RouteCache(ctx)
 	default:
 		return fmt.Errorf("unknown operation: %s", r.config.Operation)
 	}
@@ -294,6 +299,41 @@ func (r *NetworkRemediator) resetRouting(ctx context.Context) error {
 	return nil
 }
 
+// flushIPv6RouteCache flushes the IPv6 route cache via "ip -6 route flush cache".
+//
+// Failure semantics: unlike resetRouting (which treats a cache-flush failure as a
+// non-fatal warning because it is one step of a broader reset), this is a dedicated
+// flush remediator. A failed flush means the remediation did not accomplish its sole
+// purpose, so the error is returned (wrapped with command output) and the remediation
+// is reported as failed.
+func (r *NetworkRemediator) flushIPv6RouteCache(ctx context.Context) error {
+	r.logInfof("Flushing IPv6 route cache")
+
+	// Backup current IPv6 routing table if configured
+	var routingBackup string
+	if r.config.BackupRouting {
+		backup, err := r.networkExecutor.ExecuteCommand(ctx, "ip", "-6", "route", "show")
+		if err != nil {
+			r.logWarnf("Failed to backup IPv6 routing table: %v", err)
+		} else {
+			routingBackup = backup
+			r.logInfof("Backed up IPv6 routing table (%d bytes)", len(routingBackup))
+		}
+	}
+
+	output, err := r.networkExecutor.ExecuteCommand(ctx, "ip", "-6", "route", "flush", "cache")
+	if err != nil {
+		return fmt.Errorf("failed to flush IPv6 route cache: %w (output: %s)", err, output)
+	}
+
+	r.logInfof("IPv6 route cache flush complete")
+	if routingBackup != "" {
+		r.logInfof("IPv6 routing backup available for restore if needed")
+	}
+
+	return nil
+}
+
 // verifyOperation verifies that the network operation succeeded.
 func (r *NetworkRemediator) verifyOperation(ctx context.Context) error {
 	// Create a context with timeout for verification
@@ -313,6 +353,11 @@ func (r *NetworkRemediator) verifyOperation(ctx context.Context) error {
 	case NetworkResetRouting:
 		// Verify routing table exists after reset
 		return r.verifyRoutingTable(verifyCtx)
+
+	case NetworkFlushIPv6Route:
+		// IPv6 route cache flush is immediate, no verification needed
+		r.logInfof("IPv6 route cache flush operation requires no verification")
+		return nil
 
 	default:
 		return fmt.Errorf("unknown operation for verification: %s", r.config.Operation)

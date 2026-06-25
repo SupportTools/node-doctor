@@ -178,6 +178,21 @@ func TestNewNetworkRemediator(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid flush ipv6 route config",
+			config: NetworkConfig{
+				Operation: NetworkFlushIPv6Route,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid flush ipv6 route config with backup",
+			config: NetworkConfig{
+				Operation:     NetworkFlushIPv6Route,
+				BackupRouting: true,
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid operation",
 			config: NetworkConfig{
 				Operation: "invalid-op",
@@ -882,5 +897,166 @@ func TestNetworkRemediator_LogWithLogger(t *testing.T) {
 	}
 	if len(logger.warnMessages) != 1 {
 		t.Errorf("expected 1 warn message, got %d", len(logger.warnMessages))
+	}
+}
+
+// TestNetworkRemediator_FlushIPv6Route tests IPv6 route cache flushing success.
+func TestNetworkRemediator_FlushIPv6Route(t *testing.T) {
+	config := NetworkConfig{
+		Operation: NetworkFlushIPv6Route,
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	mockExec := &mockNetworkExecutor{}
+	r.SetNetworkExecutor(mockExec)
+
+	problem := types.Problem{
+		Type:     "ipv6-routing-failure",
+		Resource: "ipv6-routing-table",
+		Severity: types.ProblemCritical,
+	}
+
+	ctx := context.Background()
+	err = r.Remediate(ctx, problem)
+	if err != nil {
+		t.Errorf("Remediate() unexpected error: %v", err)
+	}
+
+	// Verify the exact IPv6 route cache flush command + args were issued.
+	mockExec.mu.Lock()
+	commands := mockExec.executedCommands
+	mockExec.mu.Unlock()
+
+	foundFlush := false
+	for _, cmd := range commands {
+		if cmd == "ip -6 route flush cache" {
+			foundFlush = true
+		}
+	}
+	if !foundFlush {
+		t.Errorf("expected exact command 'ip -6 route flush cache' to be executed, got: %v", commands)
+	}
+}
+
+// TestNetworkRemediator_FlushIPv6Route_Failure verifies that a flush failure is a hard error.
+func TestNetworkRemediator_FlushIPv6Route_Failure(t *testing.T) {
+	config := NetworkConfig{
+		Operation: NetworkFlushIPv6Route,
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	mockExec := &mockNetworkExecutor{
+		shouldFailCommand: true,
+	}
+	r.SetNetworkExecutor(mockExec)
+
+	problem := types.Problem{
+		Type:     "ipv6-routing-failure",
+		Resource: "ipv6-routing-table",
+		Severity: types.ProblemCritical,
+	}
+
+	ctx := context.Background()
+	err = r.Remediate(ctx, problem)
+	if err == nil {
+		t.Errorf("Remediate() expected error for failed IPv6 route cache flush, got nil")
+	}
+}
+
+// TestNetworkRemediator_FlushIPv6Route_Backup verifies the IPv6 routing table is
+// backed up (via "ip -6 route show") before the flush when BackupRouting is set.
+func TestNetworkRemediator_FlushIPv6Route_Backup(t *testing.T) {
+	config := NetworkConfig{
+		Operation:     NetworkFlushIPv6Route,
+		BackupRouting: true,
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	mockExec := &mockNetworkExecutor{
+		routingTable: "default via fe80::1 dev eth0",
+	}
+	r.SetNetworkExecutor(mockExec)
+
+	problem := types.Problem{
+		Type:     "ipv6-routing-failure",
+		Resource: "ipv6-routing-table",
+		Severity: types.ProblemCritical,
+	}
+
+	ctx := context.Background()
+	err = r.Remediate(ctx, problem)
+	if err != nil {
+		t.Errorf("Remediate() unexpected error: %v", err)
+	}
+
+	mockExec.mu.Lock()
+	commands := mockExec.executedCommands
+	mockExec.mu.Unlock()
+
+	// The backup ("ip -6 route show") must precede the flush ("ip -6 route flush cache").
+	showIdx := -1
+	flushIdx := -1
+	for i, cmd := range commands {
+		if cmd == "ip -6 route show" && showIdx == -1 {
+			showIdx = i
+		}
+		if cmd == "ip -6 route flush cache" && flushIdx == -1 {
+			flushIdx = i
+		}
+	}
+
+	if showIdx == -1 {
+		t.Errorf("expected 'ip -6 route show' backup command, got: %v", commands)
+	}
+	if flushIdx == -1 {
+		t.Errorf("expected 'ip -6 route flush cache' command, got: %v", commands)
+	}
+	if showIdx != -1 && flushIdx != -1 && showIdx >= flushIdx {
+		t.Errorf("expected backup (idx %d) to precede flush (idx %d): %v", showIdx, flushIdx, commands)
+	}
+}
+
+// TestNetworkRemediator_VerifyOperation_FlushIPv6Route verifies that the IPv6
+// route cache flush requires no verification (returns nil) when VerifyAfter is set.
+func TestNetworkRemediator_VerifyOperation_FlushIPv6Route(t *testing.T) {
+	config := NetworkConfig{
+		Operation:     NetworkFlushIPv6Route,
+		VerifyAfter:   true,
+		VerifyTimeout: 2 * time.Second,
+	}
+
+	r, err := NewNetworkRemediator(config)
+	if err != nil {
+		t.Fatalf("NewNetworkRemediator() error: %v", err)
+	}
+
+	mockExec := &mockNetworkExecutor{}
+	r.SetNetworkExecutor(mockExec)
+
+	ctx := context.Background()
+	if err := r.verifyOperation(ctx); err != nil {
+		t.Errorf("verifyOperation() unexpected error: %v", err)
+	}
+
+	problem := types.Problem{
+		Type:     "ipv6-routing-failure",
+		Resource: "ipv6-routing-table",
+		Severity: types.ProblemCritical,
+	}
+
+	if err := r.Remediate(ctx, problem); err != nil {
+		t.Errorf("Remediate() with VerifyAfter unexpected error: %v", err)
 	}
 }
