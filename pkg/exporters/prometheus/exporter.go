@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,6 +28,19 @@ type PrometheusExporter struct {
 	mu             sync.RWMutex
 	started        bool
 
+	// boundAddr is the actual host:port the HTTP server is listening on, captured
+	// from the bound net.Listener after Start. When an ephemeral port (0) is
+	// requested, this is the only place the real, kernel-assigned port can be
+	// read. It is guarded by mu and exposed via BoundAddr/BoundPort.
+	boundAddr string
+
+	// ephemeral, when true, suppresses the production Port==0 -> 9100 default so
+	// the server binds an OS-assigned ephemeral port (bind :0). This is a test
+	// seam (see newEphemeralExporter) that lets tests bind hermetically and read
+	// the real port back via BoundPort, eliminating the freePort close-then-rebind
+	// TOCTOU race.
+	ephemeral bool
+
 	// consecutiveFailures tracks the running count of failed exports since the
 	// last successful export. It backs the ExporterConsecutiveFailures gauge and
 	// is guarded by mu to avoid racy read-modify-write on the gauge itself.
@@ -34,6 +49,29 @@ type PrometheusExporter struct {
 
 // NewPrometheusExporter creates a new Prometheus exporter with the given configuration
 func NewPrometheusExporter(config *types.PrometheusExporterConfig, settings *types.GlobalSettings) (*PrometheusExporter, error) {
+	return newPrometheusExporter(config, settings, false)
+}
+
+// newEphemeralExporter is a test-only constructor that builds an exporter which
+// binds an OS-assigned ephemeral port (bind :0) instead of applying the
+// production Port==0 -> 9100 default. After Start, the real bound port is
+// available via BoundPort/BoundAddr. This makes the exporter test path hermetic:
+// the port is bound exactly once, with no close-then-rebind window for another
+// process to grab it.
+func newEphemeralExporter(settings *types.GlobalSettings) (*PrometheusExporter, error) {
+	config := &types.PrometheusExporterConfig{
+		Enabled:   true,
+		Port:      0, // ephemeral: bound by the OS, read back via BoundPort
+		Path:      "/metrics",
+		Namespace: "test",
+	}
+	return newPrometheusExporter(config, settings, true)
+}
+
+// newPrometheusExporter is the shared constructor. When ephemeral is true the
+// Port==0 -> 9100 production default is skipped so the server binds an OS-assigned
+// ephemeral port.
+func newPrometheusExporter(config *types.PrometheusExporterConfig, settings *types.GlobalSettings, ephemeral bool) (*PrometheusExporter, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -54,8 +92,10 @@ func NewPrometheusExporter(config *types.PrometheusExporterConfig, settings *typ
 		return nil, fmt.Errorf("node name is required")
 	}
 
-	// Set defaults
-	if config.Port == 0 {
+	// Set defaults. In ephemeral mode, leave Port at 0 so the OS assigns a free
+	// port at bind time (the real port is read back via BoundPort after Start);
+	// otherwise apply the production default of 9100.
+	if config.Port == 0 && !ephemeral {
 		config.Port = 9100
 	}
 	if config.BindAddress == "" {
@@ -96,6 +136,7 @@ func NewPrometheusExporter(config *types.PrometheusExporterConfig, settings *typ
 		metrics:        metrics,
 		startTime:      time.Now(),
 		activeProblems: make(map[string]*types.Problem),
+		ephemeral:      ephemeral,
 	}
 
 	log.Printf("[INFO] Created Prometheus exporter on port %d with namespace '%s'",
@@ -126,12 +167,46 @@ func (e *PrometheusExporter) Start(ctx context.Context) error {
 	}
 
 	e.server = server
+	// Capture the actual bound address from the listener (server.Addr is set to
+	// ln.Addr().String() by startHTTPServer). This is set synchronously before
+	// Start returns and is the authoritative source for the real port, which
+	// matters when an ephemeral port (0) was requested.
+	e.boundAddr = server.Addr
 	e.started = true
 
 	log.Printf("[INFO] Prometheus exporter started successfully on %s%s",
 		server.Addr, e.config.Path)
 
 	return nil
+}
+
+// BoundAddr returns the actual host:port the exporter's HTTP server is listening
+// on, as captured from the bound listener after Start. It returns "" before Start
+// has succeeded. When an ephemeral port (0) was requested, this reports the real,
+// kernel-assigned port. Safe for concurrent use.
+func (e *PrometheusExporter) BoundAddr() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.boundAddr
+}
+
+// BoundPort returns the actual port the exporter's HTTP server is listening on,
+// extracted from BoundAddr. It returns 0 before Start has succeeded or if the
+// bound address cannot be parsed. Safe for concurrent use.
+func (e *PrometheusExporter) BoundPort() int {
+	addr := e.BoundAddr()
+	if addr == "" {
+		return 0
+	}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 // Stop gracefully stops the Prometheus exporter
@@ -546,8 +621,10 @@ func (e *PrometheusExporter) Reload(config interface{}) error {
 
 	oldConfig := e.config
 
-	// Set defaults for new config
-	if prometheusConfig.Port == 0 {
+	// Set defaults for new config. In ephemeral mode (test seam), leave Port at 0
+	// so a restart binds a fresh OS-assigned port rather than the production 9100
+	// default; the real port is read back via BoundPort.
+	if prometheusConfig.Port == 0 && !e.ephemeral {
 		prometheusConfig.Port = 9100
 	}
 	if prometheusConfig.BindAddress == "" {
@@ -614,6 +691,7 @@ func (e *PrometheusExporter) Reload(config interface{}) error {
 				return fmt.Errorf("failed to start new HTTP server: %w", err)
 			}
 			e.server = server
+			e.boundAddr = server.Addr
 
 			log.Printf("[INFO] Prometheus server restarted on %s%s", server.Addr, prometheusConfig.Path)
 		}

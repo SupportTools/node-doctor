@@ -2,6 +2,7 @@ package detector
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -311,6 +312,38 @@ func (m *MockRemediationExecutor) Remediate(_ context.Context, remediatorType st
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, remediateCall{RemediatorType: remediatorType, Problem: problem})
 	return m.returnErr
+}
+
+// RemediateWithStrategies records each attempted strategy and returns the
+// configured error. It mirrors the real registry's first-success-wins
+// semantics: if returnErr is nil the first strategy "succeeds" and remaining
+// strategies are not attempted; if returnErr is non-nil every strategy is
+// attempted and the error is returned.
+func (m *MockRemediationExecutor) RemediateWithStrategies(ctx context.Context, strategyTypes []string, problem types.Problem) error {
+	if len(strategyTypes) == 0 {
+		return fmt.Errorf("no remediation strategies provided")
+	}
+
+	m.mu.Lock()
+	err := m.returnErr
+	m.mu.Unlock()
+
+	var lastErr error
+	for _, strategyType := range strategyTypes {
+		attemptProblem := problem
+		attemptProblem.Type = strategyType
+		// Record the attempt via Remediate so existing call assertions hold.
+		callErr := m.Remediate(ctx, strategyType, attemptProblem)
+		if callErr == nil && err == nil {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = callErr
+		}
+	}
+	return lastErr
 }
 
 // IsDryRun implements RemediationExecutor.

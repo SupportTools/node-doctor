@@ -73,6 +73,13 @@ var (
 		"custom-script":   true,
 		"node-reboot":     true,
 		"pod-delete":      true,
+		// Network remediation operations (TaskForge #19263 Phase 3). These map
+		// directly to NetworkRemediator operations and are registered as safe
+		// built-in strategies. "flush-ipv6-route" closes Task #17222.
+		"flush-dns":         true,
+		"restart-interface": true,
+		"reset-routing":     true,
+		"flush-ipv6-route":  true,
 	}
 
 	// Minimum interval thresholds (conservative settings to prevent system overload)
@@ -137,9 +144,9 @@ type GlobalSettings struct {
 	// Logging configuration
 	LogLevel  string `json:"logLevel,omitempty" yaml:"logLevel,omitempty"`
 	LogFormat string `json:"logFormat,omitempty" yaml:"logFormat,omitempty"`
-	// LogOutput and LogFile are parsed and validated but not yet consumed by the
-	// agent bootstrap; logging routing is currently configured via environment
-	// variables. Reserved for a future structured-logging refactor.
+	// LogOutput and LogFile route structured logging output. They are consumed by
+	// pkg/logger.Init at startup: LogOutput selects stdout/stderr/file and, when
+	// "file", LogFile names the append-mode log destination.
 	LogOutput string `json:"logOutput,omitempty" yaml:"logOutput,omitempty"`
 	LogFile   string `json:"logFile,omitempty" yaml:"logFile,omitempty"`
 
@@ -214,6 +221,12 @@ type MonitorRemediationConfig struct {
 
 	// ScriptPath is the path to remediation script (for custom-script strategy)
 	ScriptPath string `json:"scriptPath,omitempty" yaml:"scriptPath,omitempty"`
+
+	// Interface is the network interface name (for the restart-interface
+	// network remediation strategy). Examples: "eth0", "ens3". It is threaded
+	// to the NetworkRemediator via Problem.Metadata["interface"] at dispatch
+	// time, mirroring how Service is threaded for systemd-restart.
+	Interface string `json:"interface,omitempty" yaml:"interface,omitempty"`
 
 	// Args are arguments to pass to the script
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
@@ -405,9 +418,11 @@ type RemediationConfig struct {
 
 	// Safety limits.
 	MaxRemediationsPerHour int `json:"maxRemediationsPerHour,omitempty" yaml:"maxRemediationsPerHour,omitempty"`
-	// MaxRemediationsPerMinute is parsed but not enforced at runtime; only the
-	// per-hour bucket (maxPerHour) is wired to RemediatorRegistry. Reserved for
-	// a future fine-grained burst-limiting feature.
+	// MaxRemediationsPerMinute is enforced at runtime via the RemediatorRegistry's
+	// per-minute token bucket (wired through SetMaxRemediationsPerMinute). It caps
+	// the burst rate of remediations within any one minute, complementing the
+	// per-hour sliding window (maxPerHour). A value of 0 means unlimited (the
+	// per-minute check is skipped).
 	MaxRemediationsPerMinute int `json:"maxRemediationsPerMinute,omitempty" yaml:"maxRemediationsPerMinute,omitempty"`
 
 	// Cooldown configuration
@@ -446,8 +461,18 @@ type RemediationCoordinationConfig struct {
 	RequestTimeoutString string        `json:"requestTimeout,omitempty" yaml:"requestTimeout,omitempty"`
 	RequestTimeout       time.Duration `json:"-" yaml:"-"`
 
-	// FallbackOnUnreachable determines behavior when controller is unreachable
-	// If true, proceed with remediation; if false, block and wait for controller
+	// FallbackOnUnreachable determines behavior when the controller is unreachable.
+	// If true, proceed with remediation; if false, block and wait for the controller.
+	//
+	// WARNING (cluster-wide remediation storm risk): Setting this to true defeats
+	// the lease coordination during a controller outage. When the controller is
+	// down, EVERY DaemonSet node's lease request "succeeds" with a fake self-
+	// approval simultaneously, so ALL nodes may remediate (reboot/drain/etc.) at
+	// the same time — a thundering-herd, cluster-wide remediation storm. The lease
+	// coordination exists precisely to serialize remediations (single node at a
+	// time) and prevent that. Defaults to false (safe: block when the controller is
+	// unreachable). Only enable when single-node-at-a-time coordination is not
+	// required and higher availability is preferred over storm protection.
 	FallbackOnUnreachable bool `json:"fallbackOnUnreachable,omitempty" yaml:"fallbackOnUnreachable,omitempty"`
 
 	// MaxRetries is the maximum number of lease request retries
@@ -1243,7 +1268,7 @@ func (r *MonitorRemediationConfig) Validate() error {
 		return fmt.Errorf("strategy is required when remediation is enabled")
 	}
 	if !validRemediationStrategies[r.Strategy] {
-		return fmt.Errorf("invalid strategy %q, must be one of: systemd-restart, custom-script, node-reboot, pod-delete", r.Strategy)
+		return fmt.Errorf("invalid strategy %q, must be one of: systemd-restart, custom-script, node-reboot, pod-delete, flush-dns, restart-interface, reset-routing, flush-ipv6-route", r.Strategy)
 	}
 
 	// Strategy-specific validation
@@ -1265,6 +1290,13 @@ func (r *MonitorRemediationConfig) Validate() error {
 		}
 		// Note: File existence check skipped to support containerized deployments
 		// where scripts may be mounted at runtime
+	case "restart-interface":
+		// The restart-interface network strategy must name the interface to
+		// bounce, mirroring how systemd-restart requires Service. The value is
+		// threaded to the NetworkRemediator via Problem.Metadata["interface"].
+		if r.Interface == "" {
+			return fmt.Errorf("interface is required for restart-interface strategy")
+		}
 	}
 
 	// Validate cooldown is positive

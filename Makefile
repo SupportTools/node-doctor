@@ -21,7 +21,7 @@
 	qa-check devils-advocate workflow-status \
 	gh-status gh-watch gh-logs gh-builds \
 	check-prerequisites check-docker check-kubectl \
-	build test test-integration test-e2e test-all \
+	build test test-integration test-e2e test-all test-ci \
 	test-net-icmp-integration \
 	lint fmt clean install-deps \
 	docker-build docker-push \
@@ -222,6 +222,21 @@ test-integration:
 		$(call print_warning,"Integration tests not yet implemented (test/integration/ does not exist)"); \
 	fi
 	@$(call print_success,"Integration tests completed")
+
+# CI gate: fast unit tests (-short) PLUS integration tests (no -short), so
+# coverage gaps like TestLeaseCoordinationFlow / TestCorrelationDetectionFlow
+# (in test/integration/controller/) are exercised. Build-tagged integration
+# tests (e.g. the kind dual-stack test) still require -tags=integration and are
+# not run here. Use this target in CI in place of `test` alone.
+test-ci:
+	@$(call print_status,"Running CI test gate (unit + integration)...")
+	@go test ./pkg/... ./cmd/... -v -cover -short
+	@if [ -d "test/integration" ]; then \
+		go test ./test/integration/... -v -cover -timeout 10m; \
+	else \
+		$(call print_warning,"Integration tests not yet implemented (test/integration/ does not exist)"); \
+	fi
+	@$(call print_success,"CI test gate passed")
 
 # End-to-end tests
 test-e2e:

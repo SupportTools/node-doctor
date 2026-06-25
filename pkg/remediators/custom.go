@@ -2,6 +2,7 @@ package remediators
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -131,14 +132,25 @@ func (e *defaultScriptExecutor) CheckScriptSafety(scriptPath string) error {
 }
 
 // NewCustomRemediator creates a new custom script remediator with the given configuration.
+//
+// ScriptPath may be empty: such a remediator is a metadata-driven singleton
+// whose script is supplied per-call via Problem.Metadata["scriptPath"] (see
+// RegisterBuiltinRemediators). The per-call path is still subject to the same
+// absolute-path / no-".." safety validation at Remediate time. When ScriptPath
+// IS set at construction time it is validated immediately (absolute, no "..").
 func NewCustomRemediator(config CustomConfig) (*CustomRemediator, error) {
 	// Validate configuration
 	if err := validateCustomConfig(&config); err != nil {
 		return nil, fmt.Errorf("invalid custom config: %w", err)
 	}
 
-	// Create base remediator with medium cooldown (5 minutes for custom scripts)
-	scriptName := filepath.Base(config.ScriptPath)
+	// Create base remediator with medium cooldown (5 minutes for custom scripts).
+	// When ScriptPath is empty the remediator is metadata-driven; use a stable
+	// label so the base remediator name is still unique.
+	scriptName := "dynamic"
+	if config.ScriptPath != "" {
+		scriptName = filepath.Base(config.ScriptPath)
+	}
 	base, err := NewBaseRemediator(
 		fmt.Sprintf("custom-%s", scriptName),
 		CooldownMedium,
@@ -161,20 +173,42 @@ func NewCustomRemediator(config CustomConfig) (*CustomRemediator, error) {
 	return remediator, nil
 }
 
-// validateCustomConfig validates the custom remediator configuration.
-func validateCustomConfig(config *CustomConfig) error {
-	// Validate script path
-	if config.ScriptPath == "" {
+// validateScriptPath enforces the custom-script safety policy on a script path:
+// the path must be absolute and must not contain a ".." traversal component.
+// It is applied both at construction time (when ScriptPath is configured) and at
+// Remediate time on the metadata-supplied path, so a metadata-driven singleton
+// can never bypass the safety check.
+func validateScriptPath(scriptPath string) error {
+	if scriptPath == "" {
 		return fmt.Errorf("script path is required")
 	}
-
-	// Convert to absolute path if relative
-	if !filepath.IsAbs(config.ScriptPath) {
-		absPath, err := filepath.Abs(config.ScriptPath)
-		if err != nil {
-			return fmt.Errorf("failed to resolve absolute path: %w", err)
+	if !filepath.IsAbs(scriptPath) {
+		return fmt.Errorf("script path must be absolute: %q", scriptPath)
+	}
+	// Reject any ".." path-traversal component on the RAW path (not the cleaned
+	// path): an absolute path like "/opt/../../etc/x" cleans to "/etc/x" with no
+	// ".." remaining, so checking the cleaned path would let it through. Checking
+	// the raw components rejects traversal unconditionally, matching the config-
+	// layer policy (types.MonitorRemediationConfig.Validate).
+	for _, part := range strings.Split(scriptPath, string(filepath.Separator)) {
+		if part == ".." {
+			return fmt.Errorf("script path must not contain '..': %q", scriptPath)
 		}
-		config.ScriptPath = absPath
+	}
+	return nil
+}
+
+// validateCustomConfig validates the custom remediator configuration.
+//
+// ScriptPath is optional: an empty ScriptPath produces a metadata-driven
+// singleton whose script is supplied per-call via Problem.Metadata. When
+// ScriptPath IS provided it must pass validateScriptPath (absolute, no "..").
+func validateCustomConfig(config *CustomConfig) error {
+	// Validate script path when configured (empty => metadata-driven singleton).
+	if config.ScriptPath != "" {
+		if err := validateScriptPath(config.ScriptPath); err != nil {
+			return err
+		}
 	}
 
 	// Set defaults
@@ -191,8 +225,10 @@ func validateCustomConfig(config *CustomConfig) error {
 		return fmt.Errorf("timeout must not exceed 30 minutes")
 	}
 
-	// Set working directory to script's directory if not specified
-	if config.WorkingDir == "" {
+	// Set working directory to script's directory if not specified and a script
+	// path is configured. For metadata-driven singletons the working directory is
+	// resolved per-call from the metadata script path.
+	if config.WorkingDir == "" && config.ScriptPath != "" {
 		config.WorkingDir = filepath.Dir(config.ScriptPath)
 	}
 
@@ -205,17 +241,30 @@ func validateCustomConfig(config *CustomConfig) error {
 }
 
 // remediate performs the actual custom script execution.
+//
+// The script path and args are resolved per-call: when the Problem carries a
+// "scriptPath" metadata key (threaded by the detector from the strategy's
+// MonitorRemediationConfig.ScriptPath), that path is used — after passing the
+// same absolute-path / no-".." safety validation as a configured path — and the
+// optional "args" metadata key (JSON-encoded) overrides the configured args.
+// When the metadata path is absent the remediator falls back to its
+// construction-time config.ScriptPath/ScriptArgs.
 func (r *CustomRemediator) remediate(ctx context.Context, problem types.Problem) error {
-	// Safety checks
-	if err := r.scriptExecutor.CheckScriptSafety(r.config.ScriptPath); err != nil {
+	scriptPath, scriptArgs, workingDir, err := r.resolveScript(problem)
+	if err != nil {
+		return err
+	}
+
+	// Safety checks (existence/regular-file/executable) on the resolved path.
+	if err := r.scriptExecutor.CheckScriptSafety(scriptPath); err != nil {
 		return fmt.Errorf("script safety check failed: %w", err)
 	}
 
-	r.logInfof("Executing custom remediation script: %s", filepath.Base(r.config.ScriptPath))
+	r.logInfof("Executing custom remediation script: %s", filepath.Base(scriptPath))
 
 	// Dry-run mode
 	if r.config.DryRun {
-		r.logInfof("DRY-RUN: Would execute script: %s with args: %v", r.config.ScriptPath, r.config.ScriptArgs)
+		r.logInfof("DRY-RUN: Would execute script: %s with args: %v", scriptPath, scriptArgs)
 		return nil
 	}
 
@@ -234,10 +283,10 @@ func (r *CustomRemediator) remediate(ctx context.Context, problem types.Problem)
 	// Execute the script
 	stdout, stderr, exitCode, err := r.scriptExecutor.ExecuteScript(
 		execCtx,
-		r.config.ScriptPath,
-		r.config.ScriptArgs,
+		scriptPath,
+		scriptArgs,
 		env,
-		r.config.WorkingDir,
+		workingDir,
 	)
 
 	// Log output if configured
@@ -266,6 +315,56 @@ func (r *CustomRemediator) remediate(ctx context.Context, problem types.Problem)
 
 	r.logInfof("Script executed successfully (exit code %d)", exitCode)
 	return nil
+}
+
+// resolveScript determines the script path, args, and working directory to use
+// for this remediation. It prefers the per-call Problem.Metadata["scriptPath"]
+// (threaded from the strategy's MonitorRemediationConfig.ScriptPath) and falls
+// back to the construction-time config when absent.
+//
+// The metadata-supplied path is held to the SAME safety policy as a configured
+// path (absolute, no ".."), so a metadata-driven singleton can never be tricked
+// into running a relative or traversal path. When a metadata path is used and
+// no working directory is configured, the working directory defaults to that
+// script's directory.
+//
+// Args precedence: Problem.Metadata["args"] (JSON-encoded array) overrides the
+// configured ScriptArgs when present and parseable; an unparseable args value is
+// rejected rather than silently ignored.
+func (r *CustomRemediator) resolveScript(problem types.Problem) (scriptPath string, args []string, workingDir string, err error) {
+	scriptPath = r.config.ScriptPath
+	args = r.config.ScriptArgs
+	workingDir = r.config.WorkingDir
+
+	metaPath := ""
+	if problem.Metadata != nil {
+		metaPath = problem.Metadata[metadataKeyScriptPath]
+	}
+
+	if metaPath != "" {
+		// Apply the same absolute-path / no-".." safety policy to the per-call path.
+		if verr := validateScriptPath(metaPath); verr != nil {
+			return "", nil, "", fmt.Errorf("invalid script path from problem metadata: %w", verr)
+		}
+		scriptPath = filepath.Clean(metaPath)
+		if workingDir == "" {
+			workingDir = filepath.Dir(scriptPath)
+		}
+
+		if raw, ok := problem.Metadata[metadataKeyArgs]; ok && raw != "" {
+			var parsed []string
+			if jerr := json.Unmarshal([]byte(raw), &parsed); jerr != nil {
+				return "", nil, "", fmt.Errorf("invalid args from problem metadata (expected JSON array): %w", jerr)
+			}
+			args = parsed
+		}
+	}
+
+	if scriptPath == "" {
+		return "", nil, "", fmt.Errorf("no script path specified (neither problem metadata %q nor config.ScriptPath set)", metadataKeyScriptPath)
+	}
+
+	return scriptPath, args, workingDir, nil
 }
 
 // prepareProblemEnvironment converts problem metadata to environment variables.

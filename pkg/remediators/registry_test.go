@@ -566,6 +566,98 @@ func TestRateLimit(t *testing.T) {
 	})
 }
 
+// TestPerMinuteRateLimit tests the per-minute token-bucket rate limit wired via
+// SetMaxRemediationsPerMinute (config.RemediationConfig.MaxRemediationsPerMinute).
+func TestPerMinuteRateLimit(t *testing.T) {
+	t.Run("per-minute limit enforced: N succeed, N+1 rejected", func(t *testing.T) {
+		const n = 2
+		// maxPerHour high enough that it does not interfere; per-minute is the gate.
+		registry := NewRegistry(1000, 100)
+		registry.SetMaxRemediationsPerMinute(n)
+
+		mock := newMockRemediator("test", false)
+		registry.Register(RemediatorInfo{
+			Type:    "test",
+			Factory: func() (types.Remediator, error) { return mock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		// The limiter starts full (burst == n), so the first n immediate
+		// remediations pass.
+		for i := 0; i < n; i++ {
+			mock.ClearCooldown(problem)
+			mock.ResetAttempts(problem)
+			if err := registry.Remediate(context.Background(), "test", problem); err != nil {
+				t.Fatalf("Remediation %d failed: %v", i+1, err)
+			}
+		}
+
+		// The (N+1)th within the same minute must be rejected with a rate-limit error.
+		mock.ClearCooldown(problem)
+		mock.ResetAttempts(problem)
+		err := registry.Remediate(context.Background(), "test", problem)
+		if err == nil {
+			t.Fatal("Expected per-minute rate limit error on (N+1)th remediation, got nil")
+		}
+
+		// The rejected remediation must NOT be executed: the mock's remediate func
+		// is never invoked for it, so callCount stays at n.
+		if got := mock.getCallCount(); got != n {
+			t.Errorf("mock call count = %d, want %d (rejected remediation must not execute)", got, n)
+		}
+
+		// And it must not be counted against the per-hour window (only n recorded).
+		stats := registry.GetStats()
+		if stats.RecentRemediations != n {
+			t.Errorf("RecentRemediations = %d, want %d (rejected remediation must not consume per-hour window)",
+				stats.RecentRemediations, n)
+		}
+
+		// History records the rejected attempt as a failed (not executed) record.
+		// There should be n+1 records: n successes + 1 failed attempt.
+		history := registry.GetHistory(0)
+		if len(history) != n+1 {
+			t.Fatalf("history length = %d, want %d", len(history), n+1)
+		}
+		last := history[len(history)-1]
+		if last.Success {
+			t.Error("last history record should be a failed (rejected) attempt, got Success=true")
+		}
+		if last.Error == "" {
+			t.Error("last history record should carry the rate-limit error")
+		}
+	})
+
+	t.Run("per-minute limit 0 is unlimited", func(t *testing.T) {
+		registry := NewRegistry(1000, 100)
+		registry.SetMaxRemediationsPerMinute(0) // unlimited
+
+		mock := newMockRemediator("test", false)
+		registry.Register(RemediatorInfo{
+			Type:    "test",
+			Factory: func() (types.Remediator, error) { return mock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		// Execute well more than any default per-minute allowance; none should be
+		// rejected by the per-minute check (per-hour is high too).
+		const attempts = 20
+		for i := 0; i < attempts; i++ {
+			mock.ClearCooldown(problem)
+			mock.ResetAttempts(problem)
+			if err := registry.Remediate(context.Background(), "test", problem); err != nil {
+				t.Fatalf("Remediation %d unexpectedly failed with per-minute disabled: %v", i+1, err)
+			}
+		}
+
+		if got := mock.getCallCount(); got != attempts {
+			t.Errorf("mock call count = %d, want %d", got, attempts)
+		}
+	})
+}
+
 // TestHistory tests remediation history tracking.
 func TestHistory(t *testing.T) {
 	t.Run("history records success and failure", func(t *testing.T) {
@@ -1605,5 +1697,155 @@ func TestSetCircuitStateObserver(t *testing.T) {
 		// Should not panic when no observer is set and a transition fires.
 		registry.SetCircuitStateObserver(nil)
 		registry.ResetCircuitBreaker()
+	})
+}
+
+// TestRemediateWithStrategies tests ordered multi-strategy dispatch with
+// first-success-wins semantics.
+func TestRemediateWithStrategies(t *testing.T) {
+	t.Run("first fails then second succeeds - tries in order, stops at first success", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+
+		failMock := newMockRemediator("strategy-a", true)     // always fails (first 10 attempts)
+		successMock := newMockRemediator("strategy-b", false) // always succeeds
+		neverMock := newMockRemediator("strategy-c", false)   // should never be reached
+
+		registry.Register(RemediatorInfo{
+			Type:    "strategy-a",
+			Factory: func() (types.Remediator, error) { return failMock, nil },
+		})
+		registry.Register(RemediatorInfo{
+			Type:    "strategy-b",
+			Factory: func() (types.Remediator, error) { return successMock, nil },
+		})
+		registry.Register(RemediatorInfo{
+			Type:    "strategy-c",
+			Factory: func() (types.Remediator, error) { return neverMock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		err := registry.RemediateWithStrategies(context.Background(),
+			[]string{"strategy-a", "strategy-b", "strategy-c"}, problem)
+		if err != nil {
+			t.Fatalf("expected success (second strategy), got error: %v", err)
+		}
+
+		// First strategy should have been attempted (and failed).
+		if failMock.getCallCount() != 1 {
+			t.Errorf("strategy-a call count = %d, want 1", failMock.getCallCount())
+		}
+		// Second strategy should have been attempted (and succeeded).
+		if successMock.getCallCount() != 1 {
+			t.Errorf("strategy-b call count = %d, want 1", successMock.getCallCount())
+		}
+		// Third strategy must never be reached after a success.
+		if neverMock.getCallCount() != 0 {
+			t.Errorf("strategy-c call count = %d, want 0 (should short-circuit)", neverMock.getCallCount())
+		}
+
+		// History should show exactly two attempts in order: a (fail), b (success).
+		history := registry.GetHistory(10)
+		if len(history) != 2 {
+			t.Fatalf("history length = %d, want 2", len(history))
+		}
+		if history[0].RemediatorType != "strategy-a" || history[0].Success {
+			t.Errorf("history[0] = {%s, success=%v}, want {strategy-a, success=false}",
+				history[0].RemediatorType, history[0].Success)
+		}
+		if history[1].RemediatorType != "strategy-b" || !history[1].Success {
+			t.Errorf("history[1] = {%s, success=%v}, want {strategy-b, success=true}",
+				history[1].RemediatorType, history[1].Success)
+		}
+	})
+
+	t.Run("single success short-circuits", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+
+		successMock := newMockRemediator("only", false)
+		secondMock := newMockRemediator("second", false)
+
+		registry.Register(RemediatorInfo{
+			Type:    "only",
+			Factory: func() (types.Remediator, error) { return successMock, nil },
+		})
+		registry.Register(RemediatorInfo{
+			Type:    "second",
+			Factory: func() (types.Remediator, error) { return secondMock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		err := registry.RemediateWithStrategies(context.Background(),
+			[]string{"only", "second"}, problem)
+		if err != nil {
+			t.Fatalf("expected success, got error: %v", err)
+		}
+		if successMock.getCallCount() != 1 {
+			t.Errorf("first strategy call count = %d, want 1", successMock.getCallCount())
+		}
+		if secondMock.getCallCount() != 0 {
+			t.Errorf("second strategy call count = %d, want 0 (short-circuit on first success)",
+				secondMock.getCallCount())
+		}
+	})
+
+	t.Run("all strategies fail returns error", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+
+		failA := newMockRemediator("fail-a", true)
+		failB := newMockRemediator("fail-b", true)
+
+		registry.Register(RemediatorInfo{
+			Type:    "fail-a",
+			Factory: func() (types.Remediator, error) { return failA, nil },
+		})
+		registry.Register(RemediatorInfo{
+			Type:    "fail-b",
+			Factory: func() (types.Remediator, error) { return failB, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+
+		err := registry.RemediateWithStrategies(context.Background(),
+			[]string{"fail-a", "fail-b"}, problem)
+		if err == nil {
+			t.Fatal("expected error when all strategies fail, got nil")
+		}
+		// Both strategies should have been attempted.
+		if failA.getCallCount() != 1 {
+			t.Errorf("fail-a call count = %d, want 1", failA.getCallCount())
+		}
+		if failB.getCallCount() != 1 {
+			t.Errorf("fail-b call count = %d, want 1", failB.getCallCount())
+		}
+	})
+
+	t.Run("empty strategy list returns error", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+		problem := createTestProblem("test-type", "test-resource")
+
+		err := registry.RemediateWithStrategies(context.Background(), nil, problem)
+		if err == nil {
+			t.Fatal("expected error for empty strategy list, got nil")
+		}
+	})
+
+	t.Run("single strategy behaves like Remediate (backward compat)", func(t *testing.T) {
+		registry := NewRegistry(100, 100)
+		mock := newMockRemediator("single", false)
+		registry.Register(RemediatorInfo{
+			Type:    "single",
+			Factory: func() (types.Remediator, error) { return mock, nil },
+		})
+
+		problem := createTestProblem("test-type", "test-resource")
+		if err := registry.RemediateWithStrategies(context.Background(),
+			[]string{"single"}, problem); err != nil {
+			t.Fatalf("single-strategy dispatch failed: %v", err)
+		}
+		if mock.getCallCount() != 1 {
+			t.Errorf("call count = %d, want 1", mock.getCallCount())
+		}
 	})
 }

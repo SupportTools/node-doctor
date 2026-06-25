@@ -33,10 +33,37 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/supporttools/node-doctor/pkg/types"
+)
+
+// Problem.Metadata keys used to thread per-strategy remediation parameters from
+// the detector to the registered remediator at dispatch time. The detector
+// populates these from the triggering monitor's MonitorRemediationConfig so a
+// single registered remediator (built via RegisterBuiltinRemediators) can act
+// on per-monitor parameters without registering one remediator per service or
+// script.
+const (
+	// metadataKeyService carries the systemd service name for the
+	// systemd-restart strategy (from MonitorRemediationConfig.Service).
+	metadataKeyService = "service"
+
+	// metadataKeyScriptPath carries the absolute script path for the
+	// custom-script strategy (from MonitorRemediationConfig.ScriptPath).
+	metadataKeyScriptPath = "scriptPath"
+
+	// metadataKeyArgs carries the JSON-encoded script arguments for the
+	// custom-script strategy (from MonitorRemediationConfig.Args).
+	metadataKeyArgs = "args"
+
+	// metadataKeyInterface carries the network interface name for the
+	// restart-interface strategy (from MonitorRemediationConfig.Interface).
+	// It is consumed by NetworkRemediator at Remediate time, mirroring how
+	// metadataKeyService is consumed by SystemdRemediator.
+	metadataKeyInterface = "interface"
 )
 
 // CircuitBreakerState represents the state of the circuit breaker.
@@ -212,6 +239,14 @@ type RemediatorRegistry struct {
 	maxPerHour       int         // max remediations per hour
 	rateLimitWindow  time.Duration
 
+	// Per-minute token bucket (optional). When maxPerMinute > 0, perMinuteBucket
+	// is a token-bucket limiter (burst == maxPerMinute, refill == maxPerMinute per
+	// minute) that caps the burst rate of remediations within any one minute. When
+	// maxPerMinute <= 0 the bucket is nil and the per-minute check is skipped
+	// (unlimited), mirroring how maxPerHour == 0 disables the per-hour window.
+	perMinuteBucket *rate.Limiter
+	maxPerMinute    int
+
 	// History tracking
 	history    []RemediationRecord
 	maxHistory int
@@ -333,6 +368,30 @@ func (r *RemediatorRegistry) SetLeaseClient(leaseClient *LeaseClient) {
 	defer r.mu.Unlock()
 	r.leaseClient = leaseClient
 	r.logInfof("Lease client configured for controller coordination")
+}
+
+// SetMaxRemediationsPerMinute configures the per-minute token-bucket rate limit.
+//
+// When n > 0, a rate.Limiter is built with burst n and a refill of n tokens per
+// minute (rate.Every(time.Minute / n)). The limiter starts full, so up to n
+// remediations may proceed immediately within a minute before further attempts
+// are rejected until tokens refill. When n <= 0 the bucket is cleared and the
+// per-minute check is skipped entirely (unlimited), matching how maxPerHour == 0
+// disables the per-hour window.
+//
+// This is the wiring counterpart to config.RemediationConfig.MaxRemediationsPerMinute.
+func (r *RemediatorRegistry) SetMaxRemediationsPerMinute(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if n > 0 {
+		r.maxPerMinute = n
+		r.perMinuteBucket = rate.NewLimiter(rate.Every(time.Minute/time.Duration(n)), n)
+		r.logInfof("Per-minute remediation rate limit configured (max: %d/min)", n)
+	} else {
+		r.maxPerMinute = 0
+		r.perMinuteBucket = nil
+	}
 }
 
 // SetCircuitStateObserver registers an observer that is notified of circuit
@@ -559,9 +618,22 @@ func (r *RemediatorRegistry) Remediate(ctx context.Context, remediatorType strin
 	}
 	r.mu.Unlock()
 
-	// Phase 2: Rate limit check
+	// Phase 2: Rate limit check.
+	//
+	// The per-hour sliding window is checked first because it is non-consuming
+	// (read-only). The per-minute token bucket is checked last and consumes a
+	// token only when the remediation is otherwise cleared to proceed, so a
+	// per-hour rejection never burns a per-minute token. A rejection here returns
+	// before any execution and before recordRateLimitEntry, so a rejected
+	// remediation is never counted against the per-hour window nor reported as
+	// executed (history records it as a failed attempt, success=false).
 	r.mu.Lock()
 	if err := r.checkRateLimit(); err != nil {
+		r.mu.Unlock()
+		remediationErr = err
+		return err
+	}
+	if err := r.checkPerMinuteRate(); err != nil {
 		r.mu.Unlock()
 		remediationErr = err
 		return err
@@ -655,6 +727,51 @@ func (r *RemediatorRegistry) Remediate(ctx context.Context, remediatorType strin
 	return nil
 }
 
+// RemediateWithStrategies attempts an ordered list of remediation strategy
+// types, stopping at the first one that succeeds (first-success-wins).
+//
+// Each strategy type is dispatched through Remediate, so every per-strategy
+// safety check (circuit breaker, rate limit, cooldown, max attempts, dry-run)
+// is applied identically to single-strategy remediation. The problem's Type
+// field is set to the strategy being attempted before each call so that
+// history, logging, and problem keys reflect the actual strategy used.
+//
+// Behavior:
+//   - Returns nil as soon as any strategy succeeds.
+//   - If a strategy fails, the next strategy in the list is attempted.
+//   - If all strategies fail, the last error is returned (wrapped with the
+//     count of attempted strategies for context).
+//   - An empty strategyTypes list returns an error (nothing to do).
+//
+// A list with a single strategy behaves exactly like calling Remediate once,
+// preserving backward compatibility for existing single-strategy configs.
+func (r *RemediatorRegistry) RemediateWithStrategies(ctx context.Context, strategyTypes []string, problem types.Problem) error {
+	if len(strategyTypes) == 0 {
+		return fmt.Errorf("no remediation strategies provided")
+	}
+
+	var lastErr error
+	for i, strategyType := range strategyTypes {
+		// Set the problem type to the strategy being attempted so history,
+		// logging, and problem keys reflect the actual strategy used.
+		attemptProblem := problem
+		attemptProblem.Type = strategyType
+
+		err := r.Remediate(ctx, strategyType, attemptProblem)
+		if err == nil {
+			// First success wins - stop here.
+			return nil
+		}
+
+		lastErr = err
+		r.logInfof("Remediation strategy %d/%d (%s) failed, trying next: %v",
+			i+1, len(strategyTypes), strategyType, err)
+	}
+
+	return fmt.Errorf("all %d remediation strategies failed, last error: %w",
+		len(strategyTypes), lastErr)
+}
+
 // checkCircuitBreaker checks if the circuit breaker allows remediation.
 // This must be called with the lock held.
 func (r *RemediatorRegistry) checkCircuitBreaker() error {
@@ -713,6 +830,26 @@ func (r *RemediatorRegistry) checkRateLimit() error {
 	if len(r.remediationTimes) >= r.maxPerHour {
 		return fmt.Errorf("rate limit exceeded: %d remediations in the last hour (max: %d)",
 			len(r.remediationTimes), r.maxPerHour)
+	}
+
+	return nil
+}
+
+// checkPerMinuteRate checks if the per-minute token bucket allows remediation.
+// This must be called with the lock held.
+//
+// It consumes one token from the bucket on success, so it must only be called
+// once the remediation is otherwise cleared to proceed (i.e. after the
+// non-consuming per-hour window check passes). When no bucket is configured
+// (maxPerMinute <= 0) the check is a no-op (unlimited).
+func (r *RemediatorRegistry) checkPerMinuteRate() error {
+	if r.perMinuteBucket == nil {
+		return nil // Per-minute rate limiting disabled
+	}
+
+	if !r.perMinuteBucket.Allow() {
+		return fmt.Errorf("rate limit exceeded: more than %d remediations within a minute (max: %d/min)",
+			r.maxPerMinute, r.maxPerMinute)
 	}
 
 	return nil

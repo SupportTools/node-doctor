@@ -98,6 +98,21 @@ func (s *SQLiteStorage) Initialize(ctx context.Context) error {
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
 
+	// Enable WAL journaling + NORMAL synchronous for better read/write
+	// concurrency and throughput under many concurrent RequestLease calls.
+	// WAL lets readers proceed without blocking the single writer; NORMAL is
+	// durable enough in WAL mode (a crash can only lose the last transaction,
+	// not corrupt the DB). For in-memory DBs WAL is a no-op (stays "memory").
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL;",
+		"PRAGMA synchronous=NORMAL;",
+	} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			_ = db.Close()
+			return fmt.Errorf("failed to apply %q: %w", pragma, err)
+		}
+	}
+
 	s.db = db
 
 	// Run migrations

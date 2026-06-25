@@ -2,8 +2,10 @@ package detector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -133,6 +135,9 @@ type MonitorFactory interface {
 type RemediationExecutor interface {
 	// Remediate executes the named remediator strategy for the given problem.
 	Remediate(ctx context.Context, remediatorType string, problem types.Problem) error
+	// RemediateWithStrategies attempts an ordered list of remediator strategy
+	// types, stopping at the first one that succeeds (first-success-wins).
+	RemediateWithStrategies(ctx context.Context, strategyTypes []string, problem types.Problem) error
 	// IsDryRun reports whether the executor is running in dry-run mode.
 	IsDryRun() bool
 }
@@ -447,7 +452,7 @@ func (pd *ProblemDetector) processStatuses() {
 
 // processStatus processes a single status update
 func (pd *ProblemDetector) processStatus(status *types.Status) {
-	log.Printf("[DEBUG] Processing status from %s", status.Source)
+	slog.Debug("processing status", "monitor", status.Source)
 
 	// Update statistics
 	pd.stats.IncrementStatusesReceived()
@@ -456,7 +461,7 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	// with a synthetic "blocked" status. This prevents exporters from seeing
 	// misleading results from a monitor whose prerequisites are not satisfied.
 	if blocked, blockedBy := pd.isMonitorBlocked(status.Source); blocked {
-		log.Printf("[INFO] Monitor %s is blocked: dependency %q is unhealthy; emitting blocked status", status.Source, blockedBy)
+		slog.Info("monitor blocked by unhealthy dependency", "monitor", status.Source, "blockedBy", blockedBy)
 		status = synthBlockedStatus(status.Source, blockedBy)
 	}
 
@@ -473,7 +478,7 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	// causing duplicate Kubernetes resources. See GitHub issue #7.
 	for _, exporter := range pd.exporters {
 		if err := exporter.ExportStatus(pd.ctx, status); err != nil {
-			log.Printf("[WARN] Failed to export status to exporter: %v", err)
+			slog.Warn("failed to export status", "monitor", status.Source, "error", err)
 			pd.stats.IncrementExportsFailed()
 		} else {
 			pd.stats.IncrementExportsSucceeded()
@@ -513,34 +518,145 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 
 	remCfg := monitorCfg.Remediation
 
+	// Build the ordered list of remediation strategies to attempt. Each entry
+	// carries its OWN per-strategy parameters (Service for systemd-restart,
+	// ScriptPath/Args for custom-script) so that a multi-strategy list with
+	// differing params threads each strategy's params independently.
+	//
+	// When Strategies is non-empty, dispatch each nested strategy in order
+	// (first-success-wins). Otherwise fall back to the single top-level config so
+	// existing single-strategy configs behave exactly as before.
+	strategies := buildStrategyList(remCfg)
+	if len(strategies) == 0 {
+		return
+	}
+
+	// strategyTypes is kept purely for logging context (the ordered type names).
+	strategyTypes := make([]string, len(strategies))
+	for i, s := range strategies {
+		strategyTypes[i] = s.Strategy
+	}
+
 	for _, cond := range status.Conditions {
 		if cond.Status != types.ConditionFalse {
 			continue
 		}
 
-		problem := types.Problem{
-			Type:       remCfg.Strategy,
-			Resource:   cond.Type,
-			Severity:   types.ProblemWarning,
-			Message:    cond.Message,
-			DetectedAt: cond.Transition,
-			Metadata: map[string]string{
-				"source":    status.Source,
-				"condition": cond.Type,
-				"reason":    cond.Reason,
-			},
+		// Dispatch the ordered strategies, threading each strategy's own params
+		// into the Problem.Metadata before attempting it. First success wins; the
+		// single-strategy case is just a one-element loop, preserving prior
+		// single-Strategy behavior.
+		var lastErr error
+		succeeded := false
+		for i, strat := range strategies {
+			problem := types.Problem{
+				Type:       strat.Strategy,
+				Resource:   cond.Type,
+				Severity:   types.ProblemWarning,
+				Message:    cond.Message,
+				DetectedAt: cond.Transition,
+				Metadata:   buildProblemMetadata(status.Source, cond, strat),
+			}
+
+			err := registry.Remediate(pd.ctx, strat.Strategy, problem)
+			if err == nil {
+				succeeded = true
+				break
+			}
+			lastErr = err
+			slog.Debug("remediation strategy failed, trying next",
+				"monitor", status.Source, "condition", cond.Type,
+				"strategy", strat.Strategy, "index", i+1, "of", len(strategies), "error", err)
 		}
 
-		if err := registry.Remediate(pd.ctx, remCfg.Strategy, problem); err != nil {
-			log.Printf("[WARN] Remediation failed for %s/%s (strategy=%s): %v",
-				status.Source, cond.Type, remCfg.Strategy, err)
+		if !succeeded {
+			slog.Warn("remediation failed",
+				"monitor", status.Source, "condition", cond.Type,
+				"strategies", strategyTypes, "error", lastErr)
 			pd.stats.IncrementRemediationsFailed()
 		} else {
-			log.Printf("[INFO] Remediation triggered for %s/%s (strategy=%s, dry-run=%v)",
-				status.Source, cond.Type, remCfg.Strategy, registry.IsDryRun())
+			slog.Info("remediation triggered",
+				"monitor", status.Source, "condition", cond.Type,
+				"strategies", strategyTypes, "dryRun", registry.IsDryRun())
 			pd.stats.IncrementRemediationsTriggered()
 		}
 	}
+}
+
+// buildProblemMetadata builds the Problem.Metadata carrier for a single
+// remediation strategy attempt. It always includes the source/condition/reason
+// context the detector has always set, and additionally threads the strategy's
+// OWN per-strategy parameters so the registered remediator can resolve them at
+// Remediate time:
+//   - "service"    : strat.Service     (systemd-restart target service)
+//   - "scriptPath" : strat.ScriptPath  (custom-script script path)
+//   - "args"       : JSON-encoded strat.Args (custom-script arguments)
+//   - "interface"  : strat.Interface   (restart-interface target interface)
+//
+// Only non-empty params are added so a strategy that does not use a given param
+// does not pollute the metadata.
+func buildProblemMetadata(source string, cond types.Condition, strat types.MonitorRemediationConfig) map[string]string {
+	meta := map[string]string{
+		"source":    source,
+		"condition": cond.Type,
+		"reason":    cond.Reason,
+	}
+	if strat.Service != "" {
+		meta["service"] = strat.Service
+	}
+	if strat.ScriptPath != "" {
+		meta["scriptPath"] = strat.ScriptPath
+	}
+	if strat.Interface != "" {
+		meta["interface"] = strat.Interface
+	}
+	if len(strat.Args) > 0 {
+		// JSON-encode args so values containing commas/spaces survive intact.
+		if encoded, err := json.Marshal(strat.Args); err == nil {
+			meta["args"] = string(encoded)
+		}
+	}
+	return meta
+}
+
+// buildStrategyList returns the ordered list of remediation strategies to
+// attempt for a monitor's remediation config, each carrying its own per-strategy
+// parameters (Strategy, Service, ScriptPath, Args).
+//
+// When remCfg.Strategies is non-empty, the nested strategies are returned in
+// order (skipping entries with an empty Strategy). Otherwise it falls back to a
+// single entry built from the top-level remCfg fields, preserving backward
+// compatibility: a config with only Strategy/Service/ScriptPath set yields a
+// one-element list carrying those params.
+func buildStrategyList(remCfg *types.MonitorRemediationConfig) []types.MonitorRemediationConfig {
+	if remCfg == nil {
+		return nil
+	}
+
+	if len(remCfg.Strategies) > 0 {
+		strategies := make([]types.MonitorRemediationConfig, 0, len(remCfg.Strategies))
+		for _, s := range remCfg.Strategies {
+			if s.Strategy != "" {
+				strategies = append(strategies, s)
+			}
+		}
+		if len(strategies) > 0 {
+			return strategies
+		}
+	}
+
+	if remCfg.Strategy != "" {
+		// Carry the top-level per-strategy params for the single-strategy fallback.
+		return []types.MonitorRemediationConfig{{
+			Strategy:   remCfg.Strategy,
+			Service:    remCfg.Service,
+			ScriptPath: remCfg.ScriptPath,
+			Args:       remCfg.Args,
+			Interface:  remCfg.Interface,
+		}}
+	}
+
+	return nil
 }
 
 // fanInFromMonitor reads statuses from a monitor and forwards them to the main status channel
@@ -610,26 +726,28 @@ func (pd *ProblemDetector) handleConfigReload(ctx context.Context, newConfig *ty
 		return nil
 	}
 
-	log.Printf("[INFO] Applying configuration reload")
+	slog.Info("applying configuration reload")
 
 	// Log summary of changes
 	if !diff.HasChanges() {
-		log.Printf("[INFO] No configuration changes detected")
+		slog.Info("no configuration changes detected")
 		pd.emitReloadEvent(types.EventInfo, "NoChanges", "Configuration reload completed with no changes")
 		return nil
 	}
 
-	log.Printf("[INFO] Config changes detected: %d monitors added, %d modified, %d removed",
-		len(diff.MonitorsAdded), len(diff.MonitorsModified), len(diff.MonitorsRemoved))
+	slog.Info("config changes detected",
+		"added", len(diff.MonitorsAdded),
+		"modified", len(diff.MonitorsModified),
+		"removed", len(diff.MonitorsRemoved))
 
 	// Apply the reload
 	if err := pd.applyConfigReload(ctx, newConfig, diff); err != nil {
-		log.Printf("[ERROR] Configuration reload failed: %v", err)
+		slog.Error("configuration reload failed", "error", err)
 		pd.emitReloadEvent(types.EventError, "ReloadFailed", fmt.Sprintf("Configuration reload failed: %v", err))
 		return fmt.Errorf("configuration reload failed: %w", err)
 	}
 
-	log.Printf("[INFO] Configuration reload completed successfully")
+	slog.Info("configuration reload completed successfully")
 	pd.emitReloadEvent(types.EventInfo, "ReloadSuccess", "Configuration reload completed successfully")
 
 	return nil

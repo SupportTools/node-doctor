@@ -601,6 +601,58 @@ func TestMonitorRemediationConfigValidation(t *testing.T) {
 			wantErr: true,
 			errMsg:  "maxAttempts must be positive",
 		},
+		{
+			name: "valid flush-dns network strategy",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "flush-dns",
+				Cooldown:    5 * time.Minute,
+				MaxAttempts: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid reset-routing network strategy",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "reset-routing",
+				Cooldown:    5 * time.Minute,
+				MaxAttempts: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid flush-ipv6-route network strategy",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "flush-ipv6-route",
+				Cooldown:    5 * time.Minute,
+				MaxAttempts: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid restart-interface network strategy with interface",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "restart-interface",
+				Interface:   "eth0",
+				Cooldown:    5 * time.Minute,
+				MaxAttempts: 3,
+			},
+			wantErr: false,
+		},
+		{
+			name: "restart-interface without interface",
+			input: MonitorRemediationConfig{
+				Enabled:     true,
+				Strategy:    "restart-interface",
+				Cooldown:    5 * time.Minute,
+				MaxAttempts: 3,
+			},
+			wantErr: true,
+			errMsg:  "interface is required for restart-interface strategy",
+		},
 	}
 
 	for _, tt := range tests {

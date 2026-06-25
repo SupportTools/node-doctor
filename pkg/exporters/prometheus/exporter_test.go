@@ -129,16 +129,7 @@ func TestNewPrometheusExporter(t *testing.T) {
 }
 
 func TestPrometheusExporterLifecycle(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -152,12 +143,13 @@ func TestPrometheusExporterLifecycle(t *testing.T) {
 	}
 
 	// Wait for server to be ready before making requests
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
 
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", config.Port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to connect to metrics server: %v", err)
 	}
@@ -187,16 +179,7 @@ func TestPrometheusExporterLifecycle(t *testing.T) {
 }
 
 func TestExportStatus(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -260,16 +243,7 @@ func TestExportStatus(t *testing.T) {
 // MonitorCycleLastTimestamp) and classifies the cycle result based on the
 // presence of a ConditionFalse condition.
 func TestExportStatusRecordsMonitorCycle(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -332,16 +306,7 @@ func TestExportStatusRecordsMonitorCycle(t *testing.T) {
 }
 
 func TestExportProblem(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -391,16 +356,7 @@ func TestExportProblem(t *testing.T) {
 }
 
 func TestConcurrentExports(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -480,16 +436,7 @@ func contains(s, substr string) bool {
 }
 
 func TestIsReloadable(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -501,12 +448,15 @@ func TestIsReloadable(t *testing.T) {
 }
 
 func TestReload(t *testing.T) {
-	port1 := freePort(t)
-	port2 := freePort(t)
-
+	// Bind ephemerally (Port 0) so each Start/Reload-driven server restart binds
+	// an OS-assigned port atomically — there is no freePort close-then-rebind
+	// window for another process to grab the port (TaskForge #19260). The
+	// port-comparison restart logic itself is unit-covered by
+	// TestNeedsServerRestart; here the restart-and-rebind path is exercised
+	// hermetically via path/namespace/subsystem/label changes.
 	config := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      port1,
+		Port:      0,
 		Path:      "/metrics",
 		Namespace: "test",
 		Subsystem: "sub1",
@@ -514,7 +464,7 @@ func TestReload(t *testing.T) {
 	}
 	settings := &types.GlobalSettings{NodeName: "test-node"}
 
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newPrometheusExporter(config, settings, true)
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -563,7 +513,7 @@ func TestReload(t *testing.T) {
 			name: "same config - no restart needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      port1,
+				Port:      0,
 				Path:      "/metrics",
 				Namespace: "test",
 				Subsystem: "sub1",
@@ -572,21 +522,10 @@ func TestReload(t *testing.T) {
 			expectedError: false,
 		},
 		{
-			name: "different port - restart needed",
+			name: "different path - restart needed (rebinds ephemeral port)",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      port2,
-				Path:      "/metrics",
-				Namespace: "test",
-				Subsystem: "sub1",
-			},
-			expectedError: false,
-		},
-		{
-			name: "different path - restart needed",
-			newConfig: &types.PrometheusExporterConfig{
-				Enabled:   true,
-				Port:      port2,
+				Port:      0,
 				Path:      "/custom-metrics",
 				Namespace: "test",
 			},
@@ -596,7 +535,7 @@ func TestReload(t *testing.T) {
 			name: "different namespace - metrics recreation needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      port2,
+				Port:      0,
 				Path:      "/custom-metrics",
 				Namespace: "new_namespace",
 			},
@@ -606,7 +545,7 @@ func TestReload(t *testing.T) {
 			name: "different subsystem - metrics recreation needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      port2,
+				Port:      0,
 				Path:      "/custom-metrics",
 				Namespace: "new_namespace",
 				Subsystem: "new_subsystem",
@@ -617,7 +556,7 @@ func TestReload(t *testing.T) {
 			name: "different labels - metrics recreation needed",
 			newConfig: &types.PrometheusExporterConfig{
 				Enabled:   true,
-				Port:      port2,
+				Port:      0,
 				Path:      "/custom-metrics",
 				Namespace: "new_namespace",
 				Labels:    map[string]string{"env": "prod", "region": "us-east"},
@@ -647,18 +586,9 @@ func TestReload(t *testing.T) {
 }
 
 func TestReloadNotStarted(t *testing.T) {
-	port1 := freePort(t)
-	port2 := freePort(t)
-
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port1,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	// Not started, so Reload never binds a server; ephemeral construction keeps
+	// the path hermetic and consistent with the rest of the suite.
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -666,7 +596,7 @@ func TestReloadNotStarted(t *testing.T) {
 	// Reload without starting - should work but not restart server
 	newConfig := &types.PrometheusExporterConfig{
 		Enabled:   true,
-		Port:      port2,
+		Port:      0,
 		Path:      "/new-metrics",
 		Namespace: "new_test",
 	}
@@ -678,16 +608,7 @@ func TestReloadNotStarted(t *testing.T) {
 }
 
 func TestNeedsServerRestart(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -774,16 +695,7 @@ func TestNeedsServerRestart(t *testing.T) {
 }
 
 func TestNeedsMetricsRecreation(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -1135,16 +1047,7 @@ func TestShutdownServer(t *testing.T) {
 	}
 
 	// Test shutdown of valid server
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -1156,13 +1059,14 @@ func TestShutdownServer(t *testing.T) {
 	}
 
 	// Wait for server to be ready using deterministic readiness check
-	addr := fmt.Sprintf("localhost:%d", config.Port)
+	port := exporter.BoundPort()
+	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
 
 	// Verify server is running
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d/health", port))
 	if err != nil {
 		t.Fatalf("failed to connect to server: %v", err)
 	}
@@ -1181,23 +1085,14 @@ func TestShutdownServer(t *testing.T) {
 	}
 
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	_, err = client.Get(fmt.Sprintf("http://localhost:%d/health", config.Port))
+	_, err = client.Get(fmt.Sprintf("http://localhost:%d/health", port))
 	if err == nil {
 		t.Errorf("expected error connecting to stopped server")
 	}
 }
 
 func TestExportProblemBeforeStart(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -1260,14 +1155,7 @@ func TestPrometheusExporter_StartBindFailure(t *testing.T) {
 // TestNewPrometheusExporter_DualStackDefault verifies an empty BindAddress
 // defaults to "::" (dual-stack) in the constructor.
 func TestNewPrometheusExporter_DualStackDefault(t *testing.T) {
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      freePort(t),
-		Namespace: "test",
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -1280,17 +1168,8 @@ func TestNewPrometheusExporter_DualStackDefault(t *testing.T) {
 // the default "::" (dual-stack) BindAddress and serves /metrics. The bind has an
 // automatic IPv4 fallback, so this passes whether or not IPv6 is available.
 func TestPrometheusExporter_DualStackServesRequest(t *testing.T) {
-	port := freePort(t)
-	config := &types.PrometheusExporterConfig{
-		Enabled:   true,
-		Port:      port,
-		Path:      "/metrics",
-		Namespace: "test",
-		// BindAddress intentionally left empty -> defaults to "::".
-	}
-	settings := &types.GlobalSettings{NodeName: "test-node"}
-
-	exporter, err := NewPrometheusExporter(config, settings)
+	// BindAddress intentionally left empty -> defaults to "::"; ephemeral port.
+	exporter, err := newEphemeralExporter(&types.GlobalSettings{NodeName: "test-node"})
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -1299,11 +1178,12 @@ func TestPrometheusExporter_DualStackServesRequest(t *testing.T) {
 	}
 	defer func() { _ = exporter.Stop() }()
 
+	port := exporter.BoundPort()
 	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to connect to metrics server: %v", err)
 	}
@@ -1316,17 +1196,18 @@ func TestPrometheusExporter_DualStackServesRequest(t *testing.T) {
 // TestPrometheusExporter_ExplicitBindAddressHonored verifies an explicit
 // BindAddress is used as-is and serves a request.
 func TestPrometheusExporter_ExplicitBindAddressHonored(t *testing.T) {
-	port := freePort(t)
+	// Explicit BindAddress with an ephemeral (0) port: the listener binds
+	// 127.0.0.1:0 and the real port is read back via BoundPort.
 	config := &types.PrometheusExporterConfig{
 		Enabled:     true,
 		BindAddress: "127.0.0.1",
-		Port:        port,
+		Port:        0,
 		Path:        "/metrics",
 		Namespace:   "test",
 	}
 	settings := &types.GlobalSettings{NodeName: "test-node"}
 
-	exporter, err := NewPrometheusExporter(config, settings)
+	exporter, err := newPrometheusExporter(config, settings, true)
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
 	}
@@ -1343,11 +1224,12 @@ func TestPrometheusExporter_ExplicitBindAddressHonored(t *testing.T) {
 		t.Errorf("bound host = %q, want 127.0.0.1", host)
 	}
 
+	port := exporter.BoundPort()
 	addr := fmt.Sprintf("localhost:%d", port)
 	if err := waitForServerReady(addr, 5*time.Second); err != nil {
 		t.Fatalf("server never became ready: %v", err)
 	}
-	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, config.Path))
+	resp, err := newTestHTTPClient().Get(fmt.Sprintf("http://localhost:%d%s", port, "/metrics"))
 	if err != nil {
 		t.Fatalf("failed to connect to metrics server: %v", err)
 	}

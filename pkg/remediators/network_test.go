@@ -1099,7 +1099,7 @@ func TestNetworkRemediator_VerifyOperation_FlushIPv6Route(t *testing.T) {
 	r.SetNetworkExecutor(mockExec)
 
 	ctx := context.Background()
-	if err := r.verifyOperation(ctx); err != nil {
+	if err := r.verifyOperation(ctx, ""); err != nil {
 		t.Errorf("verifyOperation() unexpected error: %v", err)
 	}
 

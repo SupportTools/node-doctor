@@ -543,6 +543,16 @@ controller:
       # if the controller is unreachable (e.g., during upgrades).
       # false = safer (blocks remediations if controller is down).
       # true  = higher availability (agents act independently when unreachable).
+      #
+      # WARNING - cluster-wide remediation storm risk:
+      # Setting this to true defeats lease coordination during a controller
+      # outage. When the controller is down, EVERY node self-approves its own
+      # lease at the same time, so ALL nodes may remediate (reboot/drain/etc.)
+      # simultaneously - a thundering-herd, cluster-wide remediation storm.
+      # Lease coordination exists to serialize remediations (single node at a
+      # time) and prevent exactly this. Keep this false unless single-node-at-a-
+      # time coordination is not required and you explicitly want higher
+      # availability over storm protection.
       fallbackOnUnreachable: false
 
   # Node affinity - prefer control-plane nodes

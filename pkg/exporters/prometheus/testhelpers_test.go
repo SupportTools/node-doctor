@@ -4,23 +4,8 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"testing"
 	"time"
 )
-
-// freePort allocates a free TCP port on the loopback interface and immediately
-// releases it. There is a small TOCTOU window, but this is acceptable for tests
-// and far preferable to hardcoded port numbers that can collide across test runs.
-func freePort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("freePort: %v", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-	return port
-}
 
 // waitForServerReady polls until the server at addr is accepting TCP connections,
 // or until timeout elapses. Use after Start() to avoid race-prone time.Sleep calls.

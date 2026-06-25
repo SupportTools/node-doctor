@@ -188,9 +188,14 @@ func TestEvaluateRemediation_UnhealthyConditionTriggersRemediation(t *testing.T)
 	if call.Problem.Resource != "KubeletHealthy" {
 		t.Errorf("expected problem resource KubeletHealthy, got %q", call.Problem.Resource)
 	}
-	snap := pd.GetStatistics()
-	if snap.GetRemediationsTriggered() != 1 {
-		t.Errorf("expected remediationsTriggered=1, got %d", snap.GetRemediationsTriggered())
+	// The triggered-stat increment lands after the executor call returns, so poll
+	// for it rather than reading immediately after the CallCount poll.
+	if !pollUntil(t, time.Second, func() bool {
+		s := pd.GetStatistics()
+		return s.GetRemediationsTriggered() == 1
+	}) {
+		s := pd.GetStatistics()
+		t.Errorf("expected remediationsTriggered=1, got %d", s.GetRemediationsTriggered())
 	}
 }
 
@@ -234,9 +239,14 @@ func TestEvaluateRemediation_DryRunExecutorCalled(t *testing.T) {
 	if !exec.IsDryRun() {
 		t.Error("expected executor.IsDryRun() == true")
 	}
-	snap := pd.GetStatistics()
-	if snap.GetRemediationsTriggered() != 1 {
-		t.Errorf("expected remediationsTriggered=1 for dry-run, got %d", snap.GetRemediationsTriggered())
+	// The triggered-stat increment lands after the executor call returns, so poll
+	// for it rather than reading immediately after the CallCount poll.
+	if !pollUntil(t, time.Second, func() bool {
+		s := pd.GetStatistics()
+		return s.GetRemediationsTriggered() == 1
+	}) {
+		s := pd.GetStatistics()
+		t.Errorf("expected remediationsTriggered=1 for dry-run, got %d", s.GetRemediationsTriggered())
 	}
 }
 
@@ -259,5 +269,308 @@ func TestEvaluateRemediation_NoMonitorRemediationConfig(t *testing.T) {
 
 	if exec.CallCount() != 0 {
 		t.Errorf("expected 0 calls when monitor has no remediation config, got %d", exec.CallCount())
+	}
+}
+
+// TestBuildStrategyList covers the ordered strategy-list building and the
+// single-strategy fallback used by evaluateRemediation.
+func TestBuildStrategyList(t *testing.T) {
+	tests := []struct {
+		name   string
+		remCfg *types.MonitorRemediationConfig
+		want   []string
+	}{
+		{
+			name:   "nil config yields nil",
+			remCfg: nil,
+			want:   nil,
+		},
+		{
+			name:   "single strategy only - fallback",
+			remCfg: &types.MonitorRemediationConfig{Strategy: "systemd-restart"},
+			want:   []string{"systemd-restart"},
+		},
+		{
+			name: "strategies non-empty preserves order and ignores top-level Strategy",
+			remCfg: &types.MonitorRemediationConfig{
+				Strategy: "node-reboot", // should be ignored when Strategies present
+				Strategies: []types.MonitorRemediationConfig{
+					{Strategy: "systemd-restart"},
+					{Strategy: "custom-script"},
+					{Strategy: "node-reboot"},
+				},
+			},
+			want: []string{"systemd-restart", "custom-script", "node-reboot"},
+		},
+		{
+			name: "empty strategy entries are skipped",
+			remCfg: &types.MonitorRemediationConfig{
+				Strategy: "pod-delete",
+				Strategies: []types.MonitorRemediationConfig{
+					{Strategy: ""},
+					{Strategy: "systemd-restart"},
+					{Strategy: ""},
+				},
+			},
+			want: []string{"systemd-restart"},
+		},
+		{
+			name: "all empty strategy entries fall back to single Strategy",
+			remCfg: &types.MonitorRemediationConfig{
+				Strategy: "pod-delete",
+				Strategies: []types.MonitorRemediationConfig{
+					{Strategy: ""},
+				},
+			},
+			want: []string{"pod-delete"},
+		},
+		{
+			name:   "no strategy at all yields nil",
+			remCfg: &types.MonitorRemediationConfig{},
+			want:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildStrategyList(tt.remCfg)
+			if len(got) != len(tt.want) {
+				t.Fatalf("buildStrategyList() len = %d (%v), want %d (%v)", len(got), got, len(tt.want), tt.want)
+			}
+			for i := range got {
+				if got[i].Strategy != tt.want[i] {
+					t.Errorf("buildStrategyList()[%d].Strategy = %q, want %q", i, got[i].Strategy, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestEvaluateRemediation_MultiStrategyDispatch verifies that a monitor config
+// with a Strategies list dispatches each strategy in order through the executor.
+func TestEvaluateRemediation_MultiStrategyDispatch(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+	// Force all attempts to "fail" so the executor walks every strategy in order.
+	exec.SetError(fmt.Errorf("simulated failure"))
+
+	monCfg := types.MonitorConfig{
+		Name:     "multi-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:  true,
+			Strategy: "node-reboot", // ignored in favor of Strategies
+			Strategies: []types.MonitorRemediationConfig{
+				{Strategy: "node-reboot"},
+				{Strategy: "pod-delete"},
+			},
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+
+	mon.AddStatusUpdate(unhealthyStatus("multi-monitor", "ServiceHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 2 }) {
+		t.Fatalf("expected 2 ordered executor calls within 1s, got %d", exec.CallCount())
+	}
+
+	calls := exec.Calls()
+	if calls[0].RemediatorType != "node-reboot" {
+		t.Errorf("first strategy = %q, want node-reboot", calls[0].RemediatorType)
+	}
+	if calls[1].RemediatorType != "pod-delete" {
+		t.Errorf("second strategy = %q, want pod-delete", calls[1].RemediatorType)
+	}
+
+	// All strategies failed → counts as a failed remediation, not triggered.
+	// The failed-stat increment happens in evaluateRemediation AFTER the executor
+	// calls complete, so poll for it rather than reading immediately after the
+	// CallCount poll (which would race the increment).
+	if !pollUntil(t, time.Second, func() bool {
+		snap := pd.GetStatistics()
+		return snap.GetRemediationsFailed() == 1
+	}) {
+		snap := pd.GetStatistics()
+		t.Errorf("expected remediationsFailed=1, got %d", snap.GetRemediationsFailed())
+	}
+	snap := pd.GetStatistics()
+	if got := snap.GetRemediationsTriggered(); got != 0 {
+		t.Errorf("expected remediationsTriggered=0, got %d", got)
+	}
+}
+
+// TestEvaluateRemediation_ThreadsServiceMetadata verifies that a single-strategy
+// systemd-restart config with a Service threads that service into the dispatched
+// Problem.Metadata["service"] (TaskForge #19263 Phase 1).
+func TestEvaluateRemediation_ThreadsServiceMetadata(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+
+	monCfg := types.MonitorConfig{
+		Name:     "svc-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:  true,
+			Strategy: "systemd-restart",
+			Service:  "kubelet",
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+
+	mon.AddStatusUpdate(unhealthyStatus("svc-monitor", "KubeletHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected 1 executor call within 1s, got %d", exec.CallCount())
+	}
+	_ = pd
+
+	call := exec.Calls()[0]
+	if call.RemediatorType != "systemd-restart" {
+		t.Errorf("strategy = %q, want systemd-restart", call.RemediatorType)
+	}
+	if got := call.Problem.Metadata["service"]; got != "kubelet" {
+		t.Errorf("Problem.Metadata[service] = %q, want kubelet", got)
+	}
+	// Source/condition/reason context preserved.
+	if got := call.Problem.Metadata["condition"]; got != "KubeletHealthy" {
+		t.Errorf("Problem.Metadata[condition] = %q, want KubeletHealthy", got)
+	}
+}
+
+// TestEvaluateRemediation_MultiStrategyThreadsPerStrategyParams verifies that a
+// multi-strategy list with DIFFERING params threads each strategy's own params
+// into its dispatched Problem.Metadata (service for systemd-restart, scriptPath
+// + JSON-encoded args for custom-script).
+func TestEvaluateRemediation_MultiStrategyThreadsPerStrategyParams(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+	// Force every attempt to fail so the detector walks all strategies in order.
+	exec.SetError(fmt.Errorf("simulated failure"))
+
+	monCfg := types.MonitorConfig{
+		Name:     "multi-param-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:  true,
+			Strategy: "node-reboot", // top-level (param-free) required by validation; ignored in favor of Strategies
+			Strategies: []types.MonitorRemediationConfig{
+				{Strategy: "systemd-restart", Service: "containerd"},
+				{Strategy: "custom-script", ScriptPath: "/opt/fix.sh", Args: []string{"--force", "a b"}},
+			},
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+	_ = pd
+
+	mon.AddStatusUpdate(unhealthyStatus("multi-param-monitor", "ServiceHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 2 }) {
+		t.Fatalf("expected 2 ordered executor calls within 1s, got %d", exec.CallCount())
+	}
+
+	calls := exec.Calls()
+	// First strategy: systemd-restart with service=containerd, no scriptPath/args.
+	if calls[0].RemediatorType != "systemd-restart" {
+		t.Errorf("first strategy = %q, want systemd-restart", calls[0].RemediatorType)
+	}
+	if got := calls[0].Problem.Metadata["service"]; got != "containerd" {
+		t.Errorf("first Problem.Metadata[service] = %q, want containerd", got)
+	}
+	if _, ok := calls[0].Problem.Metadata["scriptPath"]; ok {
+		t.Errorf("first Problem.Metadata should not carry scriptPath, got %v", calls[0].Problem.Metadata)
+	}
+
+	// Second strategy: custom-script with scriptPath + JSON-encoded args, no service.
+	if calls[1].RemediatorType != "custom-script" {
+		t.Errorf("second strategy = %q, want custom-script", calls[1].RemediatorType)
+	}
+	if got := calls[1].Problem.Metadata["scriptPath"]; got != "/opt/fix.sh" {
+		t.Errorf("second Problem.Metadata[scriptPath] = %q, want /opt/fix.sh", got)
+	}
+	if got := calls[1].Problem.Metadata["args"]; got != `["--force","a b"]` {
+		t.Errorf("second Problem.Metadata[args] = %q, want JSON array", got)
+	}
+	if _, ok := calls[1].Problem.Metadata["service"]; ok {
+		t.Errorf("second Problem.Metadata should not carry service, got %v", calls[1].Problem.Metadata)
+	}
+}
+
+// TestEvaluateRemediation_ThreadsInterfaceMetadata verifies that a
+// restart-interface strategy's Interface field is threaded into the dispatched
+// Problem.Metadata["interface"] so the NetworkRemediator can resolve it at
+// Remediate time (TaskForge #19263 Phase 3).
+func TestEvaluateRemediation_ThreadsInterfaceMetadata(t *testing.T) {
+	exec := NewMockRemediationExecutor()
+
+	monCfg := types.MonitorConfig{
+		Name:     "iface-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:   true,
+			Strategy:  "restart-interface",
+			Interface: "eth0",
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+	_ = pd
+
+	mon.AddStatusUpdate(unhealthyStatus("iface-monitor", "InterfaceHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected 1 executor call within 1s, got %d", exec.CallCount())
+	}
+
+	call := exec.Calls()[0]
+	if call.RemediatorType != "restart-interface" {
+		t.Errorf("strategy = %q, want restart-interface", call.RemediatorType)
+	}
+	if got := call.Problem.Metadata["interface"]; got != "eth0" {
+		t.Errorf("Problem.Metadata[interface] = %q, want eth0", got)
+	}
+}
+
+// TestEvaluateRemediation_MultiStrategyFirstSuccessWins verifies that when the
+// first strategy succeeds, subsequent strategies are not attempted.
+func TestEvaluateRemediation_MultiStrategyFirstSuccessWins(t *testing.T) {
+	exec := NewMockRemediationExecutor() // no error => first attempt succeeds
+
+	monCfg := types.MonitorConfig{
+		Name:     "multi-monitor",
+		Type:     "test",
+		Enabled:  true,
+		Interval: 30 * time.Second,
+		Timeout:  10 * time.Second,
+		Remediation: &types.MonitorRemediationConfig{
+			Enabled:  true,
+			Strategy: "node-reboot", // required by validation; primary strategy
+			Strategies: []types.MonitorRemediationConfig{
+				{Strategy: "node-reboot"},
+				{Strategy: "pod-delete"},
+			},
+		},
+	}
+	pd, mon := buildDetectorWithRemediation(t, monCfg, exec)
+
+	mon.AddStatusUpdate(unhealthyStatus("multi-monitor", "ServiceHealthy"))
+	if !pollUntil(t, time.Second, func() bool { return exec.CallCount() == 1 }) {
+		t.Fatalf("expected exactly 1 executor call (first-success-wins) within 1s, got %d", exec.CallCount())
+	}
+	// Give a brief moment to ensure no second call sneaks in.
+	time.Sleep(50 * time.Millisecond)
+	if exec.CallCount() != 1 {
+		t.Errorf("expected 1 call after first success, got %d", exec.CallCount())
+	}
+	if exec.Calls()[0].RemediatorType != "node-reboot" {
+		t.Errorf("first strategy = %q, want node-reboot", exec.Calls()[0].RemediatorType)
+	}
+
+	snap := pd.GetStatistics()
+	if snap.GetRemediationsTriggered() != 1 {
+		t.Errorf("expected remediationsTriggered=1, got %d", snap.GetRemediationsTriggered())
 	}
 }

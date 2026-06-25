@@ -140,12 +140,29 @@ func TestNewCustomRemediator(t *testing.T) {
 			wantError: false,
 		},
 		{
-			name: "empty script path",
+			// Empty ScriptPath is now valid: it produces a metadata-driven
+			// singleton whose script is supplied per-call via Problem.Metadata.
+			name: "empty script path (metadata-driven singleton)",
 			config: CustomConfig{
 				ScriptPath: "",
 			},
+			wantError: false,
+		},
+		{
+			name: "relative script path rejected",
+			config: CustomConfig{
+				ScriptPath: "relative/remediate.sh",
+			},
 			wantError: true,
-			errorMsg:  "script path is required",
+			errorMsg:  `script path must be absolute: "relative/remediate.sh"`,
+		},
+		{
+			name: "script path with traversal rejected",
+			config: CustomConfig{
+				ScriptPath: "/usr/local/../../etc/remediate.sh",
+			},
+			wantError: true,
+			errorMsg:  `script path must not contain '..': "/usr/local/../../etc/remediate.sh"`,
 		},
 		{
 			name: "timeout too short",
