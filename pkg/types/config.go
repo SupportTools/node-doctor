@@ -137,9 +137,9 @@ type GlobalSettings struct {
 	// Logging configuration
 	LogLevel  string `json:"logLevel,omitempty" yaml:"logLevel,omitempty"`
 	LogFormat string `json:"logFormat,omitempty" yaml:"logFormat,omitempty"`
-	// LogOutput and LogFile are parsed and validated but not yet consumed by the
-	// agent bootstrap; logging routing is currently configured via environment
-	// variables. Reserved for a future structured-logging refactor.
+	// LogOutput and LogFile route structured logging output. They are consumed by
+	// pkg/logger.Init at startup: LogOutput selects stdout/stderr/file and, when
+	// "file", LogFile names the append-mode log destination.
 	LogOutput string `json:"logOutput,omitempty" yaml:"logOutput,omitempty"`
 	LogFile   string `json:"logFile,omitempty" yaml:"logFile,omitempty"`
 

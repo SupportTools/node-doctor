@@ -188,9 +188,14 @@ func TestEvaluateRemediation_UnhealthyConditionTriggersRemediation(t *testing.T)
 	if call.Problem.Resource != "KubeletHealthy" {
 		t.Errorf("expected problem resource KubeletHealthy, got %q", call.Problem.Resource)
 	}
-	snap := pd.GetStatistics()
-	if snap.GetRemediationsTriggered() != 1 {
-		t.Errorf("expected remediationsTriggered=1, got %d", snap.GetRemediationsTriggered())
+	// The triggered-stat increment lands after the executor call returns, so poll
+	// for it rather than reading immediately after the CallCount poll.
+	if !pollUntil(t, time.Second, func() bool {
+		s := pd.GetStatistics()
+		return s.GetRemediationsTriggered() == 1
+	}) {
+		s := pd.GetStatistics()
+		t.Errorf("expected remediationsTriggered=1, got %d", s.GetRemediationsTriggered())
 	}
 }
 
@@ -234,9 +239,14 @@ func TestEvaluateRemediation_DryRunExecutorCalled(t *testing.T) {
 	if !exec.IsDryRun() {
 		t.Error("expected executor.IsDryRun() == true")
 	}
-	snap := pd.GetStatistics()
-	if snap.GetRemediationsTriggered() != 1 {
-		t.Errorf("expected remediationsTriggered=1 for dry-run, got %d", snap.GetRemediationsTriggered())
+	// The triggered-stat increment lands after the executor call returns, so poll
+	// for it rather than reading immediately after the CallCount poll.
+	if !pollUntil(t, time.Second, func() bool {
+		s := pd.GetStatistics()
+		return s.GetRemediationsTriggered() == 1
+	}) {
+		s := pd.GetStatistics()
+		t.Errorf("expected remediationsTriggered=1 for dry-run, got %d", s.GetRemediationsTriggered())
 	}
 }
 
@@ -374,12 +384,19 @@ func TestEvaluateRemediation_MultiStrategyDispatch(t *testing.T) {
 	}
 
 	// All strategies failed → counts as a failed remediation, not triggered.
-	snap := pd.GetStatistics()
-	if snap.GetRemediationsFailed() != 1 {
+	// The failed-stat increment happens in evaluateRemediation AFTER the executor
+	// calls complete, so poll for it rather than reading immediately after the
+	// CallCount poll (which would race the increment).
+	if !pollUntil(t, time.Second, func() bool {
+		snap := pd.GetStatistics()
+		return snap.GetRemediationsFailed() == 1
+	}) {
+		snap := pd.GetStatistics()
 		t.Errorf("expected remediationsFailed=1, got %d", snap.GetRemediationsFailed())
 	}
-	if snap.GetRemediationsTriggered() != 0 {
-		t.Errorf("expected remediationsTriggered=0, got %d", snap.GetRemediationsTriggered())
+	snap := pd.GetStatistics()
+	if got := snap.GetRemediationsTriggered(); got != 0 {
+		t.Errorf("expected remediationsTriggered=0, got %d", got)
 	}
 }
 

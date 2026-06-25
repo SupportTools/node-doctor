@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -450,7 +451,7 @@ func (pd *ProblemDetector) processStatuses() {
 
 // processStatus processes a single status update
 func (pd *ProblemDetector) processStatus(status *types.Status) {
-	log.Printf("[DEBUG] Processing status from %s", status.Source)
+	slog.Debug("processing status", "monitor", status.Source)
 
 	// Update statistics
 	pd.stats.IncrementStatusesReceived()
@@ -459,7 +460,7 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	// with a synthetic "blocked" status. This prevents exporters from seeing
 	// misleading results from a monitor whose prerequisites are not satisfied.
 	if blocked, blockedBy := pd.isMonitorBlocked(status.Source); blocked {
-		log.Printf("[INFO] Monitor %s is blocked: dependency %q is unhealthy; emitting blocked status", status.Source, blockedBy)
+		slog.Info("monitor blocked by unhealthy dependency", "monitor", status.Source, "blockedBy", blockedBy)
 		status = synthBlockedStatus(status.Source, blockedBy)
 	}
 
@@ -476,7 +477,7 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	// causing duplicate Kubernetes resources. See GitHub issue #7.
 	for _, exporter := range pd.exporters {
 		if err := exporter.ExportStatus(pd.ctx, status); err != nil {
-			log.Printf("[WARN] Failed to export status to exporter: %v", err)
+			slog.Warn("failed to export status", "monitor", status.Source, "error", err)
 			pd.stats.IncrementExportsFailed()
 		} else {
 			pd.stats.IncrementExportsSucceeded()
@@ -544,12 +545,14 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 		}
 
 		if err := registry.RemediateWithStrategies(pd.ctx, strategyTypes, problem); err != nil {
-			log.Printf("[WARN] Remediation failed for %s/%s (strategies=%v): %v",
-				status.Source, cond.Type, strategyTypes, err)
+			slog.Warn("remediation failed",
+				"monitor", status.Source, "condition", cond.Type,
+				"strategies", strategyTypes, "error", err)
 			pd.stats.IncrementRemediationsFailed()
 		} else {
-			log.Printf("[INFO] Remediation triggered for %s/%s (strategies=%v, dry-run=%v)",
-				status.Source, cond.Type, strategyTypes, registry.IsDryRun())
+			slog.Info("remediation triggered",
+				"monitor", status.Source, "condition", cond.Type,
+				"strategies", strategyTypes, "dryRun", registry.IsDryRun())
 			pd.stats.IncrementRemediationsTriggered()
 		}
 	}
@@ -653,26 +656,28 @@ func (pd *ProblemDetector) handleConfigReload(ctx context.Context, newConfig *ty
 		return nil
 	}
 
-	log.Printf("[INFO] Applying configuration reload")
+	slog.Info("applying configuration reload")
 
 	// Log summary of changes
 	if !diff.HasChanges() {
-		log.Printf("[INFO] No configuration changes detected")
+		slog.Info("no configuration changes detected")
 		pd.emitReloadEvent(types.EventInfo, "NoChanges", "Configuration reload completed with no changes")
 		return nil
 	}
 
-	log.Printf("[INFO] Config changes detected: %d monitors added, %d modified, %d removed",
-		len(diff.MonitorsAdded), len(diff.MonitorsModified), len(diff.MonitorsRemoved))
+	slog.Info("config changes detected",
+		"added", len(diff.MonitorsAdded),
+		"modified", len(diff.MonitorsModified),
+		"removed", len(diff.MonitorsRemoved))
 
 	// Apply the reload
 	if err := pd.applyConfigReload(ctx, newConfig, diff); err != nil {
-		log.Printf("[ERROR] Configuration reload failed: %v", err)
+		slog.Error("configuration reload failed", "error", err)
 		pd.emitReloadEvent(types.EventError, "ReloadFailed", fmt.Sprintf("Configuration reload failed: %v", err))
 		return fmt.Errorf("configuration reload failed: %w", err)
 	}
 
-	log.Printf("[INFO] Configuration reload completed successfully")
+	slog.Info("configuration reload completed successfully")
 	pd.emitReloadEvent(types.EventInfo, "ReloadSuccess", "Configuration reload completed successfully")
 
 	return nil

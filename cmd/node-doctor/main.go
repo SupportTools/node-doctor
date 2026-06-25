@@ -18,6 +18,7 @@ import (
 	kubernetesexporter "github.com/supporttools/node-doctor/pkg/exporters/kubernetes"
 	prometheusexporter "github.com/supporttools/node-doctor/pkg/exporters/prometheus"
 	"github.com/supporttools/node-doctor/pkg/health"
+	"github.com/supporttools/node-doctor/pkg/logger"
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/remediators"
 	"github.com/supporttools/node-doctor/pkg/types"
@@ -163,6 +164,15 @@ func main() {
 		log.Fatalf("Configuration validation failed: %v", err)
 	}
 
+	// Wire structured logging (slog) from the validated config. This installs the
+	// configured format/level/destination and bridges the standard log package so
+	// all subsequent log.Printf("[LEVEL] ...") calls below honor it. Errors here
+	// (e.g. an unopenable log file) are non-fatal: warn and continue on defaults
+	// rather than crash the daemon over logging setup.
+	if err := logger.Init(config); err != nil {
+		log.Printf("[WARN] Structured logging setup failed, continuing with default logging: %v", err)
+	}
+
 	if *validateConfig {
 		log.Printf("[INFO] Configuration validation passed")
 		return
@@ -173,11 +183,15 @@ func main() {
 		return
 	}
 
-	// Setup basic logging (detailed logging setup would need more implementation)
-	log.Printf("[INFO] Node Doctor starting on node: %s", config.Settings.NodeName)
-	log.Printf("[INFO] Log level: %s, format: %s", config.Settings.LogLevel, config.Settings.LogFormat)
+	// Structured startup banner via slog (logging is wired above).
+	logger.L().Info("node doctor starting",
+		"node", config.Settings.NodeName,
+		"logLevel", config.Settings.LogLevel,
+		"logFormat", config.Settings.LogFormat,
+		"logOutput", config.Settings.LogOutput,
+	)
 	if config.Settings.DryRunMode {
-		log.Printf("[WARN] Running in DRY-RUN mode - no actual remediation will be performed")
+		logger.L().Warn("running in dry-run mode; no actual remediation will be performed")
 	}
 
 	// Create context for graceful shutdown
