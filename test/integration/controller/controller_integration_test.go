@@ -201,6 +201,14 @@ func TestCorrelationDetectionFlow(t *testing.T) {
 	config.Correlation.Enabled = true
 	config.Correlation.ClusterWideThreshold = 0.3 // 30% threshold
 	config.Correlation.EvaluationInterval = 100 * time.Millisecond
+	// Use an ephemeral port (0) instead of the hardcoded default 8080 so that
+	// server.Start() binds a free OS-assigned port. The test's actual HTTP
+	// traffic goes through the httptest server (ts.URL); server.Start() is only
+	// called to launch the correlator's background evaluation loop. Binding 8080
+	// makes the test non-hermetic: it collides across subtests/repeats and fails
+	// outright when 8080 is already in use (e.g. in CI). Port 0 keeps every
+	// subtest's Start() independent and parallel-safe.
+	config.Server.Port = 0
 
 	t.Run("infrastructure correlation detection", func(t *testing.T) {
 		server, ts, cleanup := createTestServer(t, config)
@@ -238,21 +246,27 @@ func TestCorrelationDetectionFlow(t *testing.T) {
 			test.AssertEqual(t, http.StatusAccepted, resp.StatusCode, "Report should be accepted")
 		}
 
-		// Wait for correlation evaluation
-		time.Sleep(300 * time.Millisecond)
+		// Poll for the correlator's background evaluation to detect the pattern
+		// rather than relying on a fixed sleep, which is racy against the ticker.
+		// 3/5 nodes (60%) report the "dns" problem, exceeding the 30% threshold,
+		// so an infrastructure correlation must appear once a cycle completes.
+		test.Eventually(t, func() bool {
+			resp, result := doRequest(t, ts, http.MethodGet, "/api/v1/correlations", nil)
+			if resp.StatusCode != http.StatusOK {
+				return false
+			}
+			correlations, ok := result["data"].([]interface{})
+			return ok && len(correlations) > 0
+		}, 3*time.Second, 50*time.Millisecond, "Should detect infrastructure correlation")
 
-		// Check for correlations
+		// Verify the detected correlation is of type "infrastructure".
 		resp, result := doRequest(t, ts, http.MethodGet, "/api/v1/correlations", nil)
 		test.AssertEqual(t, http.StatusOK, resp.StatusCode, "Correlations request should succeed")
-
 		correlations := result["data"].([]interface{})
 		test.AssertTrue(t, len(correlations) > 0, "Should detect infrastructure correlation")
-
-		if len(correlations) > 0 {
-			corr := correlations[0].(map[string]interface{})
-			test.AssertEqual(t, "infrastructure", corr["type"],
-				"Correlation type should be 'infrastructure'")
-		}
+		corr := correlations[0].(map[string]interface{})
+		test.AssertEqual(t, "infrastructure", corr["type"],
+			"Correlation type should be 'infrastructure'")
 	})
 
 	t.Run("common cause correlation detection", func(t *testing.T) {
@@ -260,7 +274,8 @@ func TestCorrelationDetectionFlow(t *testing.T) {
 		defer cleanup()
 
 		ctx := context.Background()
-		server.Start(ctx)
+		err := server.Start(ctx)
+		test.AssertNoError(t, err, "Failed to start server")
 		defer server.Stop(ctx)
 
 		// Submit reports with related problems (memory + disk pressure)
@@ -279,16 +294,21 @@ func TestCorrelationDetectionFlow(t *testing.T) {
 			test.AssertEqual(t, http.StatusAccepted, resp.StatusCode, "Report should be accepted")
 		}
 
-		// Wait for correlation evaluation
-		time.Sleep(300 * time.Millisecond)
-
-		// Check for correlations
-		resp, result := doRequest(t, ts, http.MethodGet, "/api/v1/correlations", nil)
-		test.AssertEqual(t, http.StatusOK, resp.StatusCode, "Correlations request should succeed")
-
-		correlations := result["data"].([]interface{})
-		// Should detect at least infrastructure correlation since 100% of nodes have same problems
-		test.AssertTrue(t, len(correlations) > 0, "Should detect some correlation")
+		// Poll for correlation evaluation rather than sleeping a fixed amount: the
+		// correlator runs on a background ticker (EvaluationInterval=100ms), so the
+		// number of completed cycles by any fixed deadline is non-deterministic.
+		// All 3 nodes report MemoryPressure+DiskPressure, which triggers both an
+		// infrastructure correlation (100% of nodes share each problem type) and the
+		// "resource-exhaustion" common-cause pattern, so at least one correlation
+		// must appear once an evaluation cycle completes.
+		test.Eventually(t, func() bool {
+			resp, result := doRequest(t, ts, http.MethodGet, "/api/v1/correlations", nil)
+			if resp.StatusCode != http.StatusOK {
+				return false
+			}
+			correlations, ok := result["data"].([]interface{})
+			return ok && len(correlations) > 0
+		}, 3*time.Second, 50*time.Millisecond, "Should detect some correlation")
 	})
 
 	t.Run("correlation resolution when nodes recover", func(t *testing.T) {
@@ -296,7 +316,8 @@ func TestCorrelationDetectionFlow(t *testing.T) {
 		defer cleanup()
 
 		ctx := context.Background()
-		server.Start(ctx)
+		err := server.Start(ctx)
+		test.AssertNoError(t, err, "Failed to start server")
 		defer server.Stop(ctx)
 
 		// First, create a problem state
