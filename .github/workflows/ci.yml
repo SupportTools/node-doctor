@@ -105,6 +105,38 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # Pinger ICMP integration - runs the real raw-ICMP loopback test under privilege.
+  #
+  # Kept as a SEPARATE job (not a step in `test`) so a privileged-socket flake on
+  # the runner does not block the main unit-test/coverage job. The runner user
+  # compiles the test binary (preserving the Go env / cache), then runs ONLY the
+  # integration test via sudo so it has CAP_NET_RAW. NODE_DOCTOR_ICMP_INTEGRATION=1
+  # makes socket/permission errors HARD failures so a misconfigured runner surfaces
+  # loudly instead of silently passing without exercising real ICMP.
+  pinger-icmp-integration:
+    name: Pinger ICMP Integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Compile network test binary
+        run: go test -c -o /tmp/nd-network.test ./pkg/monitors/network/
+
+      - name: Run ICMP integration test (privileged)
+        run: |
+          sudo NODE_DOCTOR_ICMP_INTEGRATION=1 /tmp/nd-network.test \
+            -test.run '^TestDefaultPinger_Integration$' -test.v
+
   # Security scan - gosec
   security-gosec:
     name: Security Scan (gosec)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -392,22 +394,49 @@ func TestNewDefaultPinger_UniqueID(t *testing.T) {
 	}
 }
 
+// icmpIntegrationRequired reports whether NODE_DOCTOR_ICMP_INTEGRATION is set to
+// a truthy value ("1"/"true"/etc). When true, TestDefaultPinger_Integration must
+// actually exercise the raw ICMP socket path and treats inability to do so as a
+// hard failure rather than a silent skip.
+func icmpIntegrationRequired() bool {
+	v, ok := os.LookupEnv("NODE_DOCTOR_ICMP_INTEGRATION")
+	if !ok {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
+}
+
 // TestDefaultPinger_Integration is an integration test for the real pinger.
-// This test requires ICMP permissions and may not run in all environments.
-// It exercises both IPv4 and IPv6 loopback paths so the dual-stack rewrite
-// is exercised when run in privileged mode.
+// This test requires raw ICMP socket permissions (CAP_NET_RAW) because the
+// default pinger opens icmp.ListenPacket("ip4:icmp"/"ip6:ipv6-icmp"). It
+// exercises both IPv4 and IPv6 loopback paths so the dual-stack rewrite is
+// exercised when run in privileged mode.
 //
-// Gating: this lives in the default (non-tagged) test file but opens raw ICMP
-// sockets, so it must NOT run under `go test -short`. The testing.Short() guard
-// below is the gate of record — it keeps `-short` CI from attempting raw
-// sockets while still letting a normal `go test` run exercise the live path
-// where privileges allow. We keep it here (rather than behind the
-// //go:build integration tag used by cni_integration_test.go) because it is a
-// lightweight loopback check, not a cluster-dependent integration test, and the
-// existing Short() guard already satisfies the requirement with the least churn.
+// This test has three modes, gated in order:
+//
+//  1. `go test -short`  -> SKIP. The Short() guard keeps fast/local CI from
+//     attempting raw sockets at all. This is the local fast path.
+//  2. NODE_DOCTOR_ICMP_INTEGRATION set/truthy (and not short) -> MUST RUN OR
+//     FAIL. This is the dedicated privileged CI job: inability to open the
+//     socket, a permission error, or a probe timeout is a HARD FAILURE
+//     (t.Fatalf) so a misconfigured runner surfaces loudly instead of silently
+//     passing without exercising real ICMP. A genuinely successful ping passes.
+//  3. Neither short nor the env set (e.g. a dev `make test-all` on an
+//     unprivileged box) -> BEST-EFFORT. Socket/permission errors gracefully
+//     t.Skip so dev machines without CAP_NET_RAW are not broken.
+//
+// We keep this here (rather than behind the //go:build integration tag used by
+// cni_integration_test.go) because it is a lightweight loopback check, not a
+// cluster-dependent integration test.
 func TestDefaultPinger_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
+	}
+
+	mustRun := icmpIntegrationRequired()
+	if mustRun {
+		t.Log("NODE_DOCTOR_ICMP_INTEGRATION set: ICMP socket/permission errors are HARD FAILURES")
 	}
 
 	cases := []struct {
@@ -429,10 +458,16 @@ func TestDefaultPinger_Integration(t *testing.T) {
 
 			if err != nil && (errors.Is(err, context.DeadlineExceeded) ||
 				errors.Is(err, context.Canceled)) {
+				if mustRun {
+					t.Fatalf("NODE_DOCTOR_ICMP_INTEGRATION set but ping to %s timed out/was canceled (CAP_NET_RAW or connectivity misconfigured): %v", tc.target, err)
+				}
 				t.Skipf("Skipping integration test due to permissions or timeout: %v", err)
 				return
 			}
 			if err != nil {
+				if mustRun {
+					t.Fatalf("NODE_DOCTOR_ICMP_INTEGRATION set but ping to %s failed to open raw ICMP socket / probe (CAP_NET_RAW required): %v", tc.target, err)
+				}
 				t.Logf("Warning: Ping failed (may require elevated privileges): %v", err)
 				t.Skip("Skipping test - ping requires elevated privileges")
 				return
