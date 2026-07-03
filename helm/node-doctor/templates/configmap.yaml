@@ -177,6 +177,30 @@ data:
             checkInterfaces: true
       {{- end }}
 
+      # DNS Health Monitor — cluster-domain check DISABLED (clusterDomains: []).
+      # node-doctor runs hostNetwork; from the host netns the kube-dns ClusterIP does
+      # NOT resolve cluster records (Cilium host-netns->ClusterIP), so ANY cluster
+      # domain (cluster.local OR a custom cluster-domain) NXDOMAINs even though pods
+      # resolve fine — a structural false positive that spammed ClusterDNSResolutionFailed
+      # fleet-wide and got a version rolled back (cluster-services #19529). Without this
+      # explicit entry, ApplyDefaultMonitors adds a dns-health with the cluster.local
+      # default and the false positives return. External-domain resolution DOES work from
+      # hostNetwork and is retained as the node DNS signal.
+      - name: dns-health
+        type: network-dns-check
+        enabled: true
+        interval: 30s
+        timeout: 10s
+        config:
+          clusterDomains: []
+          externalDomains:
+            - google.com
+            - cloudflare.com
+          latencyThreshold: 1s
+          checkNameservers: true
+          failureCountThreshold: 3
+          enableNameserverChecks: true
+
     exporters:
       kubernetes:
         enabled: {{ .Values.exporters.kubernetes.enabled }}
