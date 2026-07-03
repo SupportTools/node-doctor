@@ -57,6 +57,12 @@ linters-settings:
       - io.Copy
       - io.ReadAll
 
+  misspell:
+    ignore-words:
+      # "strat" = strategy (e.g. detector.go `for i, strat := range strategies`);
+      # the misspell linter wrongly flags it as a misspelling of "start".
+      - strat
+
   govet:
     enable-all: true
     disable:
