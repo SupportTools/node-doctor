@@ -406,6 +406,42 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 	// is created and started) so the caller can wire it as a circuit-state observer.
 	var promExporterTyped *prometheusexporter.PrometheusExporter
 
+	// Create the Health Server FIRST so the Kubernetes startup/liveness probe
+	// (:8080/healthz) can bind and return 200 immediately — BEFORE the k8s/HTTP
+	// exporters below, whose Start() can BLOCK on a degraded node (cluster-DNS or
+	// API-server reachability, cache sync). If a networked exporter hangs during
+	// startup, the health listener would otherwise never open within the ~110s
+	// startup budget → probe 404 → kubelet kills the agent → crashloop, on exactly
+	// the nodes node-doctor exists to observe. Bind liveness before slow init
+	// (cluster-services #19529: a1pinode01 crashlooped 125x this way).
+	log.Printf("[INFO] Creating health server...")
+	healthServer, err := health.NewServer(&health.Config{
+		Enabled: true,
+		// "::" binds dual-stack (IPv4 + IPv6) with graceful fallback to
+		// "0.0.0.0" when IPv6 is disabled on the node (handled in Start()).
+		BindAddress:  "::",
+		Port:         8080,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		log.Printf("[WARN] Failed to create health server: %v", err)
+	} else {
+		// Wire the remediation history provider before Start so the endpoint is
+		// available immediately when the listener opens (no race window).
+		if remediationProvider != nil {
+			healthServer.SetRemediationHistory(remediationProvider)
+			log.Printf("[INFO] Remediation history wired to /remediation/history endpoint")
+		}
+		if err := healthServer.Start(ctx); err != nil {
+			log.Printf("[WARN] Failed to start health server: %v", err)
+		} else {
+			exporters = append(exporters, healthServer)
+			exporterInterfaces = append(exporterInterfaces, healthServer)
+			log.Printf("[INFO] Health server created and started on port 8080")
+		}
+	}
+
 	// Create Kubernetes exporter if enabled
 	if config.Exporters.Kubernetes != nil && config.Exporters.Kubernetes.Enabled {
 		log.Printf("[INFO] Creating Kubernetes exporter...")
@@ -443,35 +479,6 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 				exporterInterfaces = append(exporterInterfaces, httpExporter)
 				log.Printf("[INFO] HTTP exporter created and started")
 			}
-		}
-	}
-
-	// Create Health Server (always enabled for Kubernetes probes)
-	log.Printf("[INFO] Creating health server...")
-	healthServer, err := health.NewServer(&health.Config{
-		Enabled: true,
-		// "::" binds dual-stack (IPv4 + IPv6) with graceful fallback to
-		// "0.0.0.0" when IPv6 is disabled on the node (handled in Start()).
-		BindAddress:  "::",
-		Port:         8080,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	})
-	if err != nil {
-		log.Printf("[WARN] Failed to create health server: %v", err)
-	} else {
-		// Wire the remediation history provider before Start so the endpoint is
-		// available immediately when the listener opens (no race window).
-		if remediationProvider != nil {
-			healthServer.SetRemediationHistory(remediationProvider)
-			log.Printf("[INFO] Remediation history wired to /remediation/history endpoint")
-		}
-		if err := healthServer.Start(ctx); err != nil {
-			log.Printf("[WARN] Failed to start health server: %v", err)
-		} else {
-			exporters = append(exporters, healthServer)
-			exporterInterfaces = append(exporterInterfaces, healthServer)
-			log.Printf("[INFO] Health server created and started on port 8080")
 		}
 	}
 
