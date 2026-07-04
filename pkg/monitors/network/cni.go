@@ -67,10 +67,17 @@ type ConnectivityConfig struct {
 	PingCount int
 	// PingTimeout is the timeout for each ping.
 	PingTimeout time.Duration
-	// WarningLatency is the latency threshold for warnings.
+	// WarningLatency is the latency threshold for warnings (same-zone peers).
 	WarningLatency time.Duration
-	// CriticalLatency is the latency threshold for critical conditions.
+	// CriticalLatency is the latency threshold for critical conditions (same-zone peers).
 	CriticalLatency time.Duration
+	// CrossZoneWarningLatency/CrossZoneCriticalLatency are the latency thresholds applied
+	// to peers in a DIFFERENT topology zone (e.g. cross-site nodes). When 0 (unset), the
+	// same-zone thresholds above are used for all peers — so topology awareness is inert
+	// until explicitly configured. Set these looser than the same-zone thresholds so normal
+	// inter-site WAN latency does not raise a false NetworkDegraded.
+	CrossZoneWarningLatency  time.Duration
+	CrossZoneCriticalLatency time.Duration
 	// FailureThreshold is consecutive failures before marking peer unreachable.
 	FailureThreshold int
 	// MinReachablePeers is the percentage of peers that must be reachable.
@@ -363,6 +370,20 @@ func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error)
 			}
 			config.Connectivity.CriticalLatency = duration
 		}
+		if v, ok := connMap["crossZoneWarningLatency"]; ok {
+			duration, err := parseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid connectivity.crossZoneWarningLatency: %w", err)
+			}
+			config.Connectivity.CrossZoneWarningLatency = duration
+		}
+		if v, ok := connMap["crossZoneCriticalLatency"]; ok {
+			duration, err := parseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid connectivity.crossZoneCriticalLatency: %w", err)
+			}
+			config.Connectivity.CrossZoneCriticalLatency = duration
+		}
 		if failureThreshold, ok := connMap["failureThreshold"]; ok {
 			switch v := failureThreshold.(type) {
 			case int:
@@ -425,6 +446,17 @@ func ValidateCNIConfig(config types.MonitorConfig) error {
 }
 
 // checkCNI performs the CNI connectivity check.
+// warningLatencyFor returns the warning-latency threshold to apply to a peer. A peer
+// in a different topology zone uses CrossZoneWarningLatency when it is configured
+// (non-zero); otherwise the same-zone WarningLatency is used. This keeps topology
+// awareness inert until both zone labels exist AND a cross-zone threshold is set.
+func (m *CNIMonitor) warningLatencyFor(peer Peer) time.Duration {
+	if !peer.SameZone && m.config.Connectivity.CrossZoneWarningLatency > 0 {
+		return m.config.Connectivity.CrossZoneWarningLatency
+	}
+	return m.config.Connectivity.WarningLatency
+}
+
 func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	status := types.NewStatus(m.name)
 
@@ -490,10 +522,10 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 			reachableCount++
 			totalLatency += peerStatus.AvgLatency
 
-			// Check for high latency (collect but don't emit individual events)
-			if peerStatus.AvgLatency > m.config.Connectivity.CriticalLatency {
-				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", result.peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
-			} else if peerStatus.AvgLatency > m.config.Connectivity.WarningLatency {
+			// Check for high latency (collect but don't emit individual events).
+			// Cross-zone peers use the looser cross-zone warning threshold when configured,
+			// so normal inter-site WAN latency does not raise a false NetworkDegraded.
+			if peerStatus.AvgLatency > m.warningLatencyFor(result.peer) {
 				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", result.peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
 			}
 		} else {

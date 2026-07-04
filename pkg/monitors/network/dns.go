@@ -1232,9 +1232,23 @@ func parseDNSConfig(configMap map[string]interface{}) (*DNSMonitorConfig, error)
 //
 //nolint:gocyclo // config defaults are inherently branchy across many optional fields
 func (c *DNSMonitorConfig) applyDefaults() error {
-	// Default cluster domains - only apply if not explicitly set (nil vs empty slice)
+	// Default resolver path first — cluster-domain derivation reads it below.
+	if c.ResolverPath == "" {
+		c.ResolverPath = "/etc/resolv.conf"
+	}
+
+	// Default cluster domains - only apply if not explicitly set (nil vs empty slice).
+	// An explicit empty slice ([]) means "cluster DNS check disabled" and is left as-is;
+	// only a nil (unset) value gets a default.
+	//
+	// The default is DERIVED from the resolver's search domains rather than hardcoded to
+	// "kubernetes.default.svc.cluster.local". A hardcoded cluster.local produces a
+	// fleet-wide false ClusterDNSResolutionFailed on clusters that use a CUSTOM cluster
+	// domain (the target simply does not resolve). Derivation reads the real domain from
+	// /etc/resolv.conf `search` and builds the correct kubernetes.default.svc.<domain>,
+	// falling back to cluster.local only when derivation is not possible.
 	if c.ClusterDomains == nil {
-		c.ClusterDomains = []string{"kubernetes.default.svc.cluster.local"}
+		c.ClusterDomains = defaultClusterDomains(c.ResolverPath)
 	}
 
 	// Default external domains - only apply if not explicitly set (nil vs empty slice)
@@ -1245,11 +1259,6 @@ func (c *DNSMonitorConfig) applyDefaults() error {
 	// Default latency threshold
 	if c.LatencyThreshold == 0 {
 		c.LatencyThreshold = 1 * time.Second
-	}
-
-	// Default nameserver check enabled
-	if c.ResolverPath == "" {
-		c.ResolverPath = "/etc/resolv.conf"
 	}
 
 	// Default failure count threshold
@@ -2336,6 +2345,75 @@ func (m *DNSMonitor) parseResolverConfig() ([]string, error) {
 	}
 
 	return nameservers, nil
+}
+
+// defaultClusterDomains returns the default in-cluster DNS probe target(s). It derives
+// the cluster domain from the resolver's search domains and builds
+// "kubernetes.default.svc.<domain>", falling back to the well-known
+// "kubernetes.default.svc.cluster.local" when derivation is not possible. This prevents
+// the false ClusterDNSResolutionFailed that a hardcoded cluster.local causes on clusters
+// with a custom cluster domain.
+func defaultClusterDomains(resolverPath string) []string {
+	if domain, ok := deriveClusterDomainFromResolver(resolverPath); ok {
+		return []string{"kubernetes.default.svc." + domain}
+	}
+	return []string{"kubernetes.default.svc.cluster.local"}
+}
+
+// deriveClusterDomainFromResolver reads resolverPath and extracts the Kubernetes
+// cluster domain from its `search` line. Returns ("", false) if the file can't be read
+// or no cluster domain can be identified.
+func deriveClusterDomainFromResolver(resolverPath string) (string, bool) {
+	file, err := os.Open(resolverPath)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "search") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				return deriveClusterDomain(fields[1:])
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", false
+	}
+	return "", false
+}
+
+// deriveClusterDomain extracts the cluster domain from a list of resolver search
+// domains. A Kubernetes pod's search list looks like:
+//
+//	<namespace>.svc.<clusterDomain>  svc.<clusterDomain>  <clusterDomain>
+//
+// so the cluster domain is the suffix after the "svc." label. It prefers the canonical
+// "svc.<clusterDomain>" entry, then any "<ns>.svc.<clusterDomain>" entry. Returns
+// ("", false) when no svc-scoped search domain is present (e.g. a non-Kubernetes
+// resolver), so the caller can fall back rather than probe a bogus target.
+func deriveClusterDomain(searchDomains []string) (string, bool) {
+	// Prefer the canonical middle entry: "svc.<clusterDomain>".
+	for _, d := range searchDomains {
+		d = strings.TrimSuffix(strings.TrimSpace(d), ".")
+		if strings.HasPrefix(d, "svc.") && len(d) > len("svc.") {
+			return d[len("svc."):], true
+		}
+	}
+	// Fall back to "<namespace>.svc.<clusterDomain>".
+	for _, d := range searchDomains {
+		d = strings.TrimSuffix(strings.TrimSpace(d), ".")
+		if _, domain, found := strings.Cut(d, ".svc."); found && domain != "" {
+			return domain, true
+		}
+	}
+	return "", false
 }
 
 // exclusiveCond describes one member of a mutually-exclusive condition group.

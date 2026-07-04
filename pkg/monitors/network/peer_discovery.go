@@ -25,6 +25,13 @@ type Peer struct {
 	NodeIP string
 	// PodIP is the pod IP (same as NodeIP when using hostNetwork).
 	PodIP string
+	// Zone is the peer node's topology.kubernetes.io/zone label (empty if unlabeled).
+	Zone string
+	// SameZone is true when the peer is in the same topology zone as this node (or when
+	// zone labels are absent on either side). It drives topology-aware latency thresholds:
+	// a peer in a different zone (e.g. a cross-site node) can be held to a looser latency
+	// threshold so normal WAN latency does not raise a false NetworkDegraded.
+	SameZone bool
 	// LastSeen is when this peer was last seen in discovery.
 	LastSeen time.Time
 }
@@ -230,6 +237,13 @@ func (d *kubernetesPeerDiscovery) discoverPeers(ctx context.Context) ([]Peer, er
 		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
+	// Build a nodeName -> zone map for topology-aware latency thresholds. This is
+	// best-effort: if the node list fails (e.g. missing RBAC) or nodes are unlabeled,
+	// zones stay empty and every peer is treated as same-zone (tight threshold), which
+	// preserves the pre-topology behaviour.
+	zoneByNode := d.nodeZones(ctx)
+	selfZone := zoneByNode[d.config.SelfNodeName]
+
 	peers := make([]Peer, 0, len(pods.Items))
 	now := time.Now()
 
@@ -250,11 +264,19 @@ func (d *kubernetesPeerDiscovery) discoverPeers(ctx context.Context) ([]Peer, er
 			continue // Skip pods without a valid node IP
 		}
 
+		peerZone := zoneByNode[pod.Spec.NodeName]
 		peer := Peer{
 			Name:     pod.Name,
 			NodeName: pod.Spec.NodeName,
 			NodeIP:   nodeIP,
 			PodIP:    pod.Status.PodIP,
+			Zone:     peerZone,
+			// Same zone when the labels match. When either side is unlabeled the zones
+			// compare equal only if BOTH are empty, so an all-unlabeled cluster keeps
+			// SameZone=true everywhere (unchanged behaviour); a partially-labeled cluster
+			// treats unknown-zone peers as cross-zone (looser threshold), which is the safe
+			// direction (fewer false NetworkDegraded).
+			SameZone: peerZone == selfZone,
 			LastSeen: now,
 		}
 
@@ -262,6 +284,29 @@ func (d *kubernetesPeerDiscovery) discoverPeers(ctx context.Context) ([]Peer, er
 	}
 
 	return peers, nil
+}
+
+// nodeZones returns a map of node name -> topology.kubernetes.io/zone label. It is
+// best-effort: on any error it returns an empty (non-nil) map so callers treat all
+// peers as same-zone. The legacy failure-domain.beta.kubernetes.io/zone label is used
+// as a fallback for older clusters.
+func (d *kubernetesPeerDiscovery) nodeZones(ctx context.Context) map[string]string {
+	out := make(map[string]string)
+	nodes, err := d.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return out
+	}
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		zone := n.Labels["topology.kubernetes.io/zone"]
+		if zone == "" {
+			zone = n.Labels["failure-domain.beta.kubernetes.io/zone"]
+		}
+		if zone != "" {
+			out[n.Name] = zone
+		}
+	}
+	return out
 }
 
 // getNodeIP extracts the node IP from a pod.
