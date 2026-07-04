@@ -217,7 +217,7 @@ spec:
           annotations:
             summary: "High API server latency on {{`{{ $labels.node }}`}}"
             description: "Node {{`{{ $labels.node }}`}} is experiencing high latency communicating with the API server."
-        {{- if .Values.prometheusRule.warning.ipv6Misconfigured.enabled }}
+        {{- if and (hasKey .Values.prometheusRule.warning "ipv6Misconfigured") .Values.prometheusRule.warning.ipv6Misconfigured.enabled }}
 
         - alert: NodeDoctorIPv6Misconfigured
           # Covers all IPv6-specific conditions (IPv6SysctlMisconfigured,

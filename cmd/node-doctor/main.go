@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -43,6 +45,46 @@ var (
 	BuildTime = "unknown"
 )
 
+// defaultHealthSocket is the per-pod unix domain socket the health server listens
+// on and the `-healthcheck` exec probe dials. It lives on an in-pod (empty-dir)
+// mount so it can never collide with a foreign host process, unlike hostPort 8080.
+const defaultHealthSocket = "/var/run/node-doctor/health.sock"
+
+// runHealthCheck connects to the health server's unix socket, issues a GET for
+// probePath (/healthz or /ready), and returns a process exit code: 0 when the
+// endpoint returns 2xx, 1 otherwise. It is intentionally dependency-free and
+// fast (short timeout) because the kubelet invokes it as an exec probe.
+func runHealthCheck(socketPath, probePath string) int {
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// Host is ignored for unix sockets but must be a valid URL authority.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+probePath, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck build request failed: %v\n", err)
+		return 1
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck %s via %s failed: %v\n", probePath, socketPath, err)
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "healthcheck %s returned HTTP %d\n", probePath, resp.StatusCode)
+	return 1
+}
+
 // noopExporter is a no-op implementation of types.Exporter for when no real exporters are configured
 type noopExporter struct{}
 
@@ -67,19 +109,35 @@ func (e *noopExporter) Stop() error {
 func main() {
 	// Parse command line flags
 	var (
-		configFile      = flag.String("config", "", "Path to configuration file")
-		version         = flag.Bool("version", false, "Show version information")
-		validateConfig  = flag.Bool("validate-config", false, "Validate configuration and exit")
-		dumpConfig      = flag.Bool("dump-config", false, "Dump effective configuration and exit")
-		listMonitors    = flag.Bool("list-monitors", false, "List available monitor types and exit")
-		debug           = flag.Bool("debug", false, "Enable debug logging")
-		dryRun          = flag.Bool("dry-run", false, "Enable dry-run mode (no actual remediation)")
-		logLevel        = flag.String("log-level", "", "Override log level (debug, info, warn, error)")
-		logFormat       = flag.String("log-format", "", "Override log format (json, text)")
-		enableProfiling = flag.Bool("enable-profiling", false, "Enable pprof profiling server")
-		profilingPort   = flag.Int("profiling-port", 6060, "Port for pprof profiling server")
+		configFile       = flag.String("config", "", "Path to configuration file")
+		version          = flag.Bool("version", false, "Show version information")
+		validateConfig   = flag.Bool("validate-config", false, "Validate configuration and exit")
+		dumpConfig       = flag.Bool("dump-config", false, "Dump effective configuration and exit")
+		listMonitors     = flag.Bool("list-monitors", false, "List available monitor types and exit")
+		debug            = flag.Bool("debug", false, "Enable debug logging")
+		dryRun           = flag.Bool("dry-run", false, "Enable dry-run mode (no actual remediation)")
+		logLevel         = flag.String("log-level", "", "Override log level (debug, info, warn, error)")
+		logFormat        = flag.String("log-format", "", "Override log format (json, text)")
+		enableProfiling  = flag.Bool("enable-profiling", false, "Enable pprof profiling server")
+		profilingPort    = flag.Int("profiling-port", 6060, "Port for pprof profiling server")
+		healthSocket     = flag.String("health-socket", defaultHealthSocket, "Path to the health server unix domain socket")
+		healthCheck      = flag.Bool("healthcheck", false, "Probe liveness (/healthz) via the health unix socket and exit 0 (ok) or 1 (fail). Used by Kubernetes exec probes.")
+		healthCheckReady = flag.Bool("healthcheck-ready", false, "Probe readiness (/ready) via the health unix socket and exit 0/1. Used by the Kubernetes readiness exec probe.")
 	)
 	flag.Parse()
+
+	// Health-check subcommand: connect to the per-pod unix socket and exit with a
+	// probe-friendly status code. This runs as a separate short-lived process
+	// invoked by the kubelet exec probe; it must NOT load config or start monitors.
+	// Using the unix socket (not TCP :8080) makes probes immune to a foreign
+	// process squatting the hostPort on hostNetwork nodes (see pkg/health).
+	if *healthCheck || *healthCheckReady {
+		path := "/healthz"
+		if *healthCheckReady {
+			path = "/ready"
+		}
+		os.Exit(runHealthCheck(*healthSocket, path))
+	}
 
 	if *version {
 		fmt.Printf("Node Doctor %s\n", Version)
@@ -273,7 +331,7 @@ func main() {
 	if remediatorRegistry != nil {
 		historyProvider = &remediationHistoryAdapter{registry: remediatorRegistry}
 	}
-	exporters, exporterInterfaces, promExporter, err := createExporters(ctx, config, historyProvider)
+	exporters, exporterInterfaces, promExporter, err := createExporters(ctx, config, historyProvider, *healthSocket)
 	if err != nil {
 		log.Fatalf("Failed to create exporters: %v", err)
 	}
@@ -399,7 +457,7 @@ func (a *remediationHistoryAdapter) GetHistory(limit int) interface{} {
 // createExporters creates and configures all exporters from the configuration.
 // remediationProvider is optional; when non-nil it is wired to the health server
 // before Start() so /remediation/history is available immediately on first request.
-func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider) ([]ExporterLifecycle, []types.Exporter, *prometheusexporter.PrometheusExporter, error) {
+func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider, healthSocketPath string) ([]ExporterLifecycle, []types.Exporter, *prometheusexporter.PrometheusExporter, error) {
 	var exporters []ExporterLifecycle
 	var exporterInterfaces []types.Exporter
 	// promExporterTyped keeps a typed reference to the Prometheus exporter (if one
@@ -419,8 +477,12 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 		Enabled: true,
 		// "::" binds dual-stack (IPv4 + IPv6) with graceful fallback to
 		// "0.0.0.0" when IPv6 is disabled on the node (handled in Start()).
-		BindAddress:  "::",
-		Port:         8080,
+		BindAddress: "::",
+		Port:        8080,
+		// Also serve on the per-pod unix socket so Kubernetes exec probes
+		// (-healthcheck) reach node-doctor even when a foreign process owns
+		// hostPort 8080 on a hostNetwork node.
+		SocketPath:   healthSocketPath,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	})

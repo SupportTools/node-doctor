@@ -193,6 +193,18 @@ prometheusRule:
       thresholdPercent: 90
     apiServerLatencyHigh:
       for: 10m
+    # Consolidated IPv6 alert (fires on any condition_type=~"IPv6.*").
+    # Disabled by default: on mixed IPv4/dual-stack fleets the IPv6 monitors
+    # raise benign warnings on IPv4-only nodes, which would page here. Opt in
+    # (enabled: true) once IPv6 condition semantics are validated for your fleet.
+    # NOTE: this key MUST exist even when disabled — templates/prometheusrule.yaml
+    # references .ipv6Misconfigured.enabled/.for/.labels/.annotations, and a missing
+    # block makes `helm upgrade` nil-pointer whenever prometheusRule.enabled=true.
+    ipv6Misconfigured:
+      enabled: false
+      for: 10m
+      labels: {}
+      annotations: {}
 
   # Informational alerts - for awareness
   info:
@@ -203,13 +215,18 @@ prometheusRule:
     noMetrics:
       for: 10m
 
-# Health probe configuration
+# Health probe configuration.
+# Probes default to `exec` running the binary's built-in health check, which talks
+# to a per-pod unix socket (/var/run/node-doctor/health.sock) instead of TCP :8080.
+# Because node-doctor runs with hostNetwork:true, a foreign host process (e.g. an
+# IP-float/VIP daemon on hostPort 8080) can answer an httpGet probe with a 404 and
+# crashloop the pod; the unix socket lives in the pod and cannot collide.
+# To revert to HTTP probes, replace the `exec:` block with `httpGet: {path, port}`.
 probes:
   liveness:
     enabled: true
-    httpGet:
-      path: /healthz
-      port: 8080
+    exec:
+      command: ["/usr/local/bin/node-doctor", "-healthcheck"]
     initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5
@@ -217,9 +234,8 @@ probes:
     successThreshold: 1
   readiness:
     enabled: true
-    httpGet:
-      path: /ready
-      port: 8080
+    exec:
+      command: ["/usr/local/bin/node-doctor", "-healthcheck-ready"]
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 3
@@ -227,9 +243,8 @@ probes:
     successThreshold: 1
   startup:
     enabled: true
-    httpGet:
-      path: /healthz
-      port: 8080
+    exec:
+      command: ["/usr/local/bin/node-doctor", "-healthcheck"]
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 3

@@ -6,10 +6,106 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+// getOverUnixSocket issues an HTTP GET for path against a health server listening
+// on a unix domain socket, returning the status code.
+func getOverUnixSocket(t *testing.T, socketPath, path string) int {
+	t.Helper()
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
+			},
+		},
+	}
+	resp, err := client.Get("http://localhost" + path)
+	if err != nil {
+		t.Fatalf("GET %s over unix socket %s: %v", path, socketPath, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
+
+// TestServer_UnixSocket verifies the health endpoints are served over the per-pod
+// unix socket and that the socket file is cleaned up on Stop.
+func TestServer_UnixSocket(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "health.sock")
+	srv, err := NewServer(&Config{
+		Enabled:    true,
+		Port:       0, // ephemeral TCP — no conflict
+		SocketPath: sockPath,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// /healthz should be reachable over the socket and report healthy (200).
+	if code := getOverUnixSocket(t, sockPath, "/healthz"); code != http.StatusOK {
+		t.Errorf("/healthz over socket = %d, want 200", code)
+	}
+	// /ready is 503 until a status arrives; after UpdateStatus it should be 200.
+	if code := getOverUnixSocket(t, sockPath, "/ready"); code != http.StatusServiceUnavailable {
+		t.Errorf("/ready before status = %d, want 503", code)
+	}
+	srv.SetReady(true)
+	if code := getOverUnixSocket(t, sockPath, "/ready"); code != http.StatusOK {
+		t.Errorf("/ready after ready=true = %d, want 200", code)
+	}
+	if err := srv.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
+		t.Errorf("socket file %s should be removed after Stop, stat err=%v", sockPath, err)
+	}
+}
+
+// TestServer_TCPConflictNonFatal verifies that when the TCP port is already taken
+// (the a1pinode01 / go-ip-float hostPort-8080 scenario), Start still succeeds via
+// the unix socket rather than crashlooping the pod.
+func TestServer_TCPConflictNonFatal(t *testing.T) {
+	// Occupy a TCP port to simulate a foreign process squatting the hostPort.
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy port: %v", err)
+	}
+	defer func() { _ = squatter.Close() }()
+	occupiedPort := squatter.Addr().(*net.TCPAddr).Port
+
+	sockPath := filepath.Join(t.TempDir(), "health.sock")
+	srv, err := NewServer(&Config{
+		Enabled:     true,
+		BindAddress: "127.0.0.1", // non-dual-stack: bind fails outright on the taken port
+		Port:        occupiedPort,
+		SocketPath:  sockPath,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// Must NOT error even though the TCP bind conflicts — the socket carries probes.
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Start should be non-fatal on TCP conflict, got: %v", err)
+	}
+	if srv.tcpListener != nil {
+		t.Error("expected TCP listener to be nil after bind conflict")
+	}
+	if srv.unixListener == nil {
+		t.Fatal("expected unix listener to be up so probes work")
+	}
+	if code := getOverUnixSocket(t, sockPath, "/healthz"); code != http.StatusOK {
+		t.Errorf("/healthz over socket during TCP conflict = %d, want 200", code)
+	}
+	_ = srv.Stop()
+}
 
 // mockRemediationHistory is a mock implementation of RemediationHistoryProvider for testing.
 type mockRemediationHistory struct {

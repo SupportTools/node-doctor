@@ -117,10 +117,16 @@ spec:
 
         {{- if .Values.probes.liveness.enabled }}
         livenessProbe:
+          {{- if .Values.probes.liveness.exec }}
+          exec:
+            command:
+              {{- toYaml .Values.probes.liveness.exec.command | nindent 14 }}
+          {{- else }}
           httpGet:
             path: {{ .Values.probes.liveness.httpGet.path }}
             port: {{ .Values.probes.liveness.httpGet.port }}
             scheme: HTTP
+          {{- end }}
           initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
           periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
@@ -130,10 +136,16 @@ spec:
 
         {{- if .Values.probes.readiness.enabled }}
         readinessProbe:
+          {{- if .Values.probes.readiness.exec }}
+          exec:
+            command:
+              {{- toYaml .Values.probes.readiness.exec.command | nindent 14 }}
+          {{- else }}
           httpGet:
             path: {{ .Values.probes.readiness.httpGet.path }}
             port: {{ .Values.probes.readiness.httpGet.port }}
             scheme: HTTP
+          {{- end }}
           initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
           periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
           timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -143,10 +155,16 @@ spec:
 
         {{- if .Values.probes.startup.enabled }}
         startupProbe:
+          {{- if .Values.probes.startup.exec }}
+          exec:
+            command:
+              {{- toYaml .Values.probes.startup.exec.command | nindent 14 }}
+          {{- else }}
           httpGet:
             path: {{ .Values.probes.startup.httpGet.path }}
             port: {{ .Values.probes.startup.httpGet.port }}
             scheme: HTTP
+          {{- end }}
           initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
           periodSeconds: {{ .Values.probes.startup.periodSeconds }}
           timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
@@ -159,6 +177,12 @@ spec:
         - name: config
           mountPath: /etc/node-doctor
           readOnly: true
+
+        # Health server unix socket (per-pod, in-memory). The exec health probes
+        # dial /var/run/node-doctor/health.sock, so they never depend on winning
+        # hostPort 8080 (which a foreign host process can own on a hostNetwork node).
+        - name: health-runtime
+          mountPath: /var/run/node-doctor
 
         # Host filesystem mounts
         - name: host-root
@@ -221,6 +245,13 @@ spec:
           items:
           - key: config.yaml
             path: config.yaml
+
+      # Per-pod in-memory dir holding the health server unix socket. Emptied on
+      # every pod start, so a stale socket from a crashed process never persists.
+      - name: health-runtime
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Mi
 
       # Host path volumes
       - name: host-root

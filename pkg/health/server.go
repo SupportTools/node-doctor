@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -20,6 +22,9 @@ import (
 type Server struct {
 	config             *Config
 	httpServer         *http.Server
+	tcpListener        net.Listener
+	unixListener       net.Listener
+	socketPath         string
 	mu                 sync.RWMutex
 	started            bool
 	healthy            bool
@@ -43,6 +48,17 @@ type Config struct {
 
 	// Port is the port to listen on (default: 8080)
 	Port int
+
+	// SocketPath, when non-empty, makes the server ALSO serve the same health
+	// endpoints on a per-pod unix domain socket. This is the reliable channel for
+	// Kubernetes probes: because node-doctor runs with hostNetwork:true, the TCP
+	// Port can be squatted by a foreign host process (e.g. an IP-float/VIP daemon
+	// on hostPort 8080), which makes an httpGet probe fail with a 404 from the
+	// squatter and crashloop the pod. A unix socket lives in the pod's own
+	// (empty-dir) filesystem and cannot collide, so the exec `-healthcheck` probe
+	// always reaches node-doctor's real health server. The TCP listener is still
+	// served best-effort for external monitoring/load-balancers.
+	SocketPath string
 
 	// ReadTimeout for HTTP requests
 	ReadTimeout time.Duration
@@ -160,6 +176,7 @@ func NewServer(config *Config) (*Server, error) {
 
 	server := &Server{
 		config:       config,
+		socketPath:   config.SocketPath,
 		started:      false,
 		healthy:      true,
 		ready:        false,
@@ -168,6 +185,27 @@ func NewServer(config *Config) (*Server, error) {
 	}
 
 	return server, nil
+}
+
+// listenUnix creates a unix domain socket listener at path, ensuring the parent
+// directory exists and removing any stale socket left by a previous (crashed)
+// process. The socket is chmod 0660 so co-located sidecars/probes in the same
+// pod can reach it while it stays off the network entirely.
+func listenUnix(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create socket dir: %w", err)
+	}
+	// A leftover socket file from a prior crash would make Listen fail with
+	// "address already in use"; remove it first (it is a per-pod path we own).
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("remove stale socket %s: %w", path, err)
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(path, 0o660)
+	return ln, nil
 }
 
 // Start starts the health server.
@@ -186,33 +224,65 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/remediation/history", s.handleRemediationHistory)
 
-	// Eagerly bind the listener so bind failures propagate synchronously.
-	// Using net.Listen + Serve instead of ListenAndServe avoids the race where
-	// a goroutine fails silently after Start() returns success.
-	// listenWithFallback uses net.JoinHostPort (correct IPv6 bracketing) and
-	// retries on "0.0.0.0" when a dual-stack/IPv6 bind fails.
-	ln, err := listenWithFallback(s.config.BindAddress, s.config.Port)
-	if err != nil {
-		return fmt.Errorf("health server failed to bind: %w", err)
-	}
-
+	// A single *http.Server can Serve() multiple listeners concurrently; Shutdown
+	// closes all of them. We serve on two:
+	//   1. TCP (best-effort) — for external monitoring/load-balancers. On a
+	//      hostNetwork node this can fail if a foreign process owns the port; that
+	//      is NON-FATAL (we log and continue) because it must not crashloop the pod.
+	//   2. Unix socket (reliable) — the per-pod channel the exec `-healthcheck`
+	//      probe uses. This is the one that must come up for the pod to be usable.
 	s.httpServer = &http.Server{
-		Addr:         ln.Addr().String(),
 		Handler:      mux,
 		ReadTimeout:  s.config.ReadTimeout,
 		WriteTimeout: s.config.WriteTimeout,
 	}
 
-	// Start HTTP server using the already-bound listener
-	go func() {
-		log.Printf("[INFO] Starting health server on %s", ln.Addr())
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("[ERROR] Health server failed: %v", err)
+	var served bool
+
+	// 1. TCP listener (best-effort). listenWithFallback uses net.JoinHostPort
+	// (correct IPv6 bracketing) and retries on "0.0.0.0" when a dual-stack bind fails.
+	if tcpLn, err := listenWithFallback(s.config.BindAddress, s.config.Port); err != nil {
+		// Non-fatal: a foreign process squatting on the hostPort (common cause:
+		// address already in use) must not take node-doctor down. Probes use the
+		// unix socket; only external HTTP health on this node is unavailable.
+		log.Printf("[WARN] health server TCP bind on port %d failed (%v); continuing without external HTTP health on this node — Kubernetes probes use the unix socket", s.config.Port, err)
+	} else {
+		s.tcpListener = tcpLn
+		// Record the bound TCP address. http.Server.Serve ignores Addr, but callers
+		// (and tests) read it to discover the actual host:port, especially with an
+		// ephemeral Port: 0.
+		s.httpServer.Addr = tcpLn.Addr().String()
+		go func() {
+			log.Printf("[INFO] Health server (TCP) serving on %s", tcpLn.Addr())
+			if err := s.httpServer.Serve(tcpLn); err != nil && err != http.ErrServerClosed {
+				log.Printf("[ERROR] Health server (TCP) failed: %v", err)
+			}
+		}()
+		served = true
+	}
+
+	// 2. Unix socket listener (reliable, per-pod). Used by exec probes.
+	if s.socketPath != "" {
+		if unixLn, err := listenUnix(s.socketPath); err != nil {
+			log.Printf("[WARN] health server unix socket bind at %s failed: %v", s.socketPath, err)
+		} else {
+			s.unixListener = unixLn
+			go func() {
+				log.Printf("[INFO] Health server (unix) serving on %s", s.socketPath)
+				if err := s.httpServer.Serve(unixLn); err != nil && err != http.ErrServerClosed {
+					log.Printf("[ERROR] Health server (unix) failed: %v", err)
+				}
+			}()
+			served = true
 		}
-	}()
+	}
+
+	if !served {
+		return fmt.Errorf("health server failed to bind any listener (tcp port %d and unix socket %q both failed)", s.config.Port, s.socketPath)
+	}
 
 	s.started = true
-	log.Printf("[INFO] Health server started successfully on %s", ln.Addr())
+	log.Printf("[INFO] Health server started successfully (tcp=%v unix=%v)", s.tcpListener != nil, s.unixListener != nil)
 
 	return nil
 }
@@ -240,6 +310,14 @@ func (s *Server) Stop() error {
 
 	if err := httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown health server: %w", err)
+	}
+
+	// Remove the unix socket file so a subsequent start doesn't trip over a stale
+	// path (listenUnix also removes it, but clean up eagerly on graceful stop).
+	if s.socketPath != "" {
+		if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[WARN] failed to remove health socket %s: %v", s.socketPath, err)
+		}
 	}
 
 	log.Printf("[INFO] Health server stopped")
