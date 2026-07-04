@@ -13,6 +13,10 @@ import (
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
+// defaultConditionStaleTTL is the fallback staleness TTL used when the
+// configured ConditionStaleTTL is unset or non-positive.
+const defaultConditionStaleTTL = 6 * time.Minute
+
 // ConditionManager handles node condition updates with batching, resync, and heartbeat
 type ConditionManager struct {
 	client            *K8sClient
@@ -21,12 +25,15 @@ type ConditionManager struct {
 	conditions        map[string]corev1.NodeCondition // Current known conditions
 	pendingUpdates    map[string]corev1.NodeCondition // Pending condition updates
 	pendingRemovals   map[string]struct{}             // Pending condition removals
+	lastRefreshed     map[string]time.Time            // Last time each condition type was written/refreshed by us
 	updateInterval    time.Duration                   // How often to batch update conditions
 	resyncInterval    time.Duration                   // How often to resync with Kubernetes
 	heartbeatInterval time.Duration                   // How often to send heartbeat updates
+	staleTTL          time.Duration                   // How long a condition may go un-refreshed before it is expired/removed
 	lastUpdate        time.Time                       // Last time conditions were updated
 	lastResync        time.Time                       // Last time we resynced with Kubernetes
 	lastHeartbeat     time.Time                       // Last time we sent a heartbeat
+	now               func() time.Time                // Clock used for staleness bookkeeping (overridable in tests)
 	stopCh            chan struct{}
 	stopped           bool
 	wg                sync.WaitGroup
@@ -49,15 +56,31 @@ func NewConditionManager(client *K8sClient, config *types.KubernetesExporterConf
 		heartbeatInterval = config.HeartbeatInterval
 	}
 
+	// Condition staleness TTL: how long a condition may go un-refreshed by any
+	// monitor before we consider it abandoned and remove it from the node.
+	// Defaults to 6 minutes, but is never allowed to be less than 3x the
+	// resync interval so that a slow resync cadence cannot itself cause
+	// spurious expiry.
+	staleTTL := defaultConditionStaleTTL
+	if config.ConditionStaleTTL > 0 {
+		staleTTL = config.ConditionStaleTTL
+	}
+	if minTTL := 3 * resyncInterval; staleTTL < minTTL {
+		staleTTL = minTTL
+	}
+
 	manager := &ConditionManager{
 		client:            client,
 		config:            config,
 		conditions:        make(map[string]corev1.NodeCondition),
 		pendingUpdates:    make(map[string]corev1.NodeCondition),
 		pendingRemovals:   make(map[string]struct{}),
+		lastRefreshed:     make(map[string]time.Time),
 		updateInterval:    updateInterval,
 		resyncInterval:    resyncInterval,
 		heartbeatInterval: heartbeatInterval,
+		staleTTL:          staleTTL,
+		now:               time.Now,
 		stopCh:            make(chan struct{}),
 	}
 
@@ -129,12 +152,16 @@ func (cm *ConditionManager) UpdateCondition(condition types.Condition) {
 	// Check if this condition has actually changed
 	if existing, exists := cm.conditions[conditionType]; exists {
 		if conditionsEqual(existing, nodeCondition) {
+			// Still being actively emitted by its monitor even though the value
+			// didn't change, so refresh its staleness timestamp.
+			cm.lastRefreshed[conditionType] = cm.now()
 			log.Printf("[DEBUG] Condition %s unchanged, skipping update", conditionType)
 			return
 		}
 	}
 
 	cm.pendingUpdates[conditionType] = nodeCondition
+	cm.lastRefreshed[conditionType] = cm.now()
 	log.Printf("[DEBUG] Condition %s queued for update: %s=%s (%s)",
 		conditionType, nodeCondition.Type, nodeCondition.Status, nodeCondition.Reason)
 }
@@ -148,6 +175,7 @@ func (cm *ConditionManager) UpdateConditionFromProblem(problem *types.Problem) {
 	defer cm.mu.Unlock()
 
 	cm.pendingUpdates[conditionType] = nodeCondition
+	cm.lastRefreshed[conditionType] = cm.now()
 	log.Printf("[DEBUG] Problem-based condition %s queued for update: %s=%s (%s)",
 		conditionType, nodeCondition.Type, nodeCondition.Status, nodeCondition.Reason)
 }
@@ -175,6 +203,7 @@ func (cm *ConditionManager) AddCustomConditions() {
 
 		conditionType := string(condition.Type)
 		cm.pendingUpdates[conditionType] = condition
+		cm.lastRefreshed[conditionType] = cm.now()
 		log.Printf("[DEBUG] Custom condition %s queued: %s=%s",
 			conditionType, condition.Type, condition.Status)
 	}
@@ -193,6 +222,9 @@ func (cm *ConditionManager) initialSync(ctx context.Context) error {
 	for _, condition := range node.Status.Conditions {
 		conditionType := string(condition.Type)
 		cm.conditions[conditionType] = condition
+		// Seed a grace-period refresh timestamp so monitors get a full TTL
+		// window to re-assert their conditions before anything is expired.
+		cm.lastRefreshed[conditionType] = cm.now()
 		log.Printf("[DEBUG] Loaded existing condition: %s=%s", condition.Type, condition.Status)
 	}
 
@@ -323,10 +355,41 @@ func (cm *ConditionManager) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// expireStaleConditions removes conditions we manage that have not been
+// refreshed by their owning monitor within cm.staleTTL. It must be called
+// with cm.mu already held (it does not lock itself).
+//
+// Only condition types with an entry in cm.lastRefreshed are eligible for
+// expiry. Conditions with NO lastRefreshed entry are Kubernetes built-ins
+// (Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable,
+// etc., set by kubelet) or anything else we never wrote ourselves, and must
+// NEVER be expired by this logic.
+func (cm *ConditionManager) expireStaleConditions() {
+	for conditionType := range cm.conditions {
+		if conditionType == "NodeDoctorHealthy" {
+			continue
+		}
+
+		refreshedAt, tracked := cm.lastRefreshed[conditionType]
+		if !tracked {
+			continue
+		}
+
+		if cm.now().Sub(refreshedAt) > cm.staleTTL {
+			log.Printf("[INFO] expiring stale condition %s (not refreshed in %v)", conditionType, cm.now().Sub(refreshedAt))
+			cm.pendingRemovals[conditionType] = struct{}{}
+			delete(cm.conditions, conditionType)
+			delete(cm.lastRefreshed, conditionType)
+		}
+	}
+}
+
 // flushPendingUpdates applies all pending condition updates and removals to Kubernetes
 func (cm *ConditionManager) flushPendingUpdates(ctx context.Context) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+
+	cm.expireStaleConditions()
 
 	// Check if there's any work to do
 	if len(cm.pendingUpdates) == 0 && len(cm.pendingRemovals) == 0 {
@@ -423,6 +486,14 @@ func (cm *ConditionManager) performResync(ctx context.Context) error {
 	for _, condition := range node.Status.Conditions {
 		conditionType := string(condition.Type)
 		cm.conditions[conditionType] = condition
+
+		// Preserve cm.lastRefreshed across the reload: only seed a timestamp
+		// for types that don't already have one. A condition that already has
+		// an entry keeps its OLD lastRefreshed timestamp, so a stale True
+		// condition reloaded from the node can still expire on the next flush.
+		if _, tracked := cm.lastRefreshed[conditionType]; !tracked {
+			cm.lastRefreshed[conditionType] = cm.now()
+		}
 	}
 
 	cm.lastResync = time.Now()
@@ -445,6 +516,7 @@ func (cm *ConditionManager) sendHeartbeat() {
 	}
 
 	cm.pendingUpdates["NodeDoctorHealthy"] = heartbeatCondition
+	cm.lastRefreshed["NodeDoctorHealthy"] = cm.now()
 	cm.lastHeartbeat = time.Now()
 
 	log.Printf("[DEBUG] Heartbeat condition queued")
@@ -488,6 +560,7 @@ func (cm *ConditionManager) GetStats() map[string]interface{} {
 		"update_interval":    cm.updateInterval.String(),
 		"resync_interval":    cm.resyncInterval.String(),
 		"heartbeat_interval": cm.heartbeatInterval.String(),
+		"stale_ttl":          cm.staleTTL.String(),
 	}
 }
 

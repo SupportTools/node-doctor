@@ -668,7 +668,8 @@ func (m *RuntimeMonitor) updateFailureTracking(healthy bool, status *types.Statu
 		m.consecutiveFailures = 0
 		m.unhealthy = false
 
-		// If we were unhealthy, report recovery
+		// If we were unhealthy, report recovery. This event is purely
+		// informational and should only fire on an actual transition.
 		if wasUnhealthy {
 			status.AddEvent(types.NewEvent(
 				types.EventInfo,
@@ -676,15 +677,21 @@ func (m *RuntimeMonitor) updateFailureTracking(healthy bool, status *types.Statu
 				fmt.Sprintf("Container runtime (%s) has recovered after %d consecutive failures",
 					m.config.detectedRuntime, previousFailures),
 			))
-
-			// Clear the unhealthy condition
-			status.AddCondition(types.NewCondition(
-				"ContainerRuntimeUnhealthy",
-				types.ConditionFalse,
-				"HealthCheckPassed",
-				fmt.Sprintf("Container runtime (%s) is healthy", m.config.detectedRuntime),
-			))
 		}
+
+		// Always assert ContainerRuntimeUnhealthy=False on a healthy cycle,
+		// regardless of wasUnhealthy. Gating this solely on wasUnhealthy meant
+		// that after a process restart (m.unhealthy starts false) a healthy
+		// cycle never cleared a previously-True condition left over from
+		// before the restart (e.g. reloaded from the node), letting it persist
+		// forever. The condition-manager staleness TTL is a backstop, but we
+		// should also clear it symmetrically here whenever we know we're healthy.
+		status.AddCondition(types.NewCondition(
+			"ContainerRuntimeUnhealthy",
+			types.ConditionFalse,
+			"HealthCheckPassed",
+			fmt.Sprintf("Container runtime (%s) is healthy", m.config.detectedRuntime),
+		))
 	}
 }
 

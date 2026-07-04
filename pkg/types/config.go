@@ -17,6 +17,7 @@ const (
 	DefaultUpdateInterval    = "10s"
 	DefaultResyncInterval    = "60s"
 	DefaultHeartbeatInterval = "5m"
+	DefaultConditionStaleTTL = "6m"
 	DefaultQPS               = 50
 	DefaultBurst             = 100
 	DefaultHTTPPort          = 8080
@@ -267,10 +268,12 @@ type KubernetesExporterConfig struct {
 	UpdateIntervalString    string `json:"updateInterval,omitempty" yaml:"updateInterval,omitempty"`
 	ResyncIntervalString    string `json:"resyncInterval,omitempty" yaml:"resyncInterval,omitempty"`
 	HeartbeatIntervalString string `json:"heartbeatInterval,omitempty" yaml:"heartbeatInterval,omitempty"`
+	ConditionStaleTTLString string `json:"conditionStaleTTL,omitempty" yaml:"conditionStaleTTL,omitempty"`
 
 	UpdateInterval    time.Duration `json:"-" yaml:"-"`
 	ResyncInterval    time.Duration `json:"-" yaml:"-"`
 	HeartbeatInterval time.Duration `json:"-" yaml:"-"`
+	ConditionStaleTTL time.Duration `json:"-" yaml:"-"`
 
 	// Namespace for events
 	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
@@ -739,6 +742,9 @@ func (k *KubernetesExporterConfig) ApplyDefaults() error {
 	if k.HeartbeatIntervalString == "" {
 		k.HeartbeatIntervalString = DefaultHeartbeatInterval
 	}
+	if k.ConditionStaleTTLString == "" {
+		k.ConditionStaleTTLString = DefaultConditionStaleTTL
+	}
 
 	// Parse durations
 	var err error
@@ -753,6 +759,10 @@ func (k *KubernetesExporterConfig) ApplyDefaults() error {
 	k.HeartbeatInterval, err = time.ParseDuration(k.HeartbeatIntervalString)
 	if err != nil {
 		return fmt.Errorf("invalid heartbeatInterval %q: %w", k.HeartbeatIntervalString, err)
+	}
+	k.ConditionStaleTTL, err = time.ParseDuration(k.ConditionStaleTTLString)
+	if err != nil {
+		return fmt.Errorf("invalid conditionStaleTTL %q: %w", k.ConditionStaleTTLString, err)
 	}
 
 	// Event defaults
@@ -1342,6 +1352,9 @@ func (k *KubernetesExporterConfig) Validate() error {
 	}
 	if k.HeartbeatInterval <= 0 {
 		return fmt.Errorf("heartbeatInterval must be positive, got %v", k.HeartbeatInterval)
+	}
+	if k.ConditionStaleTTL <= 0 {
+		return fmt.Errorf("conditionStaleTTL must be positive, got %v", k.ConditionStaleTTL)
 	}
 
 	// Validate conditions

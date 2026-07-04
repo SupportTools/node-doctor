@@ -1305,6 +1305,7 @@ func TestKubernetesExporterConfigValidation(t *testing.T) {
 				UpdateInterval:    10 * time.Second,
 				ResyncInterval:    60 * time.Second,
 				HeartbeatInterval: 5 * time.Minute,
+				ConditionStaleTTL: 6 * time.Minute,
 			},
 			wantErr: false,
 		},
@@ -1315,6 +1316,7 @@ func TestKubernetesExporterConfigValidation(t *testing.T) {
 				UpdateInterval:    -1 * time.Second,
 				ResyncInterval:    60 * time.Second,
 				HeartbeatInterval: 5 * time.Minute,
+				ConditionStaleTTL: 6 * time.Minute,
 			},
 			wantErr: true,
 			errMsg:  "updateInterval must be positive",
@@ -1326,6 +1328,7 @@ func TestKubernetesExporterConfigValidation(t *testing.T) {
 				UpdateInterval:    10 * time.Second,
 				ResyncInterval:    60 * time.Second,
 				HeartbeatInterval: 5 * time.Minute,
+				ConditionStaleTTL: 6 * time.Minute,
 				Conditions: []ConditionConfig{
 					{},
 				},
@@ -1340,6 +1343,7 @@ func TestKubernetesExporterConfigValidation(t *testing.T) {
 				UpdateInterval:    10 * time.Second,
 				ResyncInterval:    60 * time.Second,
 				HeartbeatInterval: 5 * time.Minute,
+				ConditionStaleTTL: 6 * time.Minute,
 				Annotations: []AnnotationConfig{
 					{Value: "test"},
 				},
@@ -1354,12 +1358,25 @@ func TestKubernetesExporterConfigValidation(t *testing.T) {
 				UpdateInterval:    10 * time.Second,
 				ResyncInterval:    60 * time.Second,
 				HeartbeatInterval: 5 * time.Minute,
+				ConditionStaleTTL: 6 * time.Minute,
 				Events: EventConfig{
 					MaxEventsPerMinute: -1,
 				},
 			},
 			wantErr: true,
 			errMsg:  "maxEventsPerMinute must be non-negative",
+		},
+		{
+			name: "non-positive condition stale ttl",
+			input: KubernetesExporterConfig{
+				Enabled:           true,
+				UpdateInterval:    10 * time.Second,
+				ResyncInterval:    60 * time.Second,
+				HeartbeatInterval: 5 * time.Minute,
+				ConditionStaleTTL: 0,
+			},
+			wantErr: true,
+			errMsg:  "conditionStaleTTL must be positive",
 		},
 	}
 
@@ -1376,6 +1393,23 @@ func TestKubernetesExporterConfigValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestKubernetesExporterConfigApplyDefaultsConditionStaleTTL verifies that
+// ApplyDefaults populates ConditionStaleTTL to the 6-minute default when unset.
+func TestKubernetesExporterConfigApplyDefaultsConditionStaleTTL(t *testing.T) {
+	config := &KubernetesExporterConfig{}
+
+	if err := config.ApplyDefaults(); err != nil {
+		t.Fatalf("ApplyDefaults() error = %v", err)
+	}
+
+	if config.ConditionStaleTTL != 6*time.Minute {
+		t.Errorf("ConditionStaleTTL = %v, want %v", config.ConditionStaleTTL, 6*time.Minute)
+	}
+	if config.ConditionStaleTTLString != DefaultConditionStaleTTL {
+		t.Errorf("ConditionStaleTTLString = %v, want %v", config.ConditionStaleTTLString, DefaultConditionStaleTTL)
 	}
 }
 
