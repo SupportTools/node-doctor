@@ -215,6 +215,26 @@ prometheusRule:
     noMetrics:
       for: 10m
 
+# Cluster DNS via pod-network probe (task 242).
+# DISABLED by default. node-doctor runs hostNetwork and cannot resolve cluster DNS
+# ClusterIP records (Cilium host-netns->ClusterIP), so the in-agent cluster-DNS check
+# is off (dns-health clusterDomains: []). When enabled, this adds a monitor that queries
+# the overlay-test pods' /clusterdns endpoint (pod-network, which DOES resolve cluster
+# records) and drives ClusterDNSDown from that.
+# PREREQUISITE: the overlay-test image must serve /clusterdns (v1.8.3+). Enabling this
+# against an older overlay-test image makes every probe 404 -> false ClusterDNSDown.
+clusterDnsPodProbe:
+  enabled: false
+  interval: 30s
+  timeout: 5s
+  labelSelector: "app=node-doctor-overlay-test"
+  probePort: 8023
+  probePath: "/clusterdns"
+  # Number of overlay-test pods that must resolve cluster DNS for it to be healthy.
+  minSuccessPods: 1
+  # Consecutive failed cycles before ClusterDNSDown latches True.
+  failureCountThreshold: 3
+
 # Health probe configuration.
 # Probes default to `exec` running the binary's built-in health check, which talks
 # to a per-pod unix socket (/var/run/node-doctor/health.sock) instead of TCP :8080.
