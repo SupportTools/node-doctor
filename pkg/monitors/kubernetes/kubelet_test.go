@@ -1462,3 +1462,69 @@ func TestParseCircuitBreakerConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestKubeletMonitor_UpdateFailureTracking_NormalHealthySymmetricConditions verifies
+// that a healthy cycle with no prior failures (the "normal healthy state" sub-branch)
+// symmetrically clears KubeletDown and KubeletUnhealthy in addition to asserting
+// KubeletHealthy=True, so a previously-True condition doesn't linger forever.
+func TestKubeletMonitor_UpdateFailureTracking_NormalHealthySymmetricConditions(t *testing.T) {
+	monitor := &KubeletMonitor{
+		name: "test-kubelet",
+		config: &KubeletMonitorConfig{
+			FailureThreshold: 3,
+		},
+	}
+
+	status := &types.Status{}
+	monitor.updateFailureTracking(true, status, "test-node")
+
+	assertConditionStatus(t, status, "KubeletHealthy", types.ConditionTrue)
+	assertConditionStatus(t, status, "KubeletDown", types.ConditionFalse)
+	assertConditionStatus(t, status, "KubeletUnhealthy", types.ConditionFalse)
+}
+
+// TestKubeletMonitor_UpdateFailureTracking_RecoverySymmetricConditions verifies
+// that a healthy cycle recovering from prior failures (the "recovering" sub-branch)
+// also emits the same symmetric False conditions, plus the KubeletRecovered event.
+func TestKubeletMonitor_UpdateFailureTracking_RecoverySymmetricConditions(t *testing.T) {
+	monitor := &KubeletMonitor{
+		name: "test-kubelet",
+		config: &KubeletMonitorConfig{
+			FailureThreshold: 3,
+		},
+		consecutiveFailures: 2,
+	}
+
+	status := &types.Status{}
+	monitor.updateFailureTracking(true, status, "test-node")
+
+	assertConditionStatus(t, status, "KubeletHealthy", types.ConditionTrue)
+	assertConditionStatus(t, status, "KubeletDown", types.ConditionFalse)
+	assertConditionStatus(t, status, "KubeletUnhealthy", types.ConditionFalse)
+
+	foundRecovery := false
+	for _, event := range status.Events {
+		if event.Reason == "KubeletRecovered" {
+			foundRecovery = true
+			break
+		}
+	}
+	if !foundRecovery {
+		t.Error("expected KubeletRecovered event but didn't find it")
+	}
+}
+
+// assertConditionStatus is a small test helper that fails the test if the named
+// condition type is not present in status.Conditions with the expected status.
+func assertConditionStatus(t *testing.T, status *types.Status, condType string, want types.ConditionStatus) {
+	t.Helper()
+	for _, cond := range status.Conditions {
+		if cond.Type == condType {
+			if cond.Status != want {
+				t.Errorf("condition %s status = %v, want %v", condType, cond.Status, want)
+			}
+			return
+		}
+	}
+	t.Errorf("expected condition %s but didn't find it", condType)
+}

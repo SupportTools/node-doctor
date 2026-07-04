@@ -822,3 +822,47 @@ func TestParseDuration(t *testing.T) {
 		})
 	}
 }
+
+// TestRuntimeMonitor_HealthyClearsUnhealthyOnFreshMonitor verifies that a healthy
+// check on a freshly-constructed monitor (never previously unhealthy, i.e.
+// m.unhealthy == false and m.consecutiveFailures == 0) still emits
+// ContainerRuntimeUnhealthy=False. Previously this emission was gated on
+// wasUnhealthy, so a fresh monitor (e.g. right after a process restart) never
+// cleared a previously-True condition left over from before the restart.
+func TestRuntimeMonitor_HealthyClearsUnhealthyOnFreshMonitor(t *testing.T) {
+	mockClient := &mockRuntimeClient{
+		socketErr: nil, // healthy
+	}
+
+	monitor := createTestMonitor(t, map[string]interface{}{
+		"runtimeType":             "docker",
+		"checkSocketConnectivity": true,
+		"checkSystemdStatus":      false,
+		"checkRuntimeInfo":        false,
+		"failureThreshold":        3,
+	}, mockClient)
+
+	// Sanity-check the fresh-monitor invariant this test depends on.
+	if monitor.unhealthy {
+		t.Fatal("test setup invariant violated: monitor.unhealthy must start false")
+	}
+	if monitor.consecutiveFailures != 0 {
+		t.Fatal("test setup invariant violated: monitor.consecutiveFailures must start at 0")
+	}
+
+	ctx := context.Background()
+	status, err := monitor.checkRuntime(ctx)
+	if err != nil {
+		t.Fatalf("checkRuntime() unexpected error: %v", err)
+	}
+
+	foundUnhealthyFalse := false
+	for _, cond := range status.Conditions {
+		if cond.Type == "ContainerRuntimeUnhealthy" && cond.Status == types.ConditionFalse {
+			foundUnhealthyFalse = true
+		}
+	}
+	if !foundUnhealthyFalse {
+		t.Error("expected ContainerRuntimeUnhealthy=False on a healthy cycle even without prior unhealthy state, but it was not found")
+	}
+}

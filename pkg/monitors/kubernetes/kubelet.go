@@ -1434,23 +1434,32 @@ func (m *KubeletMonitor) updateFailureTracking(healthy bool, status *types.Statu
 				"KubeletRecovered",
 				fmt.Sprintf("Kubelet health restored after %d consecutive failures", previousFailures),
 			))
-
-			// Clear KubeletUnhealthy condition
-			status.AddCondition(types.NewCondition(
-				"KubeletHealthy",
-				types.ConditionTrue,
-				"HealthCheckPassed",
-				"Kubelet health checks are passing",
-			))
-		} else {
-			// Normal healthy state
-			status.AddCondition(types.NewCondition(
-				"KubeletHealthy",
-				types.ConditionTrue,
-				"HealthCheckPassed",
-				"Kubelet health checks are passing",
-			))
 		}
+
+		// Healthy state (whether recovering or steady-state): assert
+		// KubeletHealthy=True and explicitly clear KubeletDown/KubeletUnhealthy
+		// so a previously-True condition (set by checkSystemd's inactive path,
+		// the circuit-breaker-open path, or the failure-threshold path above)
+		// is symmetrically cleared once health checks pass again, rather than
+		// relying solely on the condition-manager staleness TTL to expire it.
+		status.AddCondition(types.NewCondition(
+			"KubeletHealthy",
+			types.ConditionTrue,
+			"HealthCheckPassed",
+			"Kubelet health checks are passing",
+		))
+		status.AddCondition(types.NewCondition(
+			"KubeletDown",
+			types.ConditionFalse,
+			"KubeletUp",
+			"Kubelet systemd service is active",
+		))
+		status.AddCondition(types.NewCondition(
+			"KubeletUnhealthy",
+			types.ConditionFalse,
+			"HealthCheckPassed",
+			"Kubelet health checks are passing",
+		))
 	}
 }
 
