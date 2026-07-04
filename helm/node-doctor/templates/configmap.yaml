@@ -200,6 +200,29 @@ data:
           checkNameservers: true
           failureCountThreshold: 3
           enableNameserverChecks: true
+      {{- if .Values.clusterDnsPodProbe.enabled }}
+
+      # Cluster DNS via pod-network (overlay-test pods). node-doctor runs hostNetwork,
+      # from which the kube-dns ClusterIP does NOT resolve CLUSTER records (Cilium
+      # host-netns->ClusterIP), so the in-agent cluster-DNS check above stays disabled
+      # (clusterDomains: []). This monitor instead queries the overlay-test pods'
+      # /clusterdns endpoint — they run in pod-network and DO resolve cluster records —
+      # and drives ClusterDNSDown from that pod-sourced truth. Requires an overlay-test
+      # image that serves /clusterdns (v1.8.3+); enabling it against an older overlay-test
+      # image makes every probe 404 and falsely reports ClusterDNSDown.
+      - name: cluster-dns-pod
+        type: network-cluster-dns-pod
+        enabled: true
+        interval: {{ .Values.clusterDnsPodProbe.interval }}
+        timeout: {{ .Values.clusterDnsPodProbe.timeout }}
+        config:
+          labelSelector: {{ .Values.clusterDnsPodProbe.labelSelector | quote }}
+          namespace: {{ .Release.Namespace }}
+          probePort: {{ .Values.clusterDnsPodProbe.probePort }}
+          probePath: {{ .Values.clusterDnsPodProbe.probePath | quote }}
+          minSuccessPods: {{ .Values.clusterDnsPodProbe.minSuccessPods }}
+          failureCountThreshold: {{ .Values.clusterDnsPodProbe.failureCountThreshold }}
+      {{- end }}
 
     exporters:
       kubernetes:

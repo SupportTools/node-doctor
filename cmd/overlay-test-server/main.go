@@ -1,6 +1,9 @@
 // Package main implements a minimal HTTP health server for overlay-test pods.
-// It serves /healthz and returns JSON with pod metadata, enabling HTTP-based
+// It serves /healthz, which returns JSON with pod metadata, enabling HTTP-based
 // connectivity probing that works on Cilium clusters where ICMP is silently dropped.
+// It also serves /clusterdns, which resolves cluster DNS from pod-network context,
+// where node-doctor's host-network context cannot (Cilium doesn't route
+// host-netns->ClusterIP for cluster records).
 package main
 
 import (
@@ -10,6 +13,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/supporttools/node-doctor/pkg/clusterdns"
 )
 
 func main() {
@@ -28,6 +33,13 @@ func main() {
 			"podIP":  podIP,
 		}
 		json.NewEncoder(w).Encode(resp) //nolint:errcheck // best-effort response
+	})
+
+	http.HandleFunc("/clusterdns", func(w http.ResponseWriter, r *http.Request) {
+		result := clusterdns.Probe(r.Context(), "/etc/resolv.conf")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(result) //nolint:errcheck // best-effort response
 	})
 
 	addr := fmt.Sprintf(":%d", *port)

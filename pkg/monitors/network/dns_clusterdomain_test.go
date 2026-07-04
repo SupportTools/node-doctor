@@ -6,60 +6,6 @@ import (
 	"testing"
 )
 
-func TestDeriveClusterDomain(t *testing.T) {
-	tests := []struct {
-		name   string
-		search []string
-		want   string
-		wantOK bool
-	}{
-		{
-			name:   "standard cluster.local search list",
-			search: []string{"default.svc.cluster.local", "svc.cluster.local", "cluster.local"},
-			want:   "cluster.local",
-			wantOK: true,
-		},
-		{
-			name:   "custom cluster domain (the incident case)",
-			search: []string{"default.svc.k8s.example.com", "svc.k8s.example.com", "k8s.example.com"},
-			want:   "k8s.example.com",
-			wantOK: true,
-		},
-		{
-			name:   "only the ns-scoped entry present (no bare svc.)",
-			search: []string{"kube-system.svc.cluster.local"},
-			want:   "cluster.local",
-			wantOK: true,
-		},
-		{
-			name:   "trailing dots tolerated",
-			search: []string{"svc.cluster.local."},
-			want:   "cluster.local",
-			wantOK: true,
-		},
-		{
-			name:   "non-kubernetes resolver -> no derivation",
-			search: []string{"corp.example.com", "example.com"},
-			want:   "",
-			wantOK: false,
-		},
-		{
-			name:   "empty search",
-			search: nil,
-			want:   "",
-			wantOK: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := deriveClusterDomain(tt.search)
-			if got != tt.want || ok != tt.wantOK {
-				t.Errorf("deriveClusterDomain(%v) = (%q, %v), want (%q, %v)", tt.search, got, ok, tt.want, tt.wantOK)
-			}
-		})
-	}
-}
-
 func writeResolv(t *testing.T, content string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "resolv.conf")
@@ -67,24 +13,6 @@ func writeResolv(t *testing.T, content string) string {
 		t.Fatalf("write resolv.conf: %v", err)
 	}
 	return p
-}
-
-func TestDeriveClusterDomainFromResolver(t *testing.T) {
-	custom := writeResolv(t, "search default.svc.k8s.example.com svc.k8s.example.com k8s.example.com\nnameserver 10.43.0.10\noptions ndots:5\n")
-	if d, ok := deriveClusterDomainFromResolver(custom); !ok || d != "k8s.example.com" {
-		t.Errorf("custom domain: got (%q,%v), want (k8s.example.com,true)", d, ok)
-	}
-
-	// Missing file -> no derivation, no panic.
-	if d, ok := deriveClusterDomainFromResolver(filepath.Join(t.TempDir(), "nope")); ok || d != "" {
-		t.Errorf("missing file: got (%q,%v), want ('',false)", d, ok)
-	}
-
-	// No search line -> no derivation.
-	noSearch := writeResolv(t, "nameserver 1.1.1.1\n")
-	if d, ok := deriveClusterDomainFromResolver(noSearch); ok || d != "" {
-		t.Errorf("no search line: got (%q,%v), want ('',false)", d, ok)
-	}
 }
 
 func TestDefaultClusterDomains(t *testing.T) {
