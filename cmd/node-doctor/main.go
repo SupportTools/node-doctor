@@ -64,8 +64,15 @@ func runHealthCheck(socketPath, probePath string) int {
 			},
 		},
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	// Host is ignored for unix sockets but must be a valid URL authority.
-	resp, err := client.Get("http://localhost" + probePath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+probePath, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck build request failed: %v\n", err)
+		return 1
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck %s via %s failed: %v\n", probePath, socketPath, err)
 		return 1
@@ -102,19 +109,19 @@ func (e *noopExporter) Stop() error {
 func main() {
 	// Parse command line flags
 	var (
-		configFile      = flag.String("config", "", "Path to configuration file")
-		version         = flag.Bool("version", false, "Show version information")
-		validateConfig  = flag.Bool("validate-config", false, "Validate configuration and exit")
-		dumpConfig      = flag.Bool("dump-config", false, "Dump effective configuration and exit")
-		listMonitors    = flag.Bool("list-monitors", false, "List available monitor types and exit")
-		debug           = flag.Bool("debug", false, "Enable debug logging")
-		dryRun          = flag.Bool("dry-run", false, "Enable dry-run mode (no actual remediation)")
-		logLevel        = flag.String("log-level", "", "Override log level (debug, info, warn, error)")
-		logFormat       = flag.String("log-format", "", "Override log format (json, text)")
-		enableProfiling = flag.Bool("enable-profiling", false, "Enable pprof profiling server")
-		profilingPort   = flag.Int("profiling-port", 6060, "Port for pprof profiling server")
-		healthSocket    = flag.String("health-socket", defaultHealthSocket, "Path to the health server unix domain socket")
-		healthCheck     = flag.Bool("healthcheck", false, "Probe liveness (/healthz) via the health unix socket and exit 0 (ok) or 1 (fail). Used by Kubernetes exec probes.")
+		configFile       = flag.String("config", "", "Path to configuration file")
+		version          = flag.Bool("version", false, "Show version information")
+		validateConfig   = flag.Bool("validate-config", false, "Validate configuration and exit")
+		dumpConfig       = flag.Bool("dump-config", false, "Dump effective configuration and exit")
+		listMonitors     = flag.Bool("list-monitors", false, "List available monitor types and exit")
+		debug            = flag.Bool("debug", false, "Enable debug logging")
+		dryRun           = flag.Bool("dry-run", false, "Enable dry-run mode (no actual remediation)")
+		logLevel         = flag.String("log-level", "", "Override log level (debug, info, warn, error)")
+		logFormat        = flag.String("log-format", "", "Override log format (json, text)")
+		enableProfiling  = flag.Bool("enable-profiling", false, "Enable pprof profiling server")
+		profilingPort    = flag.Int("profiling-port", 6060, "Port for pprof profiling server")
+		healthSocket     = flag.String("health-socket", defaultHealthSocket, "Path to the health server unix domain socket")
+		healthCheck      = flag.Bool("healthcheck", false, "Probe liveness (/healthz) via the health unix socket and exit 0 (ok) or 1 (fail). Used by Kubernetes exec probes.")
 		healthCheckReady = flag.Bool("healthcheck-ready", false, "Probe readiness (/ready) via the health unix socket and exit 0/1. Used by the Kubernetes readiness exec probe.")
 	)
 	flag.Parse()
