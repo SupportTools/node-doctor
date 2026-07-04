@@ -2410,22 +2410,30 @@ func (m *DNSMonitor) updateFailureTracking(clusterOK, externalOK bool, status *t
 		m.externalTrendDetector.Observe(m.externalSuccessTracker.GetSuccessRate(), now)
 	}
 
-	// Toggle ClusterDNSDown True/False based on the consecutive-failure count.
-	if m.clusterFailureCount >= m.config.FailureCountThreshold {
-		status.AddCondition(types.NewCondition(
-			"ClusterDNSDown",
-			types.ConditionTrue,
-			"RepeatedClusterDNSFailures",
-			fmt.Sprintf("Cluster DNS has failed %d consecutive times (threshold: %d)",
-				m.clusterFailureCount, m.config.FailureCountThreshold),
-		))
-	} else if m.clusterFailureCount == 0 {
-		status.AddCondition(types.NewCondition(
-			"ClusterDNSDown",
-			types.ConditionFalse,
-			"ClusterDNSResolved",
-			"Cluster DNS resolution is healthy",
-		))
+	// Toggle ClusterDNSDown True/False based on the consecutive-failure count — but
+	// ONLY when this monitor is actually checking cluster domains. With clusterDomains: []
+	// (the hostNetwork default: the agent cannot resolve ClusterIP cluster records via
+	// Cilium), checkDNSDomains trivially returns true, which would make this emit an
+	// unconditional ClusterDNSDown=False and MASK a real ClusterDNSDown=True reported by
+	// the pod-network cluster-dns-pod monitor (which owns this condition when the in-agent
+	// check is disabled). So skip the emission entirely when no cluster domains are set.
+	if len(m.config.ClusterDomains) > 0 {
+		if m.clusterFailureCount >= m.config.FailureCountThreshold {
+			status.AddCondition(types.NewCondition(
+				"ClusterDNSDown",
+				types.ConditionTrue,
+				"RepeatedClusterDNSFailures",
+				fmt.Sprintf("Cluster DNS has failed %d consecutive times (threshold: %d)",
+					m.clusterFailureCount, m.config.FailureCountThreshold),
+			))
+		} else if m.clusterFailureCount == 0 {
+			status.AddCondition(types.NewCondition(
+				"ClusterDNSDown",
+				types.ConditionFalse,
+				"ClusterDNSResolved",
+				"Cluster DNS resolution is healthy",
+			))
+		}
 	}
 
 	// Toggle ExternalDNSDown True/False based on the consecutive-failure count.
