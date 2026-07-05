@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -314,10 +315,23 @@ func (c *K8sClient) RemoveNodeConditions(ctx context.Context, conditionTypesToRe
 
 	log.Printf("[DEBUG] Removing %d condition types from node %s: %v", len(conditionTypesToRemove), c.nodeName, conditionTypesToRemove)
 
-	// Create a set of condition types to remove for efficient lookup
+	// Create a set of condition types to remove for efficient lookup.
+	// SAFETY NET (defense in depth): only ever remove node-doctor-owned conditions
+	// (NodeDoctor* prefix). Even if a caller bug asks us to remove a Kubernetes or
+	// control-plane built-in (Ready, PIDPressure, MemoryPressure, DiskPressure,
+	// NetworkUnavailable, EtcdIsVoter, ...), we refuse — stripping those from a live node
+	// can trigger evictions / scheduler churn. This method must NEVER touch a non-node-doctor
+	// condition.
 	removeSet := make(map[string]struct{})
 	for _, ct := range conditionTypesToRemove {
+		if !strings.HasPrefix(ct, "NodeDoctor") {
+			log.Printf("[WARN] RemoveNodeConditions refusing to remove non-node-doctor condition %q on node %s", ct, c.nodeName)
+			continue
+		}
 		removeSet[ct] = struct{}{}
+	}
+	if len(removeSet) == 0 {
+		return nil
 	}
 
 	// Use retry with conflict handling since we're doing a read-modify-write

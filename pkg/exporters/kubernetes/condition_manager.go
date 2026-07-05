@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,14 @@ import (
 // defaultConditionStaleTTL is the fallback staleness TTL used when the
 // configured ConditionStaleTTL is unset or non-positive.
 const defaultConditionStaleTTL = 6 * time.Minute
+
+// nodeDoctorConditionPrefix is the ownership marker: node-doctor writes every one of
+// its node conditions with this type prefix (NodeDoctorKubeletDown, NodeDoctorCPUPressure,
+// NodeDoctorConditionInodePressure, ...). Staleness expiry and manual removal are gated on
+// this prefix so Kubernetes/control-plane built-ins (Ready, PIDPressure, MemoryPressure,
+// DiskPressure, NetworkUnavailable, EtcdIsVoter, ...) — which never carry it — can NEVER be
+// touched, regardless of what ends up tracked in memory.
+const nodeDoctorConditionPrefix = "NodeDoctor"
 
 // ConditionManager handles node condition updates with batching, resync, and heartbeat
 type ConditionManager struct {
@@ -30,6 +39,7 @@ type ConditionManager struct {
 	resyncInterval    time.Duration                   // How often to resync with Kubernetes
 	heartbeatInterval time.Duration                   // How often to send heartbeat updates
 	staleTTL          time.Duration                   // How long a condition may go un-refreshed before it is expired/removed
+	startTime         time.Time                       // When the manager started; grace baseline for conditions loaded but never (re)written by us
 	lastUpdate        time.Time                       // Last time conditions were updated
 	lastResync        time.Time                       // Last time we resynced with Kubernetes
 	lastHeartbeat     time.Time                       // Last time we sent a heartbeat
@@ -81,6 +91,7 @@ func NewConditionManager(client *K8sClient, config *types.KubernetesExporterConf
 		heartbeatInterval: heartbeatInterval,
 		staleTTL:          staleTTL,
 		now:               time.Now,
+		startTime:         time.Now(),
 		stopCh:            make(chan struct{}),
 	}
 
@@ -218,13 +229,15 @@ func (cm *ConditionManager) initialSync(ctx context.Context) error {
 		return fmt.Errorf("failed to get current node state: %w", err)
 	}
 
-	// Load current conditions from the node
+	// Load current conditions from the node. Do NOT seed lastRefreshed here: that map
+	// records only conditions WE actively write, and is used purely as a per-condition
+	// freshness signal. Seeding it for every loaded condition would (a) mark Kubernetes
+	// built-ins as node-doctor-tracked and (b) give every stale node-doctor condition a
+	// fresh timestamp on every restart so it never expires. Owned-but-unwritten conditions
+	// get their TTL grace from cm.startTime in expireStaleConditions instead.
 	for _, condition := range node.Status.Conditions {
 		conditionType := string(condition.Type)
 		cm.conditions[conditionType] = condition
-		// Seed a grace-period refresh timestamp so monitors get a full TTL
-		// window to re-assert their conditions before anything is expired.
-		cm.lastRefreshed[conditionType] = cm.now()
 		log.Printf("[DEBUG] Loaded existing condition: %s=%s", condition.Type, condition.Status)
 	}
 
@@ -355,28 +368,41 @@ func (cm *ConditionManager) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// expireStaleConditions removes conditions we manage that have not been
-// refreshed by their owning monitor within cm.staleTTL. It must be called
-// with cm.mu already held (it does not lock itself).
+// expireStaleConditions removes node-doctor-managed conditions that have not been
+// refreshed by their owning monitor within cm.staleTTL. It must be called with cm.mu
+// already held (it does not lock itself).
 //
-// Only condition types with an entry in cm.lastRefreshed are eligible for
-// expiry. Conditions with NO lastRefreshed entry are Kubernetes built-ins
-// (Ready, MemoryPressure, DiskPressure, PIDPressure, NetworkUnavailable,
-// etc., set by kubelet) or anything else we never wrote ourselves, and must
-// NEVER be expired by this logic.
+// Eligibility is gated STRICTLY on node-doctor OWNERSHIP BY NAME (the NodeDoctor type
+// prefix), NOT on presence in cm.lastRefreshed. This is safety-critical: initialSync and
+// performResync load EVERY condition off the node into cm.conditions — including
+// Kubernetes/control-plane built-ins (Ready, PIDPressure, MemoryPressure, DiskPressure,
+// NetworkUnavailable, EtcdIsVoter, ...). Those built-ins do NOT carry the NodeDoctor prefix,
+// so they are skipped and can never be removed here. (An earlier version keyed eligibility on
+// lastRefreshed, but initialSync seeded lastRefreshed for the built-ins too, which made the
+// expiry try to strip Ready/PIDPressure from live nodes — never gate on lastRefreshed alone.)
+//
+// For an owned condition, staleness is measured from its lastRefreshed timestamp if we've
+// written it this process, otherwise from cm.startTime — so a condition loaded off the node
+// but never re-asserted by a monitor gets a full TTL grace from startup before it expires,
+// while a monitor that is actively emitting keeps its condition fresh.
 func (cm *ConditionManager) expireStaleConditions() {
 	for conditionType := range cm.conditions {
 		if conditionType == "NodeDoctorHealthy" {
-			continue
+			continue // never expire the liveness heartbeat
+		}
+		if !strings.HasPrefix(conditionType, nodeDoctorConditionPrefix) {
+			continue // OWNERSHIP GUARD: never touch non-node-doctor (built-in) conditions
 		}
 
 		refreshedAt, tracked := cm.lastRefreshed[conditionType]
 		if !tracked {
-			continue
+			// Loaded off the node but not (re)written by any monitor this process — measure
+			// staleness from startup so monitors get a full TTL grace to re-assert.
+			refreshedAt = cm.startTime
 		}
 
-		if cm.now().Sub(refreshedAt) > cm.staleTTL {
-			log.Printf("[INFO] expiring stale condition %s (not refreshed in %v)", conditionType, cm.now().Sub(refreshedAt))
+		if age := cm.now().Sub(refreshedAt); age > cm.staleTTL {
+			log.Printf("[INFO] expiring stale node-doctor condition %s (not refreshed in %v)", conditionType, age)
 			cm.pendingRemovals[conditionType] = struct{}{}
 			delete(cm.conditions, conditionType)
 			delete(cm.lastRefreshed, conditionType)
@@ -483,17 +509,15 @@ func (cm *ConditionManager) performResync(ctx context.Context) error {
 	oldConditionCount := len(cm.conditions)
 	cm.conditions = make(map[string]corev1.NodeCondition)
 
+	// Reload conditions from the node, but do NOT touch cm.lastRefreshed. lastRefreshed
+	// is written only when a monitor actively emits a condition; leaving it untouched here
+	// means a stale node-doctor condition reloaded from the node keeps whatever freshness
+	// signal it had (usually none → it expires from cm.startTime grace), and Kubernetes
+	// built-ins are never marked as node-doctor-tracked. Seeding lastRefreshed on reload was
+	// the bug that let the expiry try to strip built-in conditions (Ready/PIDPressure/...).
 	for _, condition := range node.Status.Conditions {
 		conditionType := string(condition.Type)
 		cm.conditions[conditionType] = condition
-
-		// Preserve cm.lastRefreshed across the reload: only seed a timestamp
-		// for types that don't already have one. A condition that already has
-		// an entry keeps its OLD lastRefreshed timestamp, so a stale True
-		// condition reloaded from the node can still expire on the next flush.
-		if _, tracked := cm.lastRefreshed[conditionType]; !tracked {
-			cm.lastRefreshed[conditionType] = cm.now()
-		}
 	}
 
 	cm.lastResync = time.Now()

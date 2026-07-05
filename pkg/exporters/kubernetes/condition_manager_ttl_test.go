@@ -241,3 +241,105 @@ func TestPerformResync_PreservesLastRefreshed(t *testing.T) {
 		t.Errorf("expected CustomResyncCheck to expire after resync + flush (lastRefreshed should have been preserved, not reset)")
 	}
 }
+
+// TestExpireStaleConditions_BuiltinNeverExpiresEvenIfTracked is the regression test for
+// the v1.8.5 safety bug: a Kubernetes built-in condition (e.g. Ready) that somehow has a
+// STALE lastRefreshed entry must STILL never be expired, because eligibility is gated on the
+// NodeDoctor name prefix (ownership), not on lastRefreshed. Removing Ready/PIDPressure from a
+// live node can trigger evictions.
+func TestExpireStaleConditions_BuiltinNeverExpiresEvenIfTracked(t *testing.T) {
+	cm, clock := newTTLTestConditionManager(t)
+	ctx := context.Background()
+
+	cm.mu.Lock()
+	for _, builtin := range []string{"Ready", "PIDPressure", "NetworkUnavailable", "EtcdIsVoter"} {
+		cm.conditions[builtin] = corev1.NodeCondition{Type: corev1.NodeConditionType(builtin), Status: corev1.ConditionTrue}
+		// Simulate the bug: a stale lastRefreshed entry for a built-in.
+		cm.lastRefreshed[builtin] = clock.current.Add(-100 * cm.staleTTL)
+	}
+	cm.mu.Unlock()
+
+	clock.Advance(cm.staleTTL * 100)
+	if err := cm.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush() error = %v", err)
+	}
+
+	conds := cm.GetConditions()
+	for _, builtin := range []string{"Ready", "PIDPressure", "NetworkUnavailable", "EtcdIsVoter"} {
+		if _, exists := conds[builtin]; !exists {
+			t.Errorf("built-in condition %s was expired — MUST NEVER happen (ownership guard failed)", builtin)
+		}
+	}
+}
+
+// TestExpireStaleConditions_OwnedUntrackedExpiresAfterStartupGrace verifies a node-doctor
+// condition loaded off the node (in cm.conditions, no lastRefreshed entry — e.g. a stale True
+// left by an old build) expires once cm.startTime + staleTTL has passed with no monitor re-asserting it.
+func TestExpireStaleConditions_OwnedUntrackedExpiresAfterStartupGrace(t *testing.T) {
+	cm, clock := newTTLTestConditionManager(t)
+	ctx := context.Background()
+
+	cm.mu.Lock()
+	cm.startTime = clock.current // anchor grace to the fake clock
+	cm.conditions["NodeDoctorKubeletDown"] = corev1.NodeCondition{Type: "NodeDoctorKubeletDown", Status: corev1.ConditionTrue}
+	if _, tracked := cm.lastRefreshed["NodeDoctorKubeletDown"]; tracked {
+		t.Fatal("setup invariant: NodeDoctorKubeletDown must be untracked")
+	}
+	cm.mu.Unlock()
+
+	// Within grace → retained.
+	clock.Advance(cm.staleTTL / 2)
+	if err := cm.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush() error = %v", err)
+	}
+	if _, exists := cm.GetConditions()["NodeDoctorKubeletDown"]; !exists {
+		t.Fatalf("owned-untracked condition expired within startup grace window")
+	}
+
+	// Past grace → expired.
+	clock.Advance(cm.staleTTL)
+	if err := cm.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush() error = %v", err)
+	}
+	if _, exists := cm.GetConditions()["NodeDoctorKubeletDown"]; exists {
+		t.Errorf("expected stale owned-untracked NodeDoctorKubeletDown to expire after startup grace + TTL")
+	}
+}
+
+// TestRemoveNodeConditions_RefusesNonNodeDoctor verifies the defense-in-depth guard: even if
+// asked to remove a Kubernetes built-in, RemoveNodeConditions removes only NodeDoctor* types.
+func TestRemoveNodeConditions_RefusesNonNodeDoctor(t *testing.T) {
+	fakeClientset := fake.NewSimpleClientset()
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "n1", UID: "u1"},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
+			{Type: "Ready", Status: corev1.ConditionTrue},
+			{Type: "PIDPressure", Status: corev1.ConditionFalse},
+			{Type: "NodeDoctorKubeletDown", Status: corev1.ConditionTrue},
+		}},
+	}
+	if _, err := fakeClientset.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	c := &K8sClient{clientset: fakeClientset, nodeName: "n1", nodeUID: "u1"}
+
+	// Ask to remove a built-in AND a node-doctor condition.
+	if err := c.RemoveNodeConditions(context.Background(), []string{"Ready", "PIDPressure", "NodeDoctorKubeletDown"}); err != nil {
+		t.Fatalf("RemoveNodeConditions error = %v", err)
+	}
+
+	got, err := fakeClientset.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node: %v", err)
+	}
+	present := map[string]bool{}
+	for _, cnd := range got.Status.Conditions {
+		present[string(cnd.Type)] = true
+	}
+	if !present["Ready"] || !present["PIDPressure"] {
+		t.Errorf("built-in conditions must NOT be removed; got conditions present=%v", present)
+	}
+	if present["NodeDoctorKubeletDown"] {
+		t.Errorf("NodeDoctorKubeletDown should have been removed")
+	}
+}
