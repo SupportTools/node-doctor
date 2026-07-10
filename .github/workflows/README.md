@@ -38,8 +38,7 @@ Comprehensive CI pipeline that runs on:
    - Builds for `linux/amd64` and `linux/arm64`
    - Pushes to Harbor registry
    - Tags with version and `latest`
-   - Runs Trivy security scan on image
-   - Uploads Trivy results to GitHub Security
+   - Triggers the informational Grype vulnerability scan on the pushed image (SARIF-only, does not gate the pipeline)
 
 6. **CI Success** - Overall status check
    - Aggregates results from all jobs
@@ -49,7 +48,7 @@ Comprehensive CI pipeline that runs on:
 
 - **Dependency Caching**: Go modules and build cache are cached automatically
 - **Code Coverage**: Generated and uploaded to Codecov
-- **Security Scanning**: gosec (code) and Trivy (container images)
+- **Security Scanning**: gosec (code) and Grype (container images, informational)
 - **Multi-platform Builds**: Docker images for amd64 and arm64
 - **Build Metadata**: Version, commit SHA, and build time injected into binaries
 
@@ -102,8 +101,8 @@ git push origin v1.0.0
 This triggers:
 - Full CI pipeline
 - Docker multi-platform build
-- Push to Harbor registry
-- Trivy security scan
+- Push to Docker Hub registry
+- Informational Grype security scan (non-blocking)
 
 ## Local Testing
 

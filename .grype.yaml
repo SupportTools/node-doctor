@@ -1,0 +1,15 @@
+# .grype.yaml — Grype config + vulnerability suppressions for node-doctor.
+#
+# Read by the org-wide reusable Grype scan workflow
+# (SupportTools/ci-runners/.github/workflows/grype-scan.yml), wired here as an
+# INFORMATIONAL scan (blocking: false) that replaces the former Trivy scan.
+#
+# FORMAT — each suppression MUST document why it is acceptable + an expected fix:
+#   ignore:
+#     - vulnerability: CVE-2024-99999   # false positive in musl; fixed alpine 3.21; resolve 2025-04-01
+#
+# REVIEW POLICY: review monthly; suppressions are temporary; remove once the base
+# image carries the upstream fix. Permanent suppressions need explicit approval.
+#
+# Currently no vulnerabilities are suppressed.
+ignore: []
