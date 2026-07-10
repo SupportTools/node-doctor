@@ -220,6 +220,8 @@ jobs:
     permissions:
       security-events: write
       contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.TAG }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -265,17 +267,25 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Trivy security scan on image
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/node-doctor:${{ steps.tag.outputs.TAG }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
+  # Grype vulnerability scan - INFORMATIONAL (SARIF/report only, no build gate).
+  # Replaces the former Trivy scan. NOTE: node-doctor publishes images to Docker Hub
+  # (docker.io/supporttools), not Harbor, so unlike other repos wired to this reusable
+  # workflow the `image` input below is a Docker Hub ref rather than a
+  # harbor.support.tools ref. The reusable workflow's Harbor login step only affects
+  # pulls from harbor.support.tools and does not block grype from pulling this
+  # public Docker Hub image directly.
+  grype-scan:
+    name: Grype Scan (informational)
+    needs: [docker]
+    uses: SupportTools/ci-runners/.github/workflows/grype-scan.yml@main
+    with:
+      image: docker.io/supporttools/node-doctor:${{ needs.docker.outputs.tag }}
+      fail-on: high
+      blocking: false
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
 
   # Summary job - provides overall status
   ci-success:
