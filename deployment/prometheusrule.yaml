@@ -191,9 +191,14 @@ spec:
     # Informational alerts - for awareness
     - name: node-doctor-info
       rules:
+        # Do NOT use changes() here. node_doctor_monitor_uptime_seconds is a counter that
+        # increases at every scrape, so changes(...[5m]) evaluates to the scrape count and
+        # is permanently > 0 on every node — it fired fleet-wide forever and never once
+        # signalled a real restart. A low absolute uptime is the actual restart signal.
         - alert: NodeDoctorAgentRestarted
           expr: |
-            changes(node_doctor_monitor_uptime_seconds[5m]) > 0
+            node_doctor_monitor_uptime_seconds < 600
+          for: 0m
           labels:
             severity: info
             component: agent

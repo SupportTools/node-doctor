@@ -25,6 +25,7 @@
 	test-net-icmp-integration \
 	lint fmt clean install-deps \
 	docker-build docker-push \
+	helm-lint helm-package helm-publish helm-generate helm-verify-generated \
 	coverage-check
 
 # ================================================================================================
@@ -393,7 +394,43 @@ push-all-images: push-node-doctor-image push-overlay-test-server-image
 # Helm Chart Targets
 # ================================================================================================
 
-helm-lint:
+# Chart.yaml and values.yaml are GENERATED from *.template — the release workflow
+# (.github/workflows/release.yml) deletes both and re-renders them with envsubst before
+# packaging, so the published chart NEVER contains hand-edits made directly to them.
+# Edit the .template files, then run `make helm-generate`. CI enforces this via
+# `make helm-verify-generated`.
+#
+# These placeholders stand in for the tag-derived values CI injects; they exist only so
+# the committed copies are byte-reproducible and diffable.
+HELM_PLACEHOLDER_CHART_VERSION := 1.0.0
+HELM_PLACEHOLDER_APP_VERSION   := v1.0.0
+HELM_PLACEHOLDER_IMAGE_TAG     := v1.0.0
+
+# Renders the templates the same way release.yml does (bare envsubst).
+define helm_render
+	CHART_VERSION="$(HELM_PLACEHOLDER_CHART_VERSION)" \
+	APP_VERSION="$(HELM_PLACEHOLDER_APP_VERSION)" \
+	IMAGE_TAG="$(HELM_PLACEHOLDER_IMAGE_TAG)" \
+	envsubst < helm/$(PROJECT_NAME)/$(1).template > $(2)
+endef
+
+helm-generate:
+	@$(call print_status,"Regenerating Chart.yaml and values.yaml from templates...")
+	@$(call helm_render,Chart.yaml,helm/$(PROJECT_NAME)/Chart.yaml)
+	@$(call helm_render,values.yaml,helm/$(PROJECT_NAME)/values.yaml)
+	@$(call print_success,"Chart files regenerated - commit them")
+
+helm-verify-generated:
+	@$(call print_status,"Checking Chart.yaml/values.yaml match their templates...")
+	@$(call helm_render,Chart.yaml,/tmp/node-doctor-Chart.rendered.yaml)
+	@$(call helm_render,values.yaml,/tmp/node-doctor-values.rendered.yaml)
+	@diff -u helm/$(PROJECT_NAME)/Chart.yaml /tmp/node-doctor-Chart.rendered.yaml || \
+		{ $(call print_error,"Chart.yaml drifted from Chart.yaml.template - run 'make helm-generate'"); exit 1; }
+	@diff -u helm/$(PROJECT_NAME)/values.yaml /tmp/node-doctor-values.rendered.yaml || \
+		{ $(call print_error,"values.yaml drifted from values.yaml.template - run 'make helm-generate'"); exit 1; }
+	@$(call print_success,"Chart files match their templates")
+
+helm-lint: helm-verify-generated
 	@$(call print_status,"Linting Helm chart...")
 	@helm lint ./helm/$(PROJECT_NAME)
 	@$(call print_success,"Helm lint passed")

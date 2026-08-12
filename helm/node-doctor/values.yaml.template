@@ -487,13 +487,17 @@ overlayTest:
   # HTTP health probe port
   port: 8023
 
-  # Resource limits for overlay test pods
+  # Resource limits for overlay test pods.
+  # Do NOT lower the CPU limit back toward 10m. At 10m the pod sat 88-93% CFS-throttled
+  # and inflated its own HTTP probe latency from ~3ms to 300-500ms, which node-doctor
+  # then reported as peer/CNI latency and turned into false NetworkDegraded and
+  # HighPeerLatency alerts. 100m leaves enough headroom that throttling stops.
   resources:
     requests:
-      cpu: 1m
+      cpu: 5m
       memory: 8Mi
     limits:
-      cpu: 10m
+      cpu: 100m
       memory: 16Mi
 
   # Update strategy

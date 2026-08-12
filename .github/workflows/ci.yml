@@ -36,6 +36,29 @@ jobs:
       - name: Run golangci-lint
         run: golangci-lint run --timeout=5m
 
+  # Helm chart job - guards the generated-vs-template trap and lints the chart.
+  #
+  # release.yml deletes helm/node-doctor/{Chart,values}.yaml and re-renders them from
+  # the *.template files before packaging, so hand-edits to the committed copies never
+  # reach the published chart. That silently swallowed an overlay-test CPU-limit fix for
+  # six months (it was committed to values.yaml, not values.yaml.template). This job
+  # fails the build whenever the two diverge.
+  helm-chart:
+    name: Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Verify Chart.yaml/values.yaml match their templates
+        run: make helm-verify-generated
+
+      - name: Lint chart
+        run: helm lint ./helm/node-doctor
+
   # Test job - runs unit and integration tests
   test:
     name: Test
@@ -307,7 +330,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, test, build, security-gosec]
+    needs: [lint, test, build, security-gosec, helm-chart]
     if: always()
     steps:
       - name: Check job results
@@ -315,7 +338,8 @@ jobs:
           if [[ "${{ needs.lint.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.build.result }}" != "success" ]] || \
-             [[ "${{ needs.security-gosec.result }}" != "success" ]]; then
+             [[ "${{ needs.security-gosec.result }}" != "success" ]] || \
+             [[ "${{ needs.helm-chart.result }}" != "success" ]]; then
             echo "One or more CI jobs failed"
             exit 1
           fi
