@@ -45,10 +45,15 @@ var pingerInstanceCounter uint32
 // the value is deterministic and unique per instance (no randomness required).
 func nextPingerID() uint16 {
 	n := atomic.AddUint32(&pingerInstanceCounter, 1)
-	id := uint16(os.Getpid()) + uint16(n)
+	// Mask both inputs to 16 bits before converting so the narrowing is
+	// provably in range rather than an implicit truncation. ICMP echo IDs are
+	// 16 bits wide, so discarding the high bits is the intended behavior.
+	pid := uint16(os.Getpid() & 0xFFFF)
+	seq := uint16(n & 0xFFFF)
+	id := pid + seq
 	if id == 0 {
 		// Avoid an all-zero ID, which is a poor discriminator on the wire.
-		id = uint16(n) | 0x8000
+		id = seq | 0x8000
 	}
 	return id
 }

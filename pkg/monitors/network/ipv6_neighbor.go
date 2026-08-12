@@ -573,6 +573,10 @@ func (m *IPv6NeighborMonitor) severity() types.EventSeverity {
 // Scope 0x20 = link-local, 0x00 = global. Parse errors on individual lines are
 // skipped; a read/open failure is returned to the caller.
 func parseIfInet6File(path string) ([]ipv6Address, error) {
+	// #nosec G304 -- path is always filepath.Join(config.ProcPath, "net/if_inet6")
+	// with a fixed relative suffix. Reading the operator-configured procfs root
+	// (default /proc, overridden only in tests) is this monitor's entire purpose;
+	// the path is not attacker-controlled.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", path, err)
@@ -625,6 +629,10 @@ func parseHexScope(s string) (uint64, error) {
 // readSysctlInt reads a sysctl-style file and returns its integer value (after
 // trimming whitespace). Used for accept_ra / autoconf, which take values 0/1/2.
 func readSysctlInt(path string) (int, error) {
+	// #nosec G304 -- path comes from a filepath.Glob over the operator-configured
+	// procfs root (default /proc), or from filepath.Join against such a match.
+	// Reading these sysctl files is this monitor's entire purpose; the path is
+	// not attacker-controlled.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read %s: %w", path, err)
