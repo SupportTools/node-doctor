@@ -64,8 +64,31 @@ The following table lists the configurable parameters of the Node Doctor chart a
 |-----------|-------------|---------|
 | `resources.requests.cpu` | CPU request | `50m` |
 | `resources.requests.memory` | Memory request | `128Mi` |
-| `resources.limits.cpu` | CPU limit | `200m` |
+| `resources.limits.cpu` | CPU limit | `500m` |
 | `resources.limits.memory` | Memory limit | `256Mi` |
+
+> **Do not lower `resources.limits.cpu` back toward `200m`.** At a 200m limit the agent
+> ran 30-71% CFS-throttled across a 13-node fleet (median 44.2%). The agent is the
+> process that performs the network/DNS probing, so its own scheduling delay is added to
+> every RTT it measures, which inflates reported latency and can produce false
+> `NetworkDegraded` / `HighPeerLatency` findings. Requests stay low (`50m`) because
+> sustained usage is well under the limit - what the agent needs is burst headroom, not
+> reserved capacity on every node.
+
+### Update Strategy
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `updateStrategy.type` | DaemonSet update strategy | `RollingUpdate` |
+| `updateStrategy.rollingUpdate.maxUnavailable` | Pods that may be unavailable during a roll | `25%` |
+
+`maxUnavailable` is deliberately a percentage rather than `1`. With `maxUnavailable: 1`
+a single already-crashlooping pod consumes the whole unavailable budget and the rollout
+never progresses (see [DaemonSet rollout is stuck](#daemonset-rollout-is-stuck-at-0n)).
+
+Do **not** set `maxSurge`. The agent runs with `hostNetwork: true` and a hostPort, so a
+surge pod would conflict with the pod it is replacing on the same node and never become
+ready.
 
 ### Monitor Configuration
 
@@ -171,6 +194,58 @@ kubectl logs -n node-doctor -l app.kubernetes.io/name=node-doctor --tail=100
 ```bash
 kubectl get nodes -o custom-columns='NAME:.metadata.name,HEALTHY:.status.conditions[?(@.type=="NodeDoctorHealthy")].status'
 ```
+
+### DaemonSet rollout is stuck at 0/N
+
+A DaemonSet rollout only replaces pods while fewer than
+`updateStrategy.rollingUpdate.maxUnavailable` pods are unavailable. Pods that were
+**already** unhealthy before the roll started (CrashLoopBackOff, ImagePullBackOff,
+Pending on a cordoned/full node) count against that budget. If enough of them are stuck,
+the controller has no budget left and `kubectl rollout restart` sits at `0/N updated`
+indefinitely - nothing is wrong with the new revision, the roll simply never starts.
+
+The chart ships `maxUnavailable: 25%` so a single stuck pod can no longer wedge the
+whole roll, but a large enough group of unhealthy pods can still exhaust the budget.
+
+Confirm that is what is happening:
+
+```bash
+# Rollout makes no progress
+kubectl rollout status daemonset/node-doctor -n node-doctor --timeout=60s
+
+# Budget in effect and how many pods are actually unavailable
+kubectl get daemonset node-doctor -n node-doctor \
+  -o jsonpath='{.spec.updateStrategy.rollingUpdate.maxUnavailable}{"\n"}'
+kubectl get daemonset node-doctor -n node-doctor \
+  -o custom-columns='DESIRED:.status.desiredNumberScheduled,READY:.status.numberReady,UPDATED:.status.updatedNumberScheduled,UNAVAILABLE:.status.numberUnavailable'
+
+# Which pods are holding the budget
+kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor \
+  --field-selector=status.phase!=Running -o wide
+kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor \
+  -o wide | grep -v ' Running '
+```
+
+**Recovery.** Fix or remove the blocking pods so the budget frees up. The stuck pod is
+the one to delete first - deleting it lets the DaemonSet recreate it at the new revision:
+
+```bash
+# 1. Delete the pods that are already unhealthy (they are recreated at the new revision)
+kubectl delete pod -n node-doctor <stuck-pod-name>
+
+# 2. If the roll still does not move, delete healthy pods a few at a time to force
+#    replacement. Verify each batch comes back Ready before deleting the next.
+kubectl delete pod -n node-doctor <healthy-pod-name>
+kubectl rollout status daemonset/node-doctor -n node-doctor --timeout=120s
+```
+
+Deleting node-doctor pods is safe: it is a stateless per-node agent, and while a pod is
+gone that node simply reports no fresh findings. Do not delete every pod at once -
+staggering keeps node condition reporting continuous across the cluster.
+
+If the blocking pod is stuck because its node is unreachable or NotReady, drain or
+delete the node object instead; the pod will not terminate on its own while the kubelet
+is unreachable.
 
 ### View Prometheus Metrics
 

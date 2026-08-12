@@ -55,7 +55,7 @@ resources:
     cpu: 50m
     memory: 128Mi
   limits:
-    cpu: 200m
+    cpu: 500m
     memory: 256Mi
 
 serviceMonitor:
@@ -399,7 +399,7 @@ kubectl get all -n kube-system -l app=node-doctor
 4. **Monitoring Integration**: Configure Prometheus ServiceMonitor or PodMonitor
 5. **Alerting**: Set up alerts for NodeDoctorHealthy condition changes
 6. **Backup**: Include ConfigMap in cluster backup procedures
-7. **Updates**: Use rolling updates with maxUnavailable: 1 for safety
+7. **Updates**: Use rolling updates with maxUnavailable: 25% - a percentage, not 1, so a single crashlooping pod cannot consume the whole budget and stall the rollout at 0/N
 
 ## Support
 

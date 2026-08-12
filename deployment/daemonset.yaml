@@ -13,11 +13,17 @@ metadata:
     description: "Node Doctor - Kubernetes node monitoring and auto-remediation DaemonSet"
     docs: "https://github.com/supporttools/node-doctor"
 spec:
-  # Rolling update strategy - update one node at a time for safety
+  # Rolling update strategy.
+  # maxUnavailable is a PERCENTAGE, not 1, on purpose. With maxUnavailable: 1 a single
+  # already-crashlooping pod consumes the entire unavailable budget and no other pod can
+  # be rolled - `kubectl rollout restart` then stalls at 0/N forever and the only recovery
+  # is manually deleting healthy pods. 25% leaves room to roll past a stuck node.
+  # Do NOT add maxSurge: this DaemonSet is hostNetwork with a hostPort, so a surge pod
+  # would collide with the pod it replaces on the same node and never become ready.
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1  # Only update one pod at a time to maintain cluster stability
+      maxUnavailable: "25%"
 
   selector:
     matchLabels:
@@ -191,8 +197,12 @@ spec:
             # Memory: 128Mi - sufficient for monitoring data structures
             memory: 128Mi
           limits:
-            # CPU: 200m (0.2 cores) - prevent runaway CPU usage
-            cpu: 200m
+            # CPU: 500m (0.5 cores) - burst headroom for probe cycles.
+            # Do NOT lower back toward 200m. At 200m the agent sat 30-71% CFS-throttled
+            # across a 13-node fleet (median 44.2%). The agent is the process that
+            # performs the probing, so its own scheduling delay is added to every RTT it
+            # measures and reports as network latency.
+            cpu: 500m
             # Memory: 256Mi - prevent memory leaks from affecting node
             memory: 256Mi
 
