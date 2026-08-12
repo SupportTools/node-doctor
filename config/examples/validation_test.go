@@ -241,8 +241,10 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("Default config should have at least one network monitor")
 	}
 
-	// Verify hot reload is enabled in default config
-	if !config.Reload.Enabled {
+	// Verify hot reload is enabled in default config. Reload.Enabled is a *bool
+	// so that "absent" (nil, meaning enabled) is distinguishable from an explicit
+	// false; IsEnabled() encodes that default.
+	if !config.Reload.IsEnabled() {
 		t.Error("Hot reload should be enabled in default config")
 	}
 }

@@ -122,6 +122,19 @@ type ProblemDetector struct {
 	lastStatusMu sync.RWMutex
 	lastStatus   map[string]*types.Status // monitor name -> most recent effective status (protected by lastStatusMu)
 	dependents   map[string][]string      // dependency name -> monitors that depend on it (written in Start and applyConfigReload; reserved for future push model)
+
+	// loggingReinit re-installs the structured logging handler from a new config
+	// during hot reload. Injected by main.go (logger.Init) so the detector does
+	// not depend on the logger package's startup wiring. Nil disables log
+	// level/format hot reload.
+	loggingReinit func(*types.NodeDoctorConfig) error
+
+	// dependencyReporter, when set, is notified of every export attempt's
+	// outcome (nil error = healthy). It backs the READINESS signal: a node-doctor
+	// that cannot reach its exporters cannot do its job and must report NotReady,
+	// while remaining LIVE (see cmd/node-doctor and pkg/health). Nil disables
+	// reporting.
+	dependencyReporter func(name string, err error)
 }
 
 // MonitorFactory interface for creating monitor instances during hot reload
@@ -140,6 +153,21 @@ type RemediationExecutor interface {
 	RemediateWithStrategies(ctx context.Context, strategyTypes []string, problem types.Problem) error
 	// IsDryRun reports whether the executor is running in dry-run mode.
 	IsDryRun() bool
+}
+
+// ReconfigurableRemediationExecutor is the optional interface a
+// RemediationExecutor implements when it can adopt a new remediation
+// configuration in place, without a process restart.
+//
+// The detector type-asserts for it during config hot reload. Executors that do
+// NOT implement it are left untouched and the reload is reported honestly as
+// requiring a restart, rather than being silently ignored — which is exactly
+// what used to happen: diff.RemediationChanged was computed and then dropped on
+// the floor, so a mid-incident ConfigMap edit flipping dryRun never took effect.
+type ReconfigurableRemediationExecutor interface {
+	// ApplyConfig adopts cfg. dryRunMode is the effective process-wide dry-run
+	// flag, which the executor should OR with cfg.DryRun.
+	ApplyConfig(cfg *types.RemediationConfig, dryRunMode bool) error
 }
 
 // NewProblemDetector creates a new problem detector with the given configuration.
@@ -240,6 +268,40 @@ func (pd *ProblemDetector) SetReloadMetricsRecorder(recorder reload.ReloadMetric
 	}
 }
 
+// SetConfigNormalizer installs the post-load config normalization hook on the
+// reload coordinator. main.go passes a closure that applies registry default
+// monitors, the command-line overrides and ApplyDefaults — i.e. exactly what it
+// did to the startup config — so that reload diffs compare like with like.
+//
+// Without it the first hot reload silently STOPS every monitor that
+// ApplyDefaultMonitors had auto-added at startup, because they are absent from
+// the file and therefore look "removed". Nil-safe.
+func (pd *ProblemDetector) SetConfigNormalizer(n reload.ConfigNormalizer) {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+	if pd.reloadCoordinator != nil {
+		pd.reloadCoordinator.SetConfigNormalizer(n)
+	}
+}
+
+// SetLoggingReinit installs the hook used to re-apply log level/format on config
+// hot reload. Nil-safe; a nil hook leaves logging untouched across reloads.
+func (pd *ProblemDetector) SetLoggingReinit(fn func(*types.NodeDoctorConfig) error) {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+	pd.loggingReinit = fn
+}
+
+// SetDependencyReporter installs the hook notified of each export attempt's
+// outcome. It exists so downstream (exporter) failures can drive READINESS
+// without ever affecting LIVENESS: a wedged API server should make the pod
+// NotReady, never restart it. Nil-safe.
+func (pd *ProblemDetector) SetDependencyReporter(fn func(name string, err error)) {
+	pd.mu.Lock()
+	defer pd.mu.Unlock()
+	pd.dependencyReporter = fn
+}
+
 // IsRunning returns true if the detector is currently running
 func (pd *ProblemDetector) IsRunning() bool {
 	pd.mu.RLock()
@@ -268,19 +330,33 @@ func (pd *ProblemDetector) Start() error {
 
 	log.Printf("[INFO] Starting problem detector...")
 
-	// Start config watcher
-	configChangeCh, err := pd.configWatcher.Start(pd.ctx)
-	if err != nil {
-		return fmt.Errorf("failed to start config watcher: %w", err)
-	}
-	pd.configChangeCh = configChangeCh
+	// Start config watcher, unless hot reload was explicitly disabled.
+	//
+	// reload.enabled used to be parsed and then never read: the watcher started
+	// unconditionally, so an operator who set it to false got no change in
+	// behaviour and no warning. Now the knob is real in BOTH directions — when
+	// it is off we say loudly that ConfigMap edits will not be picked up, so
+	// nobody is left waiting for a hot change that is never coming.
+	if pd.config.Reload.IsEnabled() {
+		configChangeCh, err := pd.configWatcher.Start(pd.ctx)
+		if err != nil {
+			return fmt.Errorf("failed to start config watcher: %w", err)
+		}
+		pd.configChangeCh = configChangeCh
 
-	// Start watching for config changes
-	pd.wg.Add(1)
-	go func() {
-		defer pd.wg.Done()
-		pd.watchConfigChanges()
-	}()
+		// Start watching for config changes
+		pd.wg.Add(1)
+		go func() {
+			defer pd.wg.Done()
+			pd.watchConfigChanges()
+		}()
+		log.Printf("[INFO] Config hot-reload ENABLED (watching %s, debounce=%v)",
+			pd.configFilePath, pd.config.Reload.DebounceInterval)
+	} else {
+		log.Printf("[WARN] Config hot-reload is DISABLED (reload.enabled=false): edits to %s will NOT be "+
+			"picked up by this process — a pod restart/rollout is required for any configuration change",
+			pd.configFilePath)
+	}
 
 	// Build a set of already-registered monitor names to prevent duplicate starts.
 	// passedMonitors are started first (highest priority), then config-derived monitors
@@ -476,12 +552,24 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	// Export to all exporters (single path - Status contains all data)
 	// Note: Previously this also called ExportProblem() for converted problems,
 	// causing duplicate Kubernetes resources. See GitHub issue #7.
+	pd.mu.RLock()
+	depReporter := pd.dependencyReporter
+	pd.mu.RUnlock()
+
 	for _, exporter := range pd.exporters {
-		if err := exporter.ExportStatus(pd.ctx, status); err != nil {
+		err := exporter.ExportStatus(pd.ctx, status)
+		if err != nil {
 			slog.Warn("failed to export status", "monitor", status.Source, "error", err)
 			pd.stats.IncrementExportsFailed()
 		} else {
 			pd.stats.IncrementExportsSucceeded()
+		}
+		// Report the outcome so a persistently failing exporter can drive
+		// READINESS (NotReady) without ever touching LIVENESS. The health
+		// server is itself an exporter; reporting its own status is harmless
+		// (it always succeeds) and keeps this loop uniform.
+		if depReporter != nil {
+			depReporter("exporter/"+pd.getExporterType(exporter), err)
 		}
 	}
 
@@ -761,6 +849,13 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 	var errors []error
 	var criticalErrors []error
 
+	// Names of the monitors this reload actually re-initialized, so the summary
+	// log line can name them. An operator who patches the ConfigMap needs to be
+	// able to confirm from the logs that THEIR monitor was rebuilt — "reload
+	// succeeded" alone does not distinguish "applied" from "silently skipped".
+	var stoppedMonitors, reconfiguredMonitors, startedMonitors []string
+	var remediationReconfigured bool
+
 	// Step 1: Stop monitors that were removed and cleanup their conditions
 	log.Printf("[INFO] Stopping %d removed monitors", len(diff.MonitorsRemoved))
 	for _, removedConfig := range diff.MonitorsRemoved {
@@ -769,6 +864,7 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 			errors = append(errors, fmt.Errorf("failed to stop monitor %s: %w", removedConfig.Name, err))
 			// Stopping monitors is not critical - continue
 		}
+		stoppedMonitors = append(stoppedMonitors, removedConfig.Name)
 		// Clean up conditions associated with this monitor type
 		pd.cleanupMonitorConditions(removedConfig.Type)
 
@@ -814,6 +910,8 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 			continue
 		}
 
+		reconfiguredMonitors = append(reconfiguredMonitors, newConfig.Name)
+
 		// Update the reverse-dependency index: remove stale entries from the old
 		// DependsOn list, then add entries for the new DependsOn list.
 		for _, dep := range modifiedChange.Old.DependsOn {
@@ -854,6 +952,8 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 				continue
 			}
 
+			startedMonitors = append(startedMonitors, addedConfig.Name)
+
 			// Update the reverse-dependency index for the newly started monitor.
 			for _, dep := range addedConfig.DependsOn {
 				pd.dependents[dep] = append(pd.dependents[dep], addedConfig.Name)
@@ -872,6 +972,45 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 				log.Printf("[ERROR] Failed to reload %s exporter: %v", exporterType, err)
 				// Exporter reload failures are CRITICAL
 				criticalErrors = append(criticalErrors, fmt.Errorf("critical: failed to reload %s exporter: %w", exporterType, err))
+			}
+		}
+	}
+
+	// Step 4b: Re-initialize the remediator registry with the new remediation
+	// settings. Before this existed the diff flag was computed and ignored, so a
+	// ConfigMap edit to dryRun / maxRemediationsPerHour / the circuit breaker
+	// reported success while the running registry kept the startup values until
+	// someone restarted the pod. That is the silent-staleness bug #node-doctor-243
+	// was filed for; remediation is the worst place to have it, because dryRun is
+	// the kill-switch operators reach for during an incident.
+	if diff.RemediationChanged {
+		pd.mu.RLock()
+		executor := pd.remediatorRegistry
+		pd.mu.RUnlock()
+
+		switch {
+		case executor == nil:
+			// Remediation was disabled at startup, so no registry exists to
+			// reconfigure. Say so rather than implying the change landed.
+			log.Printf("[WARN] Remediation configuration changed but remediation was not wired at startup; " +
+				"a pod restart is required for remediation settings to take effect")
+		default:
+			reconfigurable, ok := executor.(ReconfigurableRemediationExecutor)
+			if !ok {
+				log.Printf("[WARN] Remediation configuration changed but the active remediation executor (%T) "+
+					"does not support in-place reconfiguration; a pod restart is required", executor)
+				break
+			}
+			dryRunMode := newConfig.Settings.DryRunMode
+			if err := reconfigurable.ApplyConfig(&newConfig.Remediation, dryRunMode); err != nil {
+				log.Printf("[ERROR] Failed to apply remediation configuration: %v", err)
+				criticalErrors = append(criticalErrors,
+					fmt.Errorf("critical: failed to apply remediation configuration: %w", err))
+			} else {
+				remediationReconfigured = true
+				log.Printf("[INFO] Remediation configuration reloaded in place (dryRun=%v maxPerHour=%d maxPerMinute=%d)",
+					executor.IsDryRun(), newConfig.Remediation.MaxRemediationsPerHour,
+					newConfig.Remediation.MaxRemediationsPerMinute)
 			}
 		}
 	}
@@ -895,8 +1034,23 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 
 	// Only update config if reload was fully successful
 	pd.mu.Lock()
+	oldConfig := pd.config
 	pd.config = newConfig
 	pd.mu.Unlock()
+
+	// Re-apply structured logging settings. Level and format CAN be adopted by a
+	// running process (the slog handler is simply replaced); the destination
+	// cannot, which reload.ClassifyReload reports as restart-required. Bumping
+	// the log level via ConfigMap is a routine incident action, so it must not
+	// silently no-op.
+	pd.reapplyLoggingConfig(oldConfig, newConfig)
+
+	// Name exactly what was re-initialized. This is the line an operator greps
+	// for after `kubectl patch cm node-doctor-config` to confirm the edit
+	// actually reached the running monitors.
+	log.Printf("[INFO] Config reload applied: monitors reconfigured=%v started=%v stopped=%v; remediation reconfigured=%v; exporters reconfigured=%v",
+		orEmpty(reconfiguredMonitors), orEmpty(startedMonitors), orEmpty(stoppedMonitors),
+		remediationReconfigured, diff.ExportersChanged)
 
 	// Report any non-critical warnings
 	if len(errors) > 0 {
@@ -907,6 +1061,46 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 	}
 
 	return nil
+}
+
+// orEmpty renders a nil slice as an empty list so the reload summary log line
+// reads "[]" rather than "[]" vs "<nil>" depending on whether anything changed.
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// reapplyLoggingConfig re-installs the structured logging handler when the log
+// LEVEL or FORMAT changed. The log DESTINATION (logOutput/logFile) is opened
+// once at startup and is deliberately not touched here — reload.ClassifyReload
+// reports a destination change as restart-required so the operator is told,
+// rather than being left to wonder why their new log file stayed empty.
+func (pd *ProblemDetector) reapplyLoggingConfig(oldConfig, newConfig *types.NodeDoctorConfig) {
+	if oldConfig == nil || newConfig == nil {
+		return
+	}
+	levelChanged := oldConfig.Settings.LogLevel != newConfig.Settings.LogLevel
+	formatChanged := oldConfig.Settings.LogFormat != newConfig.Settings.LogFormat
+	if !levelChanged && !formatChanged {
+		return
+	}
+	// Only safe to re-init when the destination is unchanged; otherwise a new
+	// file handle would be opened behind the operator's back.
+	if oldConfig.Settings.LogOutput != newConfig.Settings.LogOutput ||
+		oldConfig.Settings.LogFile != newConfig.Settings.LogFile {
+		return
+	}
+	if pd.loggingReinit == nil {
+		return
+	}
+	if err := pd.loggingReinit(newConfig); err != nil {
+		log.Printf("[WARN] Failed to re-apply logging configuration on reload: %v", err)
+		return
+	}
+	log.Printf("[INFO] Logging configuration reloaded (level=%s format=%s)",
+		newConfig.Settings.LogLevel, newConfig.Settings.LogFormat)
 }
 
 // getExporterType returns a string representation of the exporter type

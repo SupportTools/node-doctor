@@ -515,8 +515,17 @@ type FeatureFlags struct {
 
 // ReloadConfig contains configuration hot reload settings.
 type ReloadConfig struct {
-	// Enabled indicates whether hot reload is enabled
-	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Enabled indicates whether hot reload is enabled.
+	//
+	// It is a *bool so that "absent from the config file" is distinguishable
+	// from an explicit "false": absent defaults to TRUE (ApplyDefaults), which
+	// preserves the historical behaviour of always watching the config file.
+	// Setting it explicitly to false disables the watcher entirely, and the
+	// agent logs — loudly, once, at startup — that ConfigMap edits will NOT be
+	// picked up until the pod is rolled. Prior to this being honored the field
+	// was parsed and then ignored, so an operator who set it got no watcher
+	// change and no warning; that silence is the bug this field now avoids.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// DebounceIntervalString is the debounce interval as a string (e.g., "500ms")
 	DebounceIntervalString string `json:"debounceInterval,omitempty" yaml:"debounceInterval,omitempty"`
@@ -525,8 +534,23 @@ type ReloadConfig struct {
 	DebounceInterval time.Duration `json:"-" yaml:"-"`
 }
 
+// IsEnabled reports whether config hot reload is enabled. An unset (nil) value
+// means enabled — see the Enabled field docs for why the default is true.
+func (r *ReloadConfig) IsEnabled() bool {
+	if r == nil || r.Enabled == nil {
+		return true
+	}
+	return *r.Enabled
+}
+
 // ApplyDefaults applies default values to reload configuration.
 func (r *ReloadConfig) ApplyDefaults() error {
+	// Default hot reload to enabled when the operator did not say otherwise.
+	if r.Enabled == nil {
+		enabled := true
+		r.Enabled = &enabled
+	}
+
 	// Default debounce interval
 	if r.DebounceIntervalString == "" {
 		r.DebounceIntervalString = "500ms"

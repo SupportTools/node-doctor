@@ -394,6 +394,74 @@ func (r *RemediatorRegistry) SetMaxRemediationsPerMinute(n int) {
 	}
 }
 
+// SetMaxRemediationsPerHour updates the sliding-window per-hour remediation
+// cap. A value <= 0 disables the per-hour check entirely (unlimited), matching
+// the semantics of the constructor argument.
+//
+// Existing entries in the sliding window are retained, so lowering the cap
+// takes effect immediately against remediations that already happened.
+func (r *RemediatorRegistry) SetMaxRemediationsPerHour(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n < 0 {
+		n = 0
+	}
+	r.maxPerHour = n
+	r.logInfof("Per-hour remediation rate limit configured (max: %d/hour)", n)
+}
+
+// ApplyConfig adopts a new remediation configuration in place, without
+// restarting the process. It is the counterpart to the wiring main.go performs
+// at startup and is invoked by the detector on config hot reload.
+//
+// Rationale (TaskForge #node-doctor-243): before this existed, the reload path
+// computed diff.RemediationChanged and then did nothing with it. An operator who
+// edited the ConfigMap mid-incident to flip dryRun on, or to drop
+// maxRemediationsPerHour, got a "reload succeeded" event while the registry kept
+// remediating under the OLD limits — the change only took effect after a manual
+// pod restart. Silent staleness on the remediation kill-switch is the worst
+// possible place to have it.
+//
+// dryRunMode is the effective process-wide dry-run flag (settings.dryRunMode OR
+// remediation.dryRun OR the -dry-run command-line flag), mirroring how main.go
+// computes it at startup.
+//
+// NOT reconfigured here (these are latched at startup and are reported as
+// restart-required by reload.ClassifyReload):
+//   - remediation.enabled false->true: the registry, the built-in strategies and
+//     the cluster client are all constructed only when it was true at startup.
+//   - remediation.coordination.*: the controller lease client is wired once.
+//
+// A nil cfg is a no-op returning an error, since callers should not reach here
+// without a remediation config.
+func (r *RemediatorRegistry) ApplyConfig(cfg *types.RemediationConfig, dryRunMode bool) error {
+	if cfg == nil {
+		return fmt.Errorf("remediation config cannot be nil")
+	}
+
+	r.SetDryRun(cfg.DryRun || dryRunMode)
+	r.SetMaxRemediationsPerHour(cfg.MaxRemediationsPerHour)
+	r.SetMaxRemediationsPerMinute(cfg.MaxRemediationsPerMinute)
+
+	// Only push a circuit-breaker update when the new values are actually
+	// usable. A zero/absent circuitBreaker block must not clobber the running
+	// configuration with invalid values, so treat it as "leave as-is".
+	cb := CircuitBreakerConfig{
+		Threshold:        cfg.CircuitBreaker.Threshold,
+		Timeout:          cfg.CircuitBreaker.Timeout,
+		SuccessThreshold: cfg.CircuitBreaker.SuccessThreshold,
+	}
+	if cb.Threshold > 0 && cb.Timeout > 0 && cb.SuccessThreshold > 0 {
+		if err := r.SetCircuitBreakerConfig(cb); err != nil {
+			return fmt.Errorf("apply circuit breaker config: %w", err)
+		}
+	}
+
+	r.logInfof("Remediation config reloaded in place (dryRun=%v maxPerHour=%d maxPerMinute=%d)",
+		r.IsDryRun(), cfg.MaxRemediationsPerHour, cfg.MaxRemediationsPerMinute)
+	return nil
+}
+
 // SetCircuitStateObserver registers an observer that is notified of circuit
 // breaker state changes. The observer is called once immediately with the
 // current state (so a backing metric is correct from the start) and then on
