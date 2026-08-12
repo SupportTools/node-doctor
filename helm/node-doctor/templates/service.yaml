@@ -14,6 +14,13 @@ spec:
   {{- if .Values.service.clusterIP }}
   clusterIP: {{ .Values.service.clusterIP }}
   {{- end }}
+  # Keep NotReady pods in this Service's Endpoints so Prometheus keeps scraping
+  # them. This Service carries no request traffic — it exists purely for metrics
+  # discovery — and readiness here means "this agent is degraded", not "stop
+  # observing this node". Dropping NotReady pods from Endpoints would silently
+  # blind Prometheus to precisely the unhealthy nodes, and the fleet-wide
+  # absent() alert would not catch a partial blackout. See values.yaml.template.
+  publishNotReadyAddresses: {{ .Values.service.publishNotReadyAddresses }}
   selector:
     {{- include "node-doctor.selectorLabels" . | nindent 4 }}
   ports:

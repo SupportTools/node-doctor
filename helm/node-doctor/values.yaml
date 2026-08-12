@@ -105,6 +105,23 @@ service:
   clusterIP: None
   httpPort: 8080
   metricsPort: 9101
+  # KEEP THIS TRUE. This Service exists ONLY so Prometheus can discover and scrape
+  # the agents (see serviceMonitor below); nothing routes request traffic through
+  # it, so the usual reason to exclude NotReady pods does not apply here.
+  #
+  # Readiness on this DaemonSet exists to gate rollouts and to surface a degraded
+  # agent — NOT to remove the pod from monitoring. With publishNotReadyAddresses
+  # false, Kubernetes drops NotReady pods out of the Service's Endpoints, so
+  # Prometheus stops scraping them and every node_doctor_* series for that node
+  # disappears. Since a pod goes NotReady precisely when something is wrong with
+  # that node's agent, turning this off would blind us to exactly the nodes we
+  # most need data from, at exactly the moment we need it.
+  #
+  # It would also be a SILENT blackout: NodeDoctorNoMetrics is
+  # absent(node_doctor_monitor_uptime_seconds), which is fleet-wide and therefore
+  # only fires when EVERY node stops reporting. Losing one node, or five, produces
+  # no alert at all.
+  publishNotReadyAddresses: true
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "9101"

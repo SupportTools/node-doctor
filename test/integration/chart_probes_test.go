@@ -169,6 +169,45 @@ func TestStartupProbeBudgetHasHeadroom(t *testing.T) {
 	}
 }
 
+// TestServicePublishesNotReadyAddresses guards the observability contract that
+// makes the readiness split safe to ship.
+//
+// The agent Service exists ONLY for Prometheus discovery (the ServiceMonitor
+// selects it); no request traffic flows through it. Readiness on this DaemonSet
+// now has teeth — a sustained exporter failure marks the pod NotReady — and
+// Kubernetes drops NotReady pods from a Service's Endpoints unless
+// publishNotReadyAddresses is true. Without it, a degraded node stops being
+// scraped and every node_doctor_* series for that node disappears: we go blind
+// on exactly the nodes we most need data from.
+//
+// It would also be SILENT. NodeDoctorNoMetrics is
+// absent(node_doctor_monitor_uptime_seconds) — fleet-wide, so it only fires when
+// EVERY node stops reporting. A one-node or five-node blackout raises nothing.
+func TestServicePublishesNotReadyAddresses(t *testing.T) {
+	rendered := renderTemplate(t, "templates/service.yaml")
+
+	var svc struct {
+		Spec struct {
+			PublishNotReadyAddresses *bool `yaml:"publishNotReadyAddresses"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(rendered), &svc); err != nil {
+		t.Fatalf("parse Service: %v", err)
+	}
+
+	if svc.Spec.PublishNotReadyAddresses == nil {
+		t.Fatal("the agent Service must set publishNotReadyAddresses explicitly. " +
+			"Leaving it unset defaults to false, which drops NotReady pods out of Endpoints " +
+			"and silently stops Prometheus scraping degraded nodes.")
+	}
+	if !*svc.Spec.PublishNotReadyAddresses {
+		t.Error("publishNotReadyAddresses must be true. Readiness on this DaemonSet exists to " +
+			"gate rollouts and surface degradation, NOT to remove the pod from monitoring. " +
+			"Setting it false blinds Prometheus to exactly the unhealthy nodes, and the " +
+			"fleet-wide absent() alert cannot detect a partial blackout.")
+	}
+}
+
 // TestRenderedConfigEnablesHotReload guards the chart<->code contract for
 // #node-doctor-243: the shipped ConfigMap must actually turn hot reload on, and
 // must parse into the agent's config type.
