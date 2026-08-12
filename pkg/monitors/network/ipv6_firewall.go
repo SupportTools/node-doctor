@@ -56,6 +56,15 @@ type CommandExecutor interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
+// ipv6FirewallAllowedBinaries is the exhaustive allow-list of binaries
+// defaultCommandExecutor may execute. The monitor's Backend config value only
+// ever selects between these two constants; it is never used as a command name
+// itself, and no operator-supplied string reaches exec.
+var ipv6FirewallAllowedBinaries = map[string]struct{}{
+	ip6tablesBinary: {},
+	nftBinary:       {},
+}
+
 // defaultCommandExecutor implements CommandExecutor using os/exec.
 type defaultCommandExecutor struct{}
 
@@ -64,6 +73,12 @@ func (e *defaultCommandExecutor) LookPath(name string) (string, error) {
 }
 
 func (e *defaultCommandExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if _, ok := ipv6FirewallAllowedBinaries[name]; !ok {
+		return nil, fmt.Errorf("refusing to execute disallowed binary %q", name)
+	}
+	// #nosec G204 -- name is checked against the ipv6FirewallAllowedBinaries
+	// allow-list immediately above, so it can only ever be "ip6tables" or
+	// "nft"; args are fixed read-only listing verbs supplied by this package.
 	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.CombinedOutput()
 }

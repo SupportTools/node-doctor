@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/supporttools/node-doctor/pkg/monitors"
@@ -421,6 +422,19 @@ func isConnectionLevelError(err error) bool {
 	return false
 }
 
+// sanitizeLogValue strips control characters (including CR and LF) from s so
+// that a config-supplied value — a kubelet URL host, or an error string that
+// embeds one — cannot forge additional log lines when interpolated into a log
+// message. Printable content is left untouched.
+func sanitizeLogValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // doRequestWithLoopbackFallback executes req against c.client. If the request
 // fails with a connection-level error (see isConnectionLevelError) and the
 // request targets a recognized loopback host, it rebuilds the request against
@@ -432,6 +446,11 @@ func isConnectionLevelError(err error) bool {
 // is false. The label argument ("healthz" or "metrics") is used only for
 // logging.
 func (c *defaultKubeletClient) doRequestWithLoopbackFallback(req *http.Request, label string) (resp *http.Response, usedFallback bool, err error) {
+	// #nosec G704 -- the request URL is the operator-configured healthz/metrics
+	// endpoint, validated at config load by validateKubeletURL (http/https only,
+	// host required) and defaulting to the local kubelet. Probing an
+	// operator-specified kubelet endpoint is this monitor's entire purpose; no
+	// request-time or otherwise untrusted input reaches this URL.
 	resp, err = c.client.Do(req)
 	if err == nil {
 		return resp, false, nil
@@ -452,6 +471,11 @@ func (c *defaultKubeletClient) doRequestWithLoopbackFallback(req *http.Request, 
 
 	// Rebuild the request against the alternate loopback, preserving method,
 	// context, and headers (including any auth header already applied).
+	// #nosec G704 -- fallbackURL is produced by loopbackFallbackURL, which only
+	// returns ok when the original host is a recognized loopback and rewrites
+	// the host to the opposite-family loopback ("::1" or "127.0.0.1"). Scheme,
+	// port, and path are carried over from the already-validated request URL,
+	// so the fallback can never target a non-loopback host.
 	fbReq, buildErr := http.NewRequestWithContext(req.Context(), req.Method, fallbackURL, nil)
 	if buildErr != nil {
 		// Could not build the fallback request; surface the original error.
@@ -459,9 +483,17 @@ func (c *defaultKubeletClient) doRequestWithLoopbackFallback(req *http.Request, 
 	}
 	fbReq.Header = req.Header.Clone()
 
+	// #nosec G706 -- every interpolated value is passed through
+	// sanitizeLogValue, which strips control characters (CR/LF included) so no
+	// value can forge a log line; label is a package-internal literal. The taint
+	// analyzer does not recognize the sanitizer.
 	log.Printf("[INFO] kubelet %s: loopback probe to %s failed (%v), retrying %s",
-		label, req.URL.Host, primaryErr, fbReq.URL.Host)
+		label, sanitizeLogValue(req.URL.Host), sanitizeLogValue(primaryErr.Error()),
+		sanitizeLogValue(fbReq.URL.Host))
 
+	// #nosec G704 -- fbReq targets the opposite-family loopback derived from the
+	// already-validated request URL by loopbackFallbackURL; see the annotation
+	// on its construction above.
 	resp, err = c.client.Do(fbReq)
 	if err != nil {
 		// Both families failed. Return the fallback error so the message

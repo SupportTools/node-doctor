@@ -341,6 +341,10 @@ func (m *IPv6SysctlMonitor) checkPerInterfaceDisableIPv6(status *types.Status) [
 // (trimmed of whitespace) is "1". Any other value is treated as false. Errors
 // are propagated.
 func readSysctlBool(path string) (bool, error) {
+	// #nosec G304 -- path is built from the operator-configured procfs root
+	// (default /proc) joined with fixed sysctl names, or from a filepath.Glob
+	// over that root. Reading these sysctl files is this monitor's entire
+	// purpose; the path is not attacker-controlled.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, fmt.Errorf("failed to read %s: %w", path, err)
