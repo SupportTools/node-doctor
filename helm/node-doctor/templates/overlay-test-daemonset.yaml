@@ -88,13 +88,15 @@ spec:
             drop:
               - ALL
 
-        # Minimal resources
+        # Minimal resources. The CPU fallbacks must stay at 5m/100m: a 10m limit
+        # CFS-throttles this pod ~90% of periods and inflates its own probe latency
+        # to 300-500ms, which surfaces as false NetworkDegraded/HighPeerLatency.
         resources:
           requests:
-            cpu: {{ .Values.overlayTest.resources.requests.cpu | default "1m" }}
+            cpu: {{ .Values.overlayTest.resources.requests.cpu | default "5m" }}
             memory: {{ .Values.overlayTest.resources.requests.memory | default "8Mi" }}
           limits:
-            cpu: {{ .Values.overlayTest.resources.limits.cpu | default "10m" }}
+            cpu: {{ .Values.overlayTest.resources.limits.cpu | default "100m" }}
             memory: {{ .Values.overlayTest.resources.limits.memory | default "16Mi" }}
 
         # HTTP liveness probe on /healthz

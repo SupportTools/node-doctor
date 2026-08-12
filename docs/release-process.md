@@ -5,6 +5,7 @@ This document describes the release process for Node Doctor, including versionin
 ## Table of Contents
 
 - [Release Overview](#release-overview)
+- [Which Helm chart files actually ship](#which-helm-chart-files-actually-ship)
 - [Version Numbering](#version-numbering)
 - [Release Types](#release-types)
 - [Creating a Release](#creating-a-release)
@@ -26,6 +27,55 @@ Node Doctor uses automated releases triggered by Git tags. When a tag matching `
 7. ✅ Updates Harbor registry with new version
 
 **Timeline**: Full release pipeline completes in ~10-15 minutes.
+
+## Which Helm chart files actually ship
+
+**`helm/node-doctor/values.yaml` and `helm/node-doctor/Chart.yaml` are generated artifacts.
+Never hand-edit them.**
+
+Before packaging, `.github/workflows/release.yml` deletes both and re-renders them from the
+`*.template` files:
+
+```bash
+rm -f helm/node-doctor/Chart.yaml helm/node-doctor/values.yaml
+envsubst < helm/node-doctor/Chart.yaml.template  > helm/node-doctor/Chart.yaml
+envsubst < helm/node-doctor/values.yaml.template > helm/node-doctor/values.yaml
+```
+
+So an edit made directly to `values.yaml` **never reaches the published chart**. It is not
+rejected and it produces no warning — it is simply discarded at package time. `.helmignore`
+excludes the `*.template` files, so the resulting tarball looks entirely normal.
+
+This is not theoretical. Commit `8d555e8` (2026-02-11) raised the overlay-test CPU limit from
+10m to 100m to stop CFS throttling that was inflating probe latency to 300-500ms. It edited
+`values.yaml`. The change shipped in name only and the cluster ran the throttled 10m limit for
+six months, while the *other* half of the same commit — which touched
+`templates/configmap.yaml` — went live immediately.
+
+**The rule that follows:** everything under `templates/` is packaged verbatim and behaves as
+you expect. Only `values.yaml` and `Chart.yaml` are regenerated. A chart change's fate depends
+entirely on which of those two groups it lands in.
+
+### Workflow
+
+1. Edit `helm/node-doctor/values.yaml.template` (or `Chart.yaml.template`).
+2. Run `make helm-generate` to re-render the committed copies.
+3. Commit both the template and the generated file.
+
+`make helm-verify-generated` re-renders and diffs; it runs in CI as the `Helm Chart` job and
+fails the build on any drift. `make helm-lint` depends on it, so a local lint catches this too.
+
+### Verifying a chart change actually shipped
+
+Checking the live object is not sufficient — it cannot distinguish "the chart is stale" from
+"the chart is fine but the object drifted". Check what Helm rendered:
+
+```bash
+helm -n node-doctor get manifest node-doctor | grep -A6 'Minimal resources'
+```
+
+If the rendered manifest still shows the old value, the published chart is stale regardless of
+what `kubectl get ds` reports.
 
 ## Version Numbering
 

@@ -193,11 +193,15 @@ prometheusRule:
       thresholdPercent: 90
     apiServerLatencyHigh:
       for: 10m
-    # IPv6 misconfiguration alert - fires on any active IPv6* node condition
-    # (sysctl, default route, link-local, global address, RA, firewall blackhole).
-    # Carries address_family=ipv6 so Alertmanager can route IPv6 issues separately.
+    # Consolidated IPv6 alert (fires on any condition_type=~"IPv6.*").
+    # Disabled by default: on mixed IPv4/dual-stack fleets the IPv6 monitors
+    # raise benign warnings on IPv4-only nodes, which would page here. Opt in
+    # (enabled: true) once IPv6 condition semantics are validated for your fleet.
+    # NOTE: this key MUST exist even when disabled — templates/prometheusrule.yaml
+    # references .ipv6Misconfigured.enabled/.for/.labels/.annotations, and a missing
+    # block makes `helm upgrade` nil-pointer whenever prometheusRule.enabled=true.
     ipv6Misconfigured:
-      enabled: true
+      enabled: false
       for: 10m
       labels: {}
       annotations: {}
@@ -211,13 +215,38 @@ prometheusRule:
     noMetrics:
       for: 10m
 
-# Health probe configuration
+# Cluster DNS via pod-network probe (task 242).
+# DISABLED by default. node-doctor runs hostNetwork and cannot resolve cluster DNS
+# ClusterIP records (Cilium host-netns->ClusterIP), so the in-agent cluster-DNS check
+# is off (dns-health clusterDomains: []). When enabled, this adds a monitor that queries
+# the overlay-test pods' /clusterdns endpoint (pod-network, which DOES resolve cluster
+# records) and drives ClusterDNSDown from that.
+# PREREQUISITE: the overlay-test image must serve /clusterdns (v1.8.3+). Enabling this
+# against an older overlay-test image makes every probe 404 -> false ClusterDNSDown.
+clusterDnsPodProbe:
+  enabled: false
+  interval: 30s
+  timeout: 5s
+  labelSelector: "app=node-doctor-overlay-test"
+  probePort: 8023
+  probePath: "/clusterdns"
+  # Number of overlay-test pods that must resolve cluster DNS for it to be healthy.
+  minSuccessPods: 1
+  # Consecutive failed cycles before ClusterDNSDown latches True.
+  failureCountThreshold: 3
+
+# Health probe configuration.
+# Probes default to `exec` running the binary's built-in health check, which talks
+# to a per-pod unix socket (/var/run/node-doctor/health.sock) instead of TCP :8080.
+# Because node-doctor runs with hostNetwork:true, a foreign host process (e.g. an
+# IP-float/VIP daemon on hostPort 8080) can answer an httpGet probe with a 404 and
+# crashloop the pod; the unix socket lives in the pod and cannot collide.
+# To revert to HTTP probes, replace the `exec:` block with `httpGet: {path, port}`.
 probes:
   liveness:
     enabled: true
-    httpGet:
-      path: /healthz
-      port: 8080
+    exec:
+      command: ["/usr/local/bin/node-doctor", "-healthcheck"]
     initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5
@@ -225,9 +254,8 @@ probes:
     successThreshold: 1
   readiness:
     enabled: true
-    httpGet:
-      path: /ready
-      port: 8080
+    exec:
+      command: ["/usr/local/bin/node-doctor", "-healthcheck-ready"]
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 3
@@ -235,9 +263,8 @@ probes:
     successThreshold: 1
   startup:
     enabled: true
-    httpGet:
-      path: /healthz
-      port: 8080
+    exec:
+      command: ["/usr/local/bin/node-doctor", "-healthcheck"]
     initialDelaySeconds: 10
     periodSeconds: 5
     timeoutSeconds: 3
@@ -445,9 +472,8 @@ features:
   enableProfiling: false
   enableTracing: false
 
-# Overlay Test Configuration
-# Deploys lightweight Go HTTP health server pods WITHOUT hostNetwork
-# for accurate CNI/overlay testing via HTTP probes (fixes Cilium ICMP issue)
+# Overlay test configuration for CNI connectivity testing
+# Uses Go HTTP health server for accurate probing (fixes Cilium ICMP issue)
 overlayTest:
   # Enable overlay test pods - required for accurate CNI connectivity testing
   enabled: true
@@ -455,13 +481,17 @@ overlayTest:
   # Image for overlay test pods (Go HTTP health server, scratch-based ~6MB)
   image:
     repository: supporttools/node-doctor-overlay-test
-    tag: ""  # defaults to Chart appVersion
+    tag: "v1.0.0"
     pullPolicy: IfNotPresent
 
   # HTTP health probe port
   port: 8023
 
-  # Resource limits for overlay test pods
+  # Resource limits for overlay test pods.
+  # Do NOT lower the CPU limit back toward 10m. At 10m the pod sat 88-93% CFS-throttled
+  # and inflated its own HTTP probe latency from ~3ms to 300-500ms, which node-doctor
+  # then reported as peer/CNI latency and turned into false NetworkDegraded and
+  # HighPeerLatency alerts. 100m leaves enough headroom that throttling stops.
   resources:
     requests:
       cpu: 5m
@@ -477,7 +507,6 @@ overlayTest:
   # Priority class (empty = no priority class)
   priorityClassName: ""
 
-# Controller configuration - optional central aggregation component
 controller:
   # Enable the node-doctor controller (requires persistent storage)
   enabled: false
