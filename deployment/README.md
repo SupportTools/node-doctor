@@ -283,7 +283,7 @@ kubectl get events -n kube-system --field-selector involvedObject.name=node-doct
 1. **Resource Monitoring**: Monitor CPU/memory usage across nodes
 2. **Log Rotation**: Ensure log rotation is configured for container logs
 3. **Alerting**: Set up alerts for Node Doctor health and node conditions
-4. **Updates**: Use rolling updates with `maxUnavailable: 1`
+4. **Updates**: Use rolling updates with `maxUnavailable: 25%` - a percentage, not `1`, so a single crashlooping pod cannot consume the whole budget and stall the rollout at 0/N
 5. **Backup**: Include ConfigMap in cluster backup procedures
 
 ## Security Best Practices

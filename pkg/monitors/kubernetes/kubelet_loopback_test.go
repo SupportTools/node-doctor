@@ -11,6 +11,32 @@ import (
 	"time"
 )
 
+// TestSanitizeLogValue verifies that control characters (which could otherwise
+// be used to forge additional log lines) are stripped while printable content
+// is preserved verbatim.
+func TestSanitizeLogValue(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain host untouched", "127.0.0.1:10248", "127.0.0.1:10248"},
+		{"ipv6 host untouched", "[::1]:10248", "[::1]:10248"},
+		{"newline stripped", "host\ninjected", "hostinjected"},
+		{"crlf stripped", "host\r\n[ERROR] fake", "host[ERROR] fake"},
+		{"tab and escape stripped", "a\tb\x1bc", "abc"},
+		{"empty stays empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeLogValue(tt.in); got != tt.want {
+				t.Fatalf("sanitizeLogValue(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // newLoopbackTestClient builds a defaultKubeletClient whose healthz/metrics
 // URLs point at the supplied addresses, with a short timeout and no auth.
 func newLoopbackTestClient(healthzURL, metricsURL string) *defaultKubeletClient {

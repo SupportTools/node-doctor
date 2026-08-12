@@ -313,13 +313,21 @@ reload:
   enabled: true
   debounceInterval: 500ms
 
-# Resource limits and requests
+# Resource limits and requests for the node-doctor agent.
+# Do NOT lower the CPU limit back toward 200m. At 200m the agent sat 30-71% CFS-throttled
+# across a 13-node fleet (10m rate, measured 2026-08-12: median 44.2%, max 71.3% on
+# a1pinode02). The agent is the process that PERFORMS the probing, so its own scheduling
+# delay is added to every RTT it measures and reports - the same failure mode that made
+# the overlay-test pod invent peer/CNI latency at a 10m limit (see overlayTest.resources
+# below). Sustained usage is far below the limit; the problem is burst headroom during
+# probe cycles, so 500m is the limit and requests stay low (50m) to avoid reserving
+# capacity on every node in the cluster for a burst that is idle most of the time.
 resources:
   requests:
     cpu: 50m
     memory: 128Mi
   limits:
-    cpu: 200m
+    cpu: 500m
     memory: 256Mi
 
 # Node selector - run on all Linux nodes
@@ -363,11 +371,19 @@ tolerations:
 # Affinity rules
 affinity: {}
 
-# Update strategy for the DaemonSet
+# Update strategy for the DaemonSet.
+# maxUnavailable is a PERCENTAGE, not 1, on purpose. With maxUnavailable: 1 a single
+# already-crashlooping pod consumes the entire unavailable budget and no other pod can
+# ever be rolled - `kubectl rollout restart` then stalls at 0/N forever and the only
+# recovery is manually deleting healthy pods (see "DaemonSet rollout is stuck" in
+# README.md). 25% matches overlayTest.updateStrategy below and leaves room for the roll
+# to make progress past a stuck node.
+# Do NOT add maxSurge here: the agent runs hostNetwork with a hostPort, so a surge pod
+# would collide with the pod it is replacing on the same node and never become ready.
 updateStrategy:
   type: RollingUpdate
   rollingUpdate:
-    maxUnavailable: 1
+    maxUnavailable: "25%"
 
 # Termination grace period
 terminationGracePeriodSeconds: 30
