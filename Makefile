@@ -402,9 +402,15 @@ push-all-images: push-node-doctor-image push-overlay-test-server-image
 #
 # These placeholders stand in for the tag-derived values CI injects; they exist only so
 # the committed copies are byte-reproducible and diffable.
+#
+# IMAGE_TAG is v-STRIPPED and APP_VERSION is not. That asymmetry is deliberate and mirrors
+# release.yml: docker/metadata-action publishes `type=semver,pattern={{version}}`, so images
+# land on Docker Hub as `1.8.7`, never `v1.8.7`, while Chart.yaml appVersion keeps the v as a
+# human-facing release name. Keep these placeholders matching release.yml or the committed
+# values.yaml stops being an accurate model of the shipped chart.
 HELM_PLACEHOLDER_CHART_VERSION := 1.0.0
 HELM_PLACEHOLDER_APP_VERSION   := v1.0.0
-HELM_PLACEHOLDER_IMAGE_TAG     := v1.0.0
+HELM_PLACEHOLDER_IMAGE_TAG     := 1.0.0
 
 # Renders the templates the same way release.yml does (bare envsubst).
 define helm_render
@@ -529,7 +535,15 @@ deploy-prd-kubectl: check-kubectl
 	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl rollout status daemonset/node-doctor -n $(NAMESPACE_PRD) --timeout=5m
 	@$(call print_success,Deployed to production cluster $(KUBECTL_CONTEXT_PRD))
 
-# Build and push RC release to Harbor and deploy to a1-ops-prd cluster
+# Build and push RC release to $(REGISTRY) and deploy to a1-ops-prd cluster.
+#
+# This target deliberately does NOT tag :latest. It used to, which meant a workstation
+# build of a *release candidate* could overwrite the :latest that release.yml publishes
+# only for non-rc tags. Only .github/workflows/release.yml moves :latest.
+#
+# The git steps below are also not `|| true`: a failed commit/tag/push used to be
+# swallowed, leaving an image pushed and a cluster deployed from a revision that was
+# never tagged or pushed anywhere.
 bump-rc: validate-pipeline-local increment-rc-version
 	@$(call print_status,Building RC release: $(RC_VERSION))
 	@$(call print_status,Registry: $(REGISTRY)/$(PROJECT_NAME))
@@ -542,7 +556,6 @@ bump-rc: validate-pipeline-local increment-rc-version
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION) \
-		-t $(REGISTRY)/$(PROJECT_NAME):latest \
 		-f Dockerfile \
 		--push \
 		.
@@ -556,12 +569,12 @@ bump-rc: validate-pipeline-local increment-rc-version
 	@echo ""
 	@$(call print_status,Committing RC release...)
 	@git add $(RC_VERSION_FILE) deployment/daemonset.yaml
-	@git commit -m "bump-rc: Release candidate $(RC_VERSION) deployed to $(KUBECTL_CONTEXT_PRD)" || true
-	@git tag -a $(RC_VERSION) -m "Release candidate $(RC_VERSION)" || true
-	@git push origin main --tags || true
+	@git commit -m "bump-rc: Release candidate $(RC_VERSION) deployed to $(KUBECTL_CONTEXT_PRD)"
+	@git tag -a $(RC_VERSION) -m "Release candidate $(RC_VERSION)"
+	@git push origin main --tags
 	@echo ""
 	@echo "🎉 RC Release $(RC_VERSION) complete!"
-	@echo "   - Built and pushed to Harbor"
+	@echo "   - Built and pushed to $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)"
 	@echo "   - Deployed to $(KUBECTL_CONTEXT_PRD) cluster"
 	@echo "   - Tagged as $(RC_VERSION)"
 	@echo ""
@@ -675,7 +688,7 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@echo "  make bump                  Bump version and trigger CI/CD"
-	@echo "  make bump-rc               Build RC, push to Harbor, deploy to a1-ops-prd"
+	@echo "  make bump-rc               Build RC, push to $(REGISTRY), deploy to a1-ops-prd"
 	@echo "  make bump-with-monitoring  Bump and watch deployment"
 	@echo "  make deploy-dev            Deploy to development"
 	@echo "  make deploy-stg            Deploy to staging"

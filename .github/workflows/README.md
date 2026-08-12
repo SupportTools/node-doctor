@@ -1,12 +1,13 @@
 # GitHub Actions Workflows
 
-This directory contains every GitHub Actions workflow for Node Doctor. There are three:
+This directory contains every GitHub Actions workflow for Node Doctor. There are four:
 
 | File | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | PR to `main`, push to `main`, push of a `v*` tag | Lint, test, chart verification, build, gosec, and (on tags only) an amd64 Docker push + Grype scan |
+| `ci.yml` | PR to `main`, push to `main`, push of a `v*` tag | Lint, test, chart verification, build, gosec, and a Docker build that **never pushes** |
 | `ci-ipv6.yml` | Same, but path-filtered to network/exporter/integration code | IPv6 and dual-stack tests needing a kind cluster and `CAP_NET_RAW`. Deliberately separate so its flakes do not block `ci-success` |
-| `release.yml` | Push of a `v*` tag **only** | The actual release: multi-arch images, GitHub Release, Helm chart publish |
+| `release.yml` | Push of a `v*` tag **only** | The actual release: multi-arch images, GitHub Release, Helm chart publish. **The only workflow that publishes anything** |
+| `release-audit.yml` | Daily at 13:00 UTC, plus `workflow_dispatch` | Compares the newest `v*` tag against the chart version served by charts.support.tools; Slack on mismatch |
 
 For the full release story — what gets published where, what is signed, how to roll back — see
 [docs/release-process.md](../../docs/release-process.md). That document is the source of truth;
@@ -35,27 +36,27 @@ this one covers only what lives in this directory.
    tab. Never gates the build.
 6. **Build** — compiles `node-doctor` and `overlay-test-server`, runs `--version`, uploads the
    binary as a 7-day artifact. Needs `lint` + `test`.
-7. **Docker Build & Push** — *tags only* (`if: startsWith(github.ref, 'refs/tags/v')`), needs
-   `lint`, `test`, `build`, `security-gosec`. Builds **`linux/amd64` only** and pushes
-   `docker.io/supporttools/node-doctor:<TAG>` (the tag verbatim, i.e. **with** the `v` prefix)
-   plus `:latest`.
-8. **Grype Scan (informational)** — tag builds only, `fail-build: false`, SARIF to the Security
-   tab. Runs `anchore/scan-action` in-line rather than the org reusable workflow (see the
-   comment in `ci.yml` for why).
-9. **CI Success** — aggregate status check over `lint`, `test`, `build`, `security-gosec`,
-   `helm-chart`.
+7. **Docker Build (no push)** — runs on every PR and branch push, needs `lint`, `test`, `build`,
+   `security-gosec`. Builds `linux/amd64` with **`push: false`**. It exists to keep the
+   Dockerfile under test; it publishes nothing and cannot race `release.yml` for a tag.
+8. **CI Success** — aggregate status check over `lint`, `test`, `build`, `security-gosec`,
+   `helm-chart`, `docker`.
 
-### The tag-naming overlap with `release.yml`
+New gating jobs are wired into `ci-success`'s `needs:` rather than added as new required status
+checks — a brand-new required context leaves every already-open PR stuck on
+"Expected — waiting for status".
 
-On a `v*` tag push both workflows run and both push to `docker.io/supporttools/node-doctor`:
+### `ci.yml` publishes nothing
 
-- `ci.yml` pushes `v1.9.0` — **amd64 only**, unsigned
-- `release.yml` pushes `1.9.0` and `1.9` — **amd64 + arm64**, and cosign-signs `1.9.0`
-- both push `latest`; whichever finishes last wins, and `ci.yml` has no prerelease gate, so an
-  RC tag can leave `latest` pointing at amd64-only RC content
+It used to. A tag-gated `Docker Build & Push` job pushed
+`docker.io/supporttools/node-doctor:v<TAG>` (amd64 only, unsigned) plus an unconditional
+`:latest`, at the same time `release.yml` pushed the same repository multi-arch. With no
+ordering between the two, whichever finished last won `:latest` — so `:latest` could silently
+become amd64-only against a fleet with arm64 nodes, and an RC tag moved `:latest` regardless of
+`release.yml`'s prerelease exclusion.
 
-The Helm chart defaults `image.tag` to the `v`-prefixed form, which is the `ci.yml` one. Details
-and the workaround are in
+`release.yml` is now the sole publisher, and the Grype scan moved there with it (it scans a
+*published* image). Full story in
 [docs/release-process.md](../../docs/release-process.md#which-image-tags-actually-exist).
 
 ## `release.yml`
@@ -63,18 +64,39 @@ and the workaround are in
 Triggered only by pushing a tag matching `v*`. It runs **no tests** and does not depend on
 `ci.yml`; a tag whose tests fail still produces a complete release.
 
-Jobs: `docker`, `docker-overlay-test`, `github-release`, `helm-publish`, `release-complete`.
+Jobs: `docker`, `docker-overlay-test`, `grype-scan`, `github-release`, `helm-publish`,
+`release-complete`, `notify-failure`.
 Full breakdown in [docs/release-process.md](../../docs/release-process.md#release-overview).
+
+Two things worth knowing before you touch it:
+
+- `helm-publish` refuses to publish a chart whose default image tags do not resolve in the
+  registry (`Verify packaged chart references images that exist`). Image tags are **`v`-stripped**;
+  only `Chart.yaml` `appVersion` keeps the `v`.
+- `notify-failure` (`if: failure()`) posts to Slack via `SLACK_WEBHOOK_URL`. Without it a broken
+  release is just a red square nobody is subscribed to — which is exactly how chart publishing
+  stayed broken from `v1.8.0` to `v1.8.6`.
+
+## `release-audit.yml`
+
+Daily standing check that the newest `v*` tag has a matching chart on charts.support.tools,
+with a one-hour grace period for an in-flight release. Catches releases that were never started,
+were cancelled, or whose failure notification did not arrive. Notifies Slack on mismatch.
 
 ## Required GitHub Secrets
 
 | Secret | Used by | Required |
 |---|---|---|
-| `DOCKER_USERNAME` | `ci.yml` docker job, `release.yml` docker + docker-overlay-test jobs | Yes, for any tag build |
-| `DOCKER_PASSWORD` | same | Yes, for any tag build |
+| `DOCKER_USERNAME` | `release.yml` docker + docker-overlay-test + helm-publish jobs; `ci.yml` docker job (base-image pulls only) | Yes for releases; in CI only to dodge anonymous pull rate limits |
+| `DOCKER_PASSWORD` | same | same |
 | `BOT_TOKEN` | `release.yml` `helm-publish` — checkout of and push to `SupportTools/helm-chart` | Yes, or the chart is never published |
+| `SLACK_WEBHOOK_URL` | `release.yml` `notify-failure`, `release-audit.yml` | Yes, or release failures go unnoticed |
 | `CODECOV_TOKEN` | `ci.yml` Test job | Optional; upload is non-blocking |
-| `GITHUB_TOKEN` | `release.yml` `github-release` | Provided automatically |
+| `GITHUB_TOKEN` | `release.yml` `github-release`, `release-audit.yml` | Provided automatically |
+
+`HELM_CHART_PAT` is an org secret that looks like it belongs here and **does not** — no
+node-doctor workflow references it. See
+[docs/release-process.md](../../docs/release-process.md#helm_chart_pat-is-not-this-repos-credential).
 
 The registry is **Docker Hub** (`docker.io/supporttools`), not Harbor. There are no
 `HARBOR_USERNAME` / `HARBOR_PASSWORD` secrets in use; if they exist in repository settings they
@@ -92,18 +114,20 @@ on a single image tag.
 ## Triggering builds
 
 ### Pull request
-Opens lint, helm-chart, test, pinger-icmp, gosec and build jobs. No images are pushed.
+Opens lint, helm-chart, test, pinger-icmp, gosec, build and docker jobs. No images are pushed —
+the docker job builds with `push: false`.
 
 ### Push to `main`
-Same set. Still no images — the docker job is gated on `refs/tags/v`.
+Same set. Still no images.
 
 ### Release
 ```bash
 git tag -a v1.9.0 -m "Release v1.9.0"
 git push origin v1.9.0
 ```
-Runs `ci.yml` (full pipeline + amd64 image + Grype) **and** `release.yml` (multi-arch images,
-GitHub Release, Helm chart) in parallel. Watch both:
+Runs `ci.yml` (full pipeline, still publishing nothing) **and** `release.yml` (multi-arch
+images, Grype, GitHub Release, Helm chart) in parallel. `release.yml` is the one that matters
+for artifacts; `ci.yml` is the one that tells you whether the commit was any good. Watch both:
 
 ```bash
 gh run list --workflow=ci.yml --branch v1.9.0
@@ -134,11 +158,17 @@ coverage-check` uses a stricter local threshold of 80%, so passing locally impli
 **Helm Chart job failure** — you edited `helm/node-doctor/values.yaml` or `Chart.yaml` directly,
 or edited a `*.template` without regenerating. Run `make helm-generate` and commit both files.
 
-**Docker job skipped** — expected on PRs and `main` pushes; it only runs on `v*` tags.
+**Docker job failed** — the Dockerfile does not build. It publishes nothing either way, so this
+never affects the registry; it does block `ci-success`, and it should, because the same
+Dockerfile is what `release.yml` builds from.
 
-**Docker job failed on a tag** — the `v`-prefixed image tag was not pushed. The multi-arch image
-from `release.yml` still exists under the un-prefixed tag. See
+**`docker pull ...:v1.9.0` says not found** — expected. Image tags are `v`-stripped; pull
+`1.9.0`. See
 [docs/release-process.md](../../docs/release-process.md#docker-pull-supporttoolsnode-doctorv190-says-not-found).
+
+**A release published images but no chart** — check `helm-publish` in that `release.yml` run,
+and check Slack for the `notify-failure` message. See
+[docs/release-process.md](../../docs/release-process.md#releaseyml-succeeded-but-the-chart-is-not-on-chartssupporttools).
 
 **Secret errors** — check names against the table above; the most common cause is a workflow
 looking for `DOCKER_*` while only `HARBOR_*` are configured.

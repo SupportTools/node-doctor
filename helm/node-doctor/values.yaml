@@ -31,7 +31,7 @@ image:
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion
   # This is dynamically set by CI/CD
-  tag: "v1.0.0"
+  tag: "1.0.0"
 
 # Secrets for pulling images from private registries
 imagePullSecrets: []
@@ -497,7 +497,7 @@ overlayTest:
   # Image for overlay test pods (Go HTTP health server, scratch-based ~6MB)
   image:
     repository: supporttools/node-doctor-overlay-test
-    tag: "v1.0.0"
+    tag: "1.0.0"
     pullPolicy: IfNotPresent
 
   # HTTP health probe port
