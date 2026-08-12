@@ -16,13 +16,35 @@ env:
   IMAGE_NAME: supporttools/node-doctor
 
 jobs:
-  # Build and push Docker images
+  # Build and push Docker images.
+  #
+  # This is the SOLE publisher of docker.io/supporttools/node-doctor. ci.yml used to push
+  # the same repository on the same tag event (amd64-only, and it moved `latest`
+  # unconditionally, including for rc/beta/alpha tags); its docker job is now a
+  # push:false validation build. Do not reintroduce a push from any other workflow.
   docker:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # A git tag name may legally contain shell metacharacters, so it is never
+      # interpolated straight into a `run:` block. Pass it through env, quote it, and
+      # strip it to a known-safe charset once here; downstream steps use the output.
+      - name: Resolve release version
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          RAW="$(printf '%s' "$REF_NAME" | tr -cd 'A-Za-z0-9._+-')"
+          if [ "$RAW" != "$REF_NAME" ]; then
+            echo "::error::Tag name contains unexpected characters; refusing to release"
+            exit 1
+          fi
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -70,33 +92,37 @@ jobs:
       - name: Sign Docker image
         env:
           COSIGN_EXPERIMENTAL: 1
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
         run: |
-          # Extract version without 'v' prefix (to match docker metadata output)
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
           echo "Signing Docker image with cosign (keyless)..."
-          echo "Tag: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
-          cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}
+          echo "Tag: ${IMAGE_REF}"
+          cosign sign --yes "${IMAGE_REF}"
           echo "✅ Docker image signed"
 
       - name: Generate Docker summary
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         run: |
-          echo "## 🐳 Docker Images" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Images Published" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## 🐳 Docker Images"
+            echo ""
+            echo "**Tag:** ${REF_NAME}"
+            echo ""
+            echo "### Images Published"
+            echo ""
+            echo '```'
+            echo "${IMAGE_TAGS}"
+            echo '```'
+            echo ""
+            echo "**Platforms:** linux/amd64, linux/arm64"
+            echo ""
+            echo "### Pull Command"
+            echo '```bash'
+            echo "docker pull ${IMAGE_REPO}:${REF_NAME}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Build and push overlay-test Docker image (multi-arch)
   docker-overlay-test:
@@ -231,18 +257,25 @@ jobs:
 
       - name: Determine Chart Version
         id: get-chart-version
+        env:
+          # Sanitized in the `docker` job; carried through instead of re-deriving from
+          # github.ref_name inside a shell.
+          CHART_VERSION: ${{ needs.docker.outputs.version }}
         run: |
-          # Remove 'v' prefix for Helm chart version
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          if [ -z "$CHART_VERSION" ]; then
+            echo "::error::Chart version was not resolved by the docker job"
+            exit 1
+          fi
+          echo "version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Helm chart files
+        env:
+          CHART_VERSION: ${{ steps.get-chart-version.outputs.version }}
+          APP_VERSION: v${{ steps.get-chart-version.outputs.version }}
+          IMAGE_TAG: v${{ steps.get-chart-version.outputs.version }}
         run: |
           rm -f helm/node-doctor/Chart.yaml helm/node-doctor/values.yaml
-          export CHART_VERSION="${{ steps.get-chart-version.outputs.version }}"
-          export APP_VERSION="${{ github.ref_name }}"
-          export IMAGE_TAG="${{ github.ref_name }}"
+          export CHART_VERSION APP_VERSION IMAGE_TAG
           envsubst < helm/node-doctor/Chart.yaml.template > helm/node-doctor/Chart.yaml
           envsubst < helm/node-doctor/values.yaml.template > helm/node-doctor/values.yaml
           echo "=== Chart.yaml ==="
@@ -274,50 +307,89 @@ jobs:
           git config --global user.name "GitHub Action"
 
       - name: Update Helm repository
+        env:
+          CHART_VERSION: ${{ steps.get-chart-version.outputs.version }}
         run: |
           cp helm/repo/node-doctor-*.tgz helm-chart/
           cd helm-chart
           helm repo index . --url https://charts.support.tools/
           git add .
-          git commit -m "Update Node Doctor Helm chart ${{ steps.get-chart-version.outputs.version }}"
+          git commit -m "Update Node Doctor Helm chart ${CHART_VERSION}"
           git push
 
       - name: Verify Chart Availability
+        env:
+          CHART_VERSION: ${{ steps.get-chart-version.outputs.version }}
         run: |
           helm repo add charts https://charts.support.tools/
           MAX_TRIES=30
           SLEEP_TIME=10
           COUNTER=0
-          CHART_VERSION="${{ steps.get-chart-version.outputs.version }}"
 
           while [ $COUNTER -lt $MAX_TRIES ]; do
             helm repo update
-            if helm search repo charts/node-doctor --version $CHART_VERSION | grep -q $CHART_VERSION; then
+            if helm search repo charts/node-doctor --version "$CHART_VERSION" | grep -qF -- "$CHART_VERSION"; then
               echo "✅ Chart node-doctor version $CHART_VERSION found in repository"
               exit 0
             fi
             echo "Waiting for chart to become available... (Attempt $((COUNTER+1))/$MAX_TRIES)"
             sleep $SLEEP_TIME
-            let COUNTER=COUNTER+1
+            COUNTER=$((COUNTER + 1))
           done
 
           echo "❌ Chart did not become available within the timeout period"
           exit 1
 
       - name: Add Helm chart to release summary
+        env:
+          CHART_VERSION: ${{ steps.get-chart-version.outputs.version }}
         run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Helm Chart" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Chart Version:** ${{ steps.get-chart-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Repository:** https://charts.support.tools/" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Install with:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "helm repo add supporttools https://charts.support.tools" >> $GITHUB_STEP_SUMMARY
-          echo "helm repo update" >> $GITHUB_STEP_SUMMARY
-          echo "helm install node-doctor supporttools/node-doctor --namespace node-doctor --create-namespace" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          {
+            echo ""
+            echo "### 📦 Helm Chart"
+            echo ""
+            echo "- **Chart Version:** ${CHART_VERSION}"
+            echo "- **Repository:** https://charts.support.tools/"
+            echo ""
+            echo "Install with:"
+            echo '```bash'
+            echo "helm repo add supporttools https://charts.support.tools"
+            echo "helm repo update"
+            echo "helm install node-doctor supporttools/node-doctor --namespace node-doctor --create-namespace"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Grype vulnerability scan - INFORMATIONAL (SARIF/report only, no release gate).
+  #
+  # Moved here from ci.yml: it scans a *published* image, and the only workflow that
+  # publishes images is this one. Uses anchore/scan-action (grype engine) IN-LINE rather
+  # than the org reusable grype-scan.yml because node-doctor publishes to Docker Hub
+  # (docker.io/supporttools), not Harbor, so the reusable workflow's keyless Harbor pull is
+  # the wrong mechanism. anchore/scan-action uses the public grype vuln DB rather than the
+  # org's self-hosted air-gapped mirror — acceptable, the scanned image is public.
+  grype-scan:
+    name: Grype Scan (informational)
+    runs-on: ubuntu-latest
+    needs: [docker]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Grype scan (anchore/scan-action)
+        id: grype
+        uses: anchore/scan-action@v6
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype
 
   # Summary job
   release-complete:
@@ -327,6 +399,9 @@ jobs:
     if: always()
     steps:
       - name: Check release status
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           if [[ "${{ needs.docker.result }}" != "success" ]]; then
             echo "❌ Docker build job failed"
@@ -344,11 +419,78 @@ jobs:
             echo "❌ Helm publish job failed"
             exit 1
           fi
-          echo "✅ Release ${{ github.ref_name }} completed successfully!"
+          echo "✅ Release ${REF_NAME} completed successfully!"
           echo ""
           echo "Next steps:"
-          echo "1. Verify release: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-          echo "2. Test Docker image: docker pull supporttools/node-doctor:${{ github.ref_name }}"
+          echo "1. Verify release: https://github.com/${REPO}/releases/tag/${REF_NAME}"
+          echo "2. Test Docker image: docker pull supporttools/node-doctor:${REF_NAME}"
           echo "3. Test Helm chart: helm install node-doctor supporttools/node-doctor"
           echo "4. Update documentation if needed"
           echo "5. Announce release to users"
+
+  # Failure notification.
+  #
+  # Why this job exists: a red release run is not, by itself, a signal anyone receives.
+  # `helm-publish` has hard-failed on "Verify Chart Availability" for six months across
+  # eight repos — the workflow was doing exactly what it was told and going red on purpose
+  # — and nobody noticed, because nothing pushed that failure anywhere a human looks.
+  # Any future fix that makes releases fail correctly is worthless without this job.
+  #
+  # Mechanism is the org's established one: slackapi/slack-github-action posting to the
+  # org secret SLACK_WEBHOOK_URL (visibility: all), same as SupportTools/support-decoder
+  # cd.yml and SupportTools/website cloudflare-workers-notifications.yml.
+  notify-failure:
+    name: Notify Release Failure
+    runs-on: ubuntu-latest
+    needs: [docker, docker-overlay-test, github-release, helm-publish, grype-scan, release-complete]
+    if: failure()
+    steps:
+      # A tag name may legally contain characters that would break out of the JSON
+      # payload below, and github.ref_name is attacker-influencable by anyone who can
+      # push a tag. Strip it to a safe charset before it is interpolated anywhere.
+      - name: Build notification context
+        id: ctx
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "ref=$(printf '%s' "$REF_NAME" | tr -cd 'A-Za-z0-9._+-')" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize failure in the run summary
+        env:
+          REF: ${{ steps.ctx.outputs.ref }}
+        run: |
+          {
+            echo "## ❌ Release ${REF} FAILED"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| Docker images | ${{ needs.docker.result }} |"
+            echo "| Overlay test image | ${{ needs.docker-overlay-test.result }} |"
+            echo "| GitHub release | ${{ needs.github-release.result }} |"
+            echo "| Helm chart publish | ${{ needs.helm-publish.result }} |"
+            echo "| Grype scan | ${{ needs.grype-scan.result }} |"
+            echo ""
+            echo "A failed \`helm-publish\` means **the chart was not published** — the tag,"
+            echo "the GitHub release and the container image can all exist while"
+            echo "charts.support.tools still serves the previous version."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ node-doctor release ${{ steps.ctx.outputs.ref }} FAILED",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *node-doctor* release *${{ steps.ctx.outputs.ref }}* *FAILED*\n\n*Docker images:* `${{ needs.docker.result }}`\n*Overlay test image:* `${{ needs.docker-overlay-test.result }}`\n*GitHub release:* `${{ needs.github-release.result }}`\n*Helm chart publish:* `${{ needs.helm-publish.result }}`\n\nA failed chart publish means charts.support.tools still serves the previous version.\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

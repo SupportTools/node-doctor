@@ -1,0 +1,131 @@
+name: Release Audit
+
+# Catches the whole class of "a release silently did not ship", not just the one cause.
+#
+# release.yml already hard-fails when a chart does not appear on charts.support.tools, and
+# notify-failure now pushes that failure to Slack. Both only fire while a release run is
+# in flight. This audit is the standing check: it compares the newest git tag against what
+# charts.support.tools actually serves, so a gap is caught even if the release run was
+# never started, was cancelled, was re-run into a green state, or the notification itself
+# failed to deliver. The six-month outage this repo just came out of would have been
+# caught the next morning.
+#
+# Scope note: this audits node-doctor only, using the default GITHUB_TOKEN and the public
+# chart index. Extending it across the other SupportTools chart-publishing repos needs a
+# decision on where it lives and which credential enumerates them — see PR discussion.
+
+on:
+  schedule:
+    # 13:00 UTC daily (~08:00 US Central), so a broken release surfaces the next morning.
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tag-vs-chart:
+    name: Newest tag has a published chart
+    runs-on: ubuntu-latest
+    outputs:
+      detail: ${{ steps.audit.outputs.detail }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Compare newest tag against published chart
+        id: audit
+        env:
+          # How long after a tag is created before its chart is expected to exist.
+          # Covers a release run that is still in flight.
+          GRACE_SECONDS: "3600"
+        run: |
+          set -euo pipefail
+
+          TAG_LINE="$(
+            git for-each-ref --sort=-creatordate \
+              --format='%(refname:short) %(creatordate:unix)' \
+              'refs/tags/v*' | head -n 1
+          )"
+
+          if [ -z "$TAG_LINE" ]; then
+            echo "No v* tags found; nothing to audit."
+            exit 0
+          fi
+
+          TAG="${TAG_LINE%% *}"
+          TAG_TIME="${TAG_LINE##* }"
+
+          # Tag names are attacker-influencable by anyone who can push a tag, so pin the
+          # value to a known-safe charset before it reaches any command line.
+          SAFE_TAG="$(printf '%s' "$TAG" | tr -cd 'A-Za-z0-9._+-')"
+          if [ "$SAFE_TAG" != "$TAG" ]; then
+            echo "::error::Newest tag contains unexpected characters: refusing to audit"
+            exit 1
+          fi
+
+          AGE=$(( $(date -u +%s) - TAG_TIME ))
+          echo "Newest tag: ${SAFE_TAG} (age ${AGE}s)"
+
+          if [ "$AGE" -lt "$GRACE_SECONDS" ]; then
+            echo "Tag is younger than the ${GRACE_SECONDS}s grace period; release may still be running."
+            exit 0
+          fi
+
+          CHART_VERSION="${SAFE_TAG#v}"
+          helm repo add charts https://charts.support.tools/ >/dev/null
+          helm repo update >/dev/null
+
+          if helm search repo charts/node-doctor --versions -o json \
+              | jq -e --arg v "$CHART_VERSION" 'any(.[]; .version == $v)' >/dev/null; then
+            echo "✅ Chart node-doctor ${CHART_VERSION} is published."
+            echo "- ✅ Newest tag \`${SAFE_TAG}\` has chart \`${CHART_VERSION}\` on charts.support.tools" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          LATEST_CHART="$(helm search repo charts/node-doctor -o json 2>/dev/null \
+            | jq -r '.[0].version // "none"' || echo "unknown")"
+          {
+            echo "## ❌ Release audit failed"
+            echo ""
+            echo "Newest git tag \`${SAFE_TAG}\` expects chart version \`${CHART_VERSION}\`,"
+            echo "but charts.support.tools serves \`${LATEST_CHART}\`."
+            echo ""
+            echo "The tag, the GitHub release and the container image can all exist while the"
+            echo "chart was never published. Check the release run for \`${SAFE_TAG}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "detail=tag ${SAFE_TAG} expects chart ${CHART_VERSION}, repo serves ${LATEST_CHART}" >> "$GITHUB_OUTPUT"
+          echo "::error::Chart ${CHART_VERSION} for tag ${SAFE_TAG} is not published (repo serves ${LATEST_CHART})"
+          exit 1
+
+  notify-failure:
+    name: Notify Audit Failure
+    runs-on: ubuntu-latest
+    needs: [tag-vs-chart]
+    if: failure()
+    steps:
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "❌ node-doctor release audit failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *node-doctor* release audit *FAILED*\n\nThe newest git tag has no matching chart on charts.support.tools.\n\n`${{ needs.tag-vs-chart.outputs.detail }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
