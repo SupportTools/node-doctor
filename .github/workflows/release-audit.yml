@@ -81,15 +81,19 @@ jobs:
           helm repo add charts https://charts.support.tools/ >/dev/null
           helm repo update >/dev/null
 
+          # `helm search repo` matches on substring, so `charts/node-doctor` would also
+          # return e.g. `charts/node-doctor-overlay-test`. Match the name exactly.
           if helm search repo charts/node-doctor --versions -o json \
-              | jq -e --arg v "$CHART_VERSION" 'any(.[]; .version == $v)' >/dev/null; then
+              | jq -e --arg v "$CHART_VERSION" \
+                  'any(.[]; .name == "charts/node-doctor" and .version == $v)' >/dev/null; then
             echo "✅ Chart node-doctor ${CHART_VERSION} is published."
             echo "- ✅ Newest tag \`${SAFE_TAG}\` has chart \`${CHART_VERSION}\` on charts.support.tools" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          LATEST_CHART="$(helm search repo charts/node-doctor -o json 2>/dev/null \
-            | jq -r '.[0].version // "none"' || echo "unknown")"
+          LATEST_CHART="$(helm search repo charts/node-doctor --versions -o json 2>/dev/null \
+            | jq -r '[.[] | select(.name == "charts/node-doctor")][0].version // "none"' \
+            || echo "unknown")"
           {
             echo "## ❌ Release audit failed"
             echo ""

@@ -402,9 +402,15 @@ push-all-images: push-node-doctor-image push-overlay-test-server-image
 #
 # These placeholders stand in for the tag-derived values CI injects; they exist only so
 # the committed copies are byte-reproducible and diffable.
+#
+# IMAGE_TAG is v-STRIPPED and APP_VERSION is not. That asymmetry is deliberate and mirrors
+# release.yml: docker/metadata-action publishes `type=semver,pattern={{version}}`, so images
+# land on Docker Hub as `1.8.7`, never `v1.8.7`, while Chart.yaml appVersion keeps the v as a
+# human-facing release name. Keep these placeholders matching release.yml or the committed
+# values.yaml stops being an accurate model of the shipped chart.
 HELM_PLACEHOLDER_CHART_VERSION := 1.0.0
 HELM_PLACEHOLDER_APP_VERSION   := v1.0.0
-HELM_PLACEHOLDER_IMAGE_TAG     := v1.0.0
+HELM_PLACEHOLDER_IMAGE_TAG     := 1.0.0
 
 # Renders the templates the same way release.yml does (bare envsubst).
 define helm_render
