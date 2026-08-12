@@ -722,10 +722,10 @@ rm -rf .validation-logs
 
 ## Related Documentation
 
-- [CI/CD Standardization Summary](./ci-cd-standardization-summary.md)
-- [Makefile Pipeline Quick Reference](./makefile-pipeline-quick-reference.md)
+- [Release Process](../release-process.md) - What the tag-triggered pipeline actually publishes
+- [GitHub Actions Workflows](../../.github/workflows/README.md) - Job-by-job CI reference
 - [Task Execution Workflow](./task-execution-workflow.md)
-- [Error Response Standard](./error-response-standard.md)
+- `make help` - Authoritative list of Makefile targets for this repo
 
 ---
 
