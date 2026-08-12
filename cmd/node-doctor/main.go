@@ -192,33 +192,46 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Apply default monitors for any missing monitor types
-	addedDefaults := monitors.ApplyDefaultMonitors(config)
-	if len(addedDefaults) > 0 {
-		log.Printf("[INFO] Added default configurations for monitors: %v", addedDefaults)
+	// Build the config normalizer ONCE and use it for BOTH the startup config and
+	// every subsequent hot reload.
+	//
+	// This symmetry is the fix for #node-doctor-243. Previously these steps ran
+	// only here at startup, while the reload path used a bare util.LoadConfig.
+	// The two therefore disagreed about what the configuration contained:
+	// ApplyDefaultMonitors appends an entry for every registered monitor type
+	// that has a default and is absent from the file, so on the first reload
+	// those monitors looked REMOVED and were silently stopped (with the shipped
+	// chart: gateway-health). The -debug/-dry-run/-log-* flags were likewise
+	// silently reverted by any reload.
+	normalizeConfig := func(c *types.NodeDoctorConfig) error {
+		addedDefaults := monitors.ApplyDefaultMonitors(c)
+		if len(addedDefaults) > 0 {
+			log.Printf("[INFO] Added default configurations for monitors: %v", addedDefaults)
+		}
+
+		// Command line overrides always win over file contents.
+		if *debug {
+			c.Settings.LogLevel = "debug"
+		}
+		if *logLevel != "" {
+			c.Settings.LogLevel = *logLevel
+		}
+		if *logFormat != "" {
+			c.Settings.LogFormat = *logFormat
+		}
+		if *dryRun {
+			c.Settings.DryRunMode = true
+			c.Remediation.DryRun = true
+		}
+		if *enableProfiling {
+			c.Features.EnableProfiling = true
+			c.Features.ProfilingPort = *profilingPort
+		}
+
+		return c.ApplyDefaults()
 	}
 
-	// Apply command line overrides
-	if *debug {
-		config.Settings.LogLevel = "debug"
-	}
-	if *logLevel != "" {
-		config.Settings.LogLevel = *logLevel
-	}
-	if *logFormat != "" {
-		config.Settings.LogFormat = *logFormat
-	}
-	if *dryRun {
-		config.Settings.DryRunMode = true
-		config.Remediation.DryRun = true
-	}
-	if *enableProfiling {
-		config.Features.EnableProfiling = true
-		config.Features.ProfilingPort = *profilingPort
-	}
-
-	// Apply defaults and validate
-	if err := config.ApplyDefaults(); err != nil {
+	if err := normalizeConfig(config); err != nil {
 		log.Fatalf("Failed to apply configuration defaults: %v", err)
 	}
 
@@ -331,7 +344,7 @@ func main() {
 	if remediatorRegistry != nil {
 		historyProvider = &remediationHistoryAdapter{registry: remediatorRegistry}
 	}
-	exporters, exporterInterfaces, promExporter, err := createExporters(ctx, config, historyProvider, *healthSocket)
+	exporters, exporterInterfaces, promExporter, healthServer, err := createExporters(ctx, config, historyProvider, *healthSocket)
 	if err != nil {
 		log.Fatalf("Failed to create exporters: %v", err)
 	}
@@ -371,6 +384,27 @@ func main() {
 	if promExporter != nil {
 		det.SetReloadMetricsRecorder(promExporter.RecordConfigReload)
 		log.Printf("[INFO] Config hot-reload self-metrics wired to Prometheus exporter")
+	}
+
+	// Give the reload coordinator the SAME normalization the startup config got,
+	// so reload diffs compare like with like (#node-doctor-243). Without this the
+	// first ConfigMap edit silently stops every auto-defaulted monitor.
+	det.SetConfigNormalizer(func(c *types.NodeDoctorConfig) error {
+		return normalizeConfig(c)
+	})
+
+	// Allow log level/format to be changed by ConfigMap edit without a rollout.
+	// The log DESTINATION still requires a restart and is reported as such by
+	// reload.ClassifyReload.
+	det.SetLoggingReinit(logger.Init)
+
+	// Wire downstream export outcomes into READINESS only. A failing exporter
+	// makes the pod NotReady; it must never affect /healthz, because restarting
+	// node-doctor cannot fix an unreachable API server and would crashloop the
+	// agent on exactly the degraded nodes it exists to observe (#node-doctor-246).
+	if healthServer != nil {
+		det.SetDependencyReporter(healthServer.SetDependencyStatus)
+		log.Printf("[INFO] Exporter health wired to readiness (/ready); liveness (/healthz) stays independent")
 	}
 
 	// Start the detector
@@ -454,24 +488,32 @@ func (a *remediationHistoryAdapter) GetHistory(limit int) interface{} {
 	return a.registry.GetHistory(limit)
 }
 
-// createExporters creates and configures all exporters from the configuration.
-// remediationProvider is optional; when non-nil it is wired to the health server
-// before Start() so /remediation/history is available immediately on first request.
-func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider, healthSocketPath string) ([]ExporterLifecycle, []types.Exporter, *prometheusexporter.PrometheusExporter, error) {
-	var exporters []ExporterLifecycle
-	var exporterInterfaces []types.Exporter
-	// promExporterTyped keeps a typed reference to the Prometheus exporter (if one
-	// is created and started) so the caller can wire it as a circuit-state observer.
-	var promExporterTyped *prometheusexporter.PrometheusExporter
+// startNetworkedExportersFn is a test seam over startNetworkedExporters.
+//
+// It exists so the bind-ordering regression guard can substitute a phase-2
+// implementation that BLOCKS, and then assert that the health endpoint is
+// already answering probes while it blocks. That is the property PR #24 fixed
+// by hand and #node-doctor-246 asked to protect: if anyone reorders
+// createExporters so networked init runs before the health server binds, the
+// guard test deadlocks on an unservable socket and fails.
+//
+// Production code never reassigns this; only tests do.
+var startNetworkedExportersFn = startNetworkedExporters
 
-	// Create the Health Server FIRST so the Kubernetes startup/liveness probe
-	// (:8080/healthz) can bind and return 200 immediately — BEFORE the k8s/HTTP
-	// exporters below, whose Start() can BLOCK on a degraded node (cluster-DNS or
-	// API-server reachability, cache sync). If a networked exporter hangs during
-	// startup, the health listener would otherwise never open within the ~110s
-	// startup budget → probe 404 → kubelet kills the agent → crashloop, on exactly
-	// the nodes node-doctor exists to observe. Bind liveness before slow init
-	// (cluster-services #19529: a1pinode01 crashlooped 125x this way).
+// startHealthServer creates and starts the health server. This is PHASE 1 of
+// createExporters and MUST stay ahead of any networked exporter init.
+//
+// Why the ordering is load-bearing: on a degraded node the k8s/HTTP exporters'
+// Start() can BLOCK (cluster-DNS or API-server reachability, informer cache
+// sync). If a networked exporter hangs during startup, the health listener
+// would never open within the startup-probe budget → probe fails → kubelet
+// kills the agent → crashloop, on exactly the nodes node-doctor exists to
+// observe (cluster-services #19529: a1pinode01 crashlooped 125x this way).
+//
+// Binding liveness first means the pod stays alive and merely reports NotReady
+// while the downstream is broken — which is the whole point of the
+// liveness/readiness split.
+func startHealthServer(ctx context.Context, remediationProvider health.RemediationHistoryProvider, healthSocketPath string) (*health.Server, error) {
 	log.Printf("[INFO] Creating health server...")
 	healthServer, err := health.NewServer(&health.Config{
 		Enabled: true,
@@ -480,29 +522,78 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 		BindAddress: "::",
 		Port:        8080,
 		// Also serve on the per-pod unix socket so Kubernetes exec probes
-		// (-healthcheck) reach node-doctor even when a foreign process owns
-		// hostPort 8080 on a hostNetwork node.
+		// (-healthcheck / -healthcheck-ready) reach node-doctor even when a
+		// foreign process owns hostPort 8080 on a hostNetwork node.
 		SocketPath:   healthSocketPath,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	})
 	if err != nil {
-		log.Printf("[WARN] Failed to create health server: %v", err)
-	} else {
-		// Wire the remediation history provider before Start so the endpoint is
-		// available immediately when the listener opens (no race window).
-		if remediationProvider != nil {
-			healthServer.SetRemediationHistory(remediationProvider)
-			log.Printf("[INFO] Remediation history wired to /remediation/history endpoint")
-		}
-		if err := healthServer.Start(ctx); err != nil {
-			log.Printf("[WARN] Failed to start health server: %v", err)
-		} else {
-			exporters = append(exporters, healthServer)
-			exporterInterfaces = append(exporterInterfaces, healthServer)
-			log.Printf("[INFO] Health server created and started on port 8080")
-		}
+		return nil, fmt.Errorf("create health server: %w", err)
 	}
+
+	// Wire the remediation history provider before Start so the endpoint is
+	// available immediately when the listener opens (no race window).
+	if remediationProvider != nil {
+		healthServer.SetRemediationHistory(remediationProvider)
+		log.Printf("[INFO] Remediation history wired to /remediation/history endpoint")
+	}
+	if err := healthServer.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start health server: %w", err)
+	}
+	log.Printf("[INFO] Health server created and started (probes bound BEFORE networked exporter init)")
+	return healthServer, nil
+}
+
+// createExporters creates and configures all exporters from the configuration.
+// remediationProvider is optional; when non-nil it is wired to the health server
+// before Start() so /remediation/history is available immediately on first request.
+//
+// ORDERING IS LOAD-BEARING. Phase 1 (health server) must complete before phase 2
+// (networked exporters). See startHealthServer for why, and
+// TestHealthEndpointServesBeforeNetworkedExporters /
+// TestCreateExportersSourceOrdering for the regression guards.
+func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remediationProvider health.RemediationHistoryProvider, healthSocketPath string) ([]ExporterLifecycle, []types.Exporter, *prometheusexporter.PrometheusExporter, *health.Server, error) {
+	var exporters []ExporterLifecycle
+	var exporterInterfaces []types.Exporter
+
+	// ---- PHASE 1: bind liveness/readiness FIRST (never networked) ----------
+	healthServer, err := startHealthServer(ctx, remediationProvider, healthSocketPath)
+	if err != nil {
+		// Non-fatal: losing the health endpoint must not prevent monitoring.
+		log.Printf("[WARN] %v", err)
+		healthServer = nil
+	} else {
+		exporters = append(exporters, healthServer)
+		exporterInterfaces = append(exporterInterfaces, healthServer)
+	}
+
+	// ---- PHASE 2: networked exporters (Start() may block on a bad node) ----
+	netLifecycles, netInterfaces, promExporterTyped := startNetworkedExportersFn(ctx, config)
+	exporters = append(exporters, netLifecycles...)
+	exporterInterfaces = append(exporterInterfaces, netInterfaces...)
+
+	// If no exporters were created, use a no-op exporter to satisfy the detector requirements
+	if len(exporterInterfaces) == 0 {
+		log.Printf("[INFO] No exporters enabled, using no-op exporter")
+		noopExp := &noopExporter{}
+		exporters = append(exporters, noopExp)
+		exporterInterfaces = append(exporterInterfaces, noopExp)
+	}
+
+	return exporters, exporterInterfaces, promExporterTyped, healthServer, nil
+}
+
+// startNetworkedExporters creates and starts the exporters that talk to the
+// network (Kubernetes API, webhooks, Prometheus listener). This is PHASE 2 of
+// createExporters and must never run before startHealthServer — any Start()
+// here can block for the whole startup-probe budget on a degraded node.
+func startNetworkedExporters(ctx context.Context, config *types.NodeDoctorConfig) ([]ExporterLifecycle, []types.Exporter, *prometheusexporter.PrometheusExporter) {
+	var exporters []ExporterLifecycle
+	var exporterInterfaces []types.Exporter
+	// promExporterTyped keeps a typed reference to the Prometheus exporter (if one
+	// is created and started) so the caller can wire it as a circuit-state observer.
+	var promExporterTyped *prometheusexporter.PrometheusExporter
 
 	// Create Kubernetes exporter if enabled
 	if config.Exporters.Kubernetes != nil && config.Exporters.Kubernetes.Enabled {
@@ -565,15 +656,7 @@ func createExporters(ctx context.Context, config *types.NodeDoctorConfig, remedi
 		}
 	}
 
-	// If no exporters were created, use a no-op exporter to satisfy the detector requirements
-	if len(exporterInterfaces) == 0 {
-		log.Printf("[INFO] No exporters enabled, using no-op exporter")
-		noopExp := &noopExporter{}
-		exporters = append(exporters, noopExp)
-		exporterInterfaces = append(exporterInterfaces, noopExp)
-	}
-
-	return exporters, exporterInterfaces, promExporterTyped, nil
+	return exporters, exporterInterfaces, promExporterTyped
 }
 
 // dumpConfiguration prints the effective configuration as JSON

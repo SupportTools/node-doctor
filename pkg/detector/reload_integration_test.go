@@ -21,6 +21,10 @@ import (
 	_ "github.com/supporttools/node-doctor/pkg/monitors/system"
 )
 
+// boolPtr returns a pointer to b, for the *bool fields (types.ReloadConfig.Enabled)
+// that use nil to mean "unset, take the default".
+func boolPtr(b bool) *bool { return &b }
+
 // ReloadTestHelper provides utilities for integration testing config reload functionality
 type ReloadTestHelper struct {
 	configFile  string
@@ -223,7 +227,7 @@ func CreateTestConfigWithMonitors(monitors []types.MonitorConfig) *types.NodeDoc
 			},
 		},
 		Reload: types.ReloadConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			DebounceInterval: 100 * time.Millisecond,
 		},
 	}

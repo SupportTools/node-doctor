@@ -292,3 +292,11 @@ data:
       enableMetrics: {{ .Values.features.enableMetrics }}
       enableProfiling: {{ .Values.features.enableProfiling }}
       enableTracing: {{ .Values.features.enableTracing }}
+
+    # Configuration hot reload. When enabled, edits to this ConfigMap are picked
+    # up by the running agent and affected monitors are re-initialized in place;
+    # the agent logs which ones. Changes that cannot be hot-applied are reported
+    # as a ConfigReloadRestartRequired event instead of silently doing nothing.
+    reload:
+      enabled: {{ .Values.reload.enabled }}
+      debounceInterval: {{ .Values.reload.debounceInterval }}

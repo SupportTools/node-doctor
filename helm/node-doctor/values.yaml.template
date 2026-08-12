@@ -105,6 +105,23 @@ service:
   clusterIP: None
   httpPort: 8080
   metricsPort: 9101
+  # KEEP THIS TRUE. This Service exists ONLY so Prometheus can discover and scrape
+  # the agents (see serviceMonitor below); nothing routes request traffic through
+  # it, so the usual reason to exclude NotReady pods does not apply here.
+  #
+  # Readiness on this DaemonSet exists to gate rollouts and to surface a degraded
+  # agent — NOT to remove the pod from monitoring. With publishNotReadyAddresses
+  # false, Kubernetes drops NotReady pods out of the Service's Endpoints, so
+  # Prometheus stops scraping them and every node_doctor_* series for that node
+  # disappears. Since a pod goes NotReady precisely when something is wrong with
+  # that node's agent, turning this off would blind us to exactly the nodes we
+  # most need data from, at exactly the moment we need it.
+  #
+  # It would also be a SILENT blackout: NodeDoctorNoMetrics is
+  # absent(node_doctor_monitor_uptime_seconds), which is fleet-wide and therefore
+  # only fires when EVERY node stops reporting. Losing one node, or five, produces
+  # no alert at all.
+  publishNotReadyAddresses: true
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "9101"
@@ -242,6 +259,22 @@ clusterDnsPodProbe:
 # IP-float/VIP daemon on hostPort 8080) can answer an httpGet probe with a 404 and
 # crashloop the pod; the unix socket lives in the pod and cannot collide.
 # To revert to HTTP probes, replace the `exec:` block with `httpGet: {path, port}`.
+#
+# LIVENESS vs READINESS — these are deliberately NOT the same signal:
+#
+#   liveness  (-healthcheck      -> /healthz) "is the process alive / not wedged?"
+#             Failing it makes the kubelet KILL the container. It therefore
+#             consults ONLY process-internal state and is completely independent
+#             of downstream health. node-doctor runs on exactly the nodes whose
+#             API server / DNS are broken; if a downstream failure could fail
+#             liveness, the agent would be restarted in a loop precisely when its
+#             diagnostics matter most.
+#
+#   readiness (-healthcheck-ready -> /ready)  "can the agent do its job?"
+#             Failing it marks the pod NotReady WITHOUT restarting it. This is
+#             what a downstream failure (exporter cannot reach the API server)
+#             drives. A dependency must fail 3 consecutive export attempts before
+#             it counts, so a transient blip does not flap the whole DaemonSet.
 probes:
   liveness:
     enabled: true
@@ -261,6 +294,19 @@ probes:
     timeoutSeconds: 3
     failureThreshold: 3
     successThreshold: 1
+  # STARTUP BUDGET (confirmed for #node-doctor-246):
+  #   initialDelaySeconds 10 + (failureThreshold 20 x periodSeconds 5) = 110s
+  # before the kubelet gives up and kills the container.
+  #
+  # The health listener binds in PHASE 1 of createExporters, ahead of every
+  # networked exporter, so it answers within milliseconds of process start and
+  # does not consume this budget at all. The 110s therefore covers genuinely slow
+  # but legitimate init (config load, monitor construction) with a very wide
+  # margin, and still bounds a truly hung process.
+  #
+  # Do NOT lower failureThreshold below ~12 (70s) without re-checking the slowest
+  # observed cold start on a loaded node; that is what previously crashlooped
+  # a1pinode01 125x.
   startup:
     enabled: true
     exec:
@@ -270,6 +316,19 @@ probes:
     timeoutSeconds: 3
     failureThreshold: 20
     successThreshold: 1
+
+# Configuration hot reload.
+# When enabled (the default), the agent watches the mounted ConfigMap directory
+# and re-initializes affected monitors in place on change, logging exactly which
+# ones were reconfigured. Changes that CANNOT be applied to a running process
+# (settings.nodeName, log destination, enabling a previously-disabled exporter or
+# remediation) are reported as an explicit ConfigReloadRestartRequired event
+# rather than being silently ignored.
+# Set enabled: false to require a pod rollout for every configuration change;
+# the agent then says so loudly at startup instead of watching silently.
+reload:
+  enabled: true
+  debounceInterval: 500ms
 
 # Resource limits and requests for the node-doctor agent.
 # Do NOT lower the CPU limit back toward 200m. At 200m the agent sat 30-71% CFS-throttled

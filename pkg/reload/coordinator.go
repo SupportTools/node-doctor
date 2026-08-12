@@ -3,6 +3,7 @@ package reload
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,16 +27,33 @@ type EventEmitter func(severity types.EventSeverity, reason, message string)
 // imports the prometheus exporter, avoiding coupling/cycles.
 type ReloadMetricsRecorder func(success bool, duration time.Duration)
 
+// ConfigNormalizer applies the SAME post-load normalization the process applied
+// to its startup configuration — registry default monitors, command-line
+// overrides, and ApplyDefaults — to a freshly-loaded config.
+//
+// Without it the reload path and the startup path disagree about what the
+// configuration IS, and the resulting diff is garbage. Concretely: main.go
+// calls monitors.ApplyDefaultMonitors() at startup, which appends a monitor
+// entry for every registered type that has a default and is absent from the
+// file. util.LoadConfig does not do this, so the reloaded config was missing
+// those monitors, ComputeConfigDiff reported them as REMOVED, and the very
+// first ConfigMap edit silently stopped auto-defaulted monitors that the
+// operator never touched (with the shipped chart: gateway-health). Likewise the
+// -debug/-dry-run/-log-level flags were silently reverted on any reload.
+type ConfigNormalizer func(*types.NodeDoctorConfig) error
+
 // ReloadCoordinator orchestrates configuration reload operations.
 type ReloadCoordinator struct {
-	configPath       string
-	currentConfig    *types.NodeDoctorConfig
-	reloadCallback   ReloadCallback
-	eventEmitter     EventEmitter
-	metricsRecorder  ReloadMetricsRecorder
-	validator        *ConfigValidator
-	mu               sync.Mutex
-	reloadInProgress bool
+	configPath        string
+	currentConfig     *types.NodeDoctorConfig
+	reloadCallback    ReloadCallback
+	eventEmitter      EventEmitter
+	metricsRecorder   ReloadMetricsRecorder
+	normalizer        ConfigNormalizer
+	validator         *ConfigValidator
+	mu                sync.Mutex
+	reloadInProgress  bool
+	lastReloadability *Reloadability
 }
 
 // NewReloadCoordinator creates a new reload coordinator.
@@ -118,6 +136,17 @@ func (rc *ReloadCoordinator) performReload(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	// Step 1b: Normalize exactly as startup did (default monitors, CLI
+	// overrides, ApplyDefaults). Skipping this makes the diff compare a
+	// normalized old config against a raw new one — see ConfigNormalizer.
+	if rc.normalizer != nil {
+		if err = rc.normalizer(newConfig); err != nil {
+			rc.emitEvent(types.EventWarning, "ConfigReloadFailed",
+				fmt.Sprintf("Failed to normalize configuration: %v", err))
+			return fmt.Errorf("failed to normalize config: %w", err)
+		}
+	}
+
 	// Step 2: Validate new configuration
 	if rc.validator != nil {
 		validationResult := rc.validator.Validate(newConfig)
@@ -133,15 +162,37 @@ func (rc *ReloadCoordinator) performReload(ctx context.Context) (err error) {
 			"Configuration validation completed successfully")
 	}
 
-	// Step 3: Compute diff
+	// Step 3: Compute diff and classify what can actually be applied.
 	rc.mu.Lock()
-	diff := ComputeConfigDiff(rc.currentConfig, newConfig)
+	oldConfig := rc.currentConfig
+	diff := ComputeConfigDiff(oldConfig, newConfig)
+	reloadability := ClassifyReload(oldConfig, newConfig, diff)
+	rc.lastReloadability = reloadability
 	rc.mu.Unlock()
 
-	// Step 4: Check if there are any changes
+	// Always surface changes that cannot be hot-applied, EVEN when there is
+	// nothing hot-reloadable to do. ComputeConfigDiff only looks at monitors,
+	// exporters and remediation, so a settings-only edit (e.g. settings.logFile)
+	// used to fall through to "no changes" — the operator saw a success event
+	// while the process kept running the old value. Say so out loud instead.
+	if reloadability.HasRestartRequired() {
+		rc.emitEvent(types.EventWarning, "ConfigReloadRestartRequired",
+			fmt.Sprintf("Configuration changed in %d way(s) that CANNOT be applied to the running process; "+
+				"a pod restart/rollout is required for these to take effect: %s",
+				len(reloadability.RestartRequired), strings.Join(reloadability.RestartRequired, "; ")))
+	}
+
+	// Step 4: Check if there are any hot-applicable changes
 	if !diff.HasChanges() {
-		rc.emitEvent(types.EventInfo, "ConfigReloadNoChanges",
-			"Configuration reload completed with no changes")
+		if !reloadability.HasRestartRequired() {
+			rc.emitEvent(types.EventInfo, "ConfigReloadNoChanges",
+				"Configuration reload completed with no changes")
+		}
+		// Adopt the new config as current so the next diff is computed against
+		// what is actually on disk rather than re-reporting the same delta.
+		rc.mu.Lock()
+		rc.currentConfig = newConfig
+		rc.mu.Unlock()
 		return nil
 	}
 
@@ -157,12 +208,32 @@ func (rc *ReloadCoordinator) performReload(ctx context.Context) (err error) {
 	rc.currentConfig = newConfig
 	rc.mu.Unlock()
 
-	// Emit success event with statistics
+	// Emit success event with statistics. The Reloadability summary names the
+	// individual monitors that were reconfigured/started/stopped so an operator
+	// can confirm from the event stream that their ConfigMap edit landed.
 	duration := time.Since(startTime)
-	stats := rc.buildReloadStats(diff, duration)
+	stats := rc.buildReloadStats(diff, duration) + " " + reloadability.Summary()
 	rc.emitEvent(types.EventInfo, "ConfigReloadSucceeded", stats)
 
 	return nil
+}
+
+// GetLastReloadability returns the classification produced by the most recent
+// reload attempt, or nil if no reload has run yet.
+func (rc *ReloadCoordinator) GetLastReloadability() *Reloadability {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.lastReloadability
+}
+
+// SetConfigNormalizer installs the post-load normalization hook. It must apply
+// the same transformations the process applied to its startup config; see
+// ConfigNormalizer. Passing nil disables normalization (the historical, buggy
+// behaviour) and is only appropriate in tests that construct configs directly.
+func (rc *ReloadCoordinator) SetConfigNormalizer(n ConfigNormalizer) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.normalizer = n
 }
 
 // buildReloadStats creates a summary message of what was reloaded.

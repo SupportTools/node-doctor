@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +35,9 @@ type Server struct {
 	lastUpdate         time.Time
 	startTime          time.Time
 	healthChecks       []HealthCheck
+	readinessChecks    []HealthCheck
+	dependencies       map[string]string // dependency name -> error text, only once past the failure threshold
+	dependencyFailures map[string]int    // dependency name -> consecutive failure count
 	remediationHistory RemediationHistoryProvider
 }
 
@@ -175,13 +180,16 @@ func NewServer(config *Config) (*Server, error) {
 	}
 
 	server := &Server{
-		config:       config,
-		socketPath:   config.SocketPath,
-		started:      false,
-		healthy:      true,
-		ready:        false,
-		startTime:    time.Now(),
-		healthChecks: make([]HealthCheck, 0),
+		config:             config,
+		socketPath:         config.SocketPath,
+		started:            false,
+		healthy:            true,
+		ready:              false,
+		startTime:          time.Now(),
+		healthChecks:       make([]HealthCheck, 0),
+		readinessChecks:    make([]HealthCheck, 0),
+		dependencies:       make(map[string]string),
+		dependencyFailures: make(map[string]int),
 	}
 
 	return server, nil
@@ -351,11 +359,99 @@ func (s *Server) SetReady(ready bool) {
 	s.ready = ready
 }
 
-// AddHealthCheck adds a custom health check.
+// AddHealthCheck adds a custom LIVENESS check.
+//
+// LIVENESS vs READINESS — read this before adding a check here:
+//
+// /healthz (liveness) answers "is this process still functioning, or is it
+// wedged and in need of a restart?". A failing liveness probe makes the kubelet
+// KILL the container. Therefore a liveness check may ONLY inspect
+// process-internal state (a deadlocked goroutine, an exhausted worker pool).
+//
+// It must NEVER depend on something outside the process — the API server,
+// cluster DNS, a webhook endpoint. node-doctor runs on exactly the degraded
+// nodes where those are broken; wiring a downstream dependency into liveness
+// converts "the node is unhealthy" into "restart node-doctor forever", which is
+// the crashloop class that #node-doctor-246 exists to prevent.
+//
+// For downstream dependencies use AddReadinessCheck or SetDependencyStatus
+// instead: those make the pod NotReady (traffic/roll-out gating) without ever
+// restarting it.
 func (s *Server) AddHealthCheck(name string, check func() error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.healthChecks = append(s.healthChecks, HealthCheck{Name: name, Check: check})
+}
+
+// AddReadinessCheck adds a custom READINESS check.
+//
+// Readiness answers "can this agent currently do its job?". A failing readiness
+// check marks the pod NotReady but never restarts it, which is the correct
+// response to a broken downstream (API server unreachable, exporter failing).
+// See AddHealthCheck for the liveness counterpart and why the two must not be
+// conflated.
+func (s *Server) AddReadinessCheck(name string, check func() error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readinessChecks = append(s.readinessChecks, HealthCheck{Name: name, Check: check})
+}
+
+// dependencyFailureThreshold is the number of CONSECUTIVE failed reports a
+// downstream dependency must accumulate before it is allowed to make the pod
+// NotReady.
+//
+// Hysteresis matters here because node-doctor is a DaemonSet: a single
+// transient export error flipping every pod to NotReady would stall rolling
+// updates fleet-wide for a blip that has already healed. One success resets the
+// counter, so a genuinely broken downstream still trips within a few cycles
+// (and the kubelet's own readiness failureThreshold adds a second layer).
+const dependencyFailureThreshold = 3
+
+// SetDependencyStatus records the latest outcome for a named downstream
+// dependency. A nil err marks it healthy and immediately clears any accumulated
+// failures; a non-nil err increments its consecutive-failure count, and once
+// that reaches dependencyFailureThreshold the dependency makes /ready return
+// 503 until it recovers.
+//
+// This affects READINESS ONLY. /healthz deliberately ignores dependency state
+// entirely — a downstream failure must never restart the process. See
+// AddHealthCheck.
+func (s *Server) SetDependencyStatus(name string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.dependencies == nil {
+		s.dependencies = make(map[string]string)
+	}
+	if s.dependencyFailures == nil {
+		s.dependencyFailures = make(map[string]int)
+	}
+
+	if err == nil {
+		delete(s.dependencies, name)
+		delete(s.dependencyFailures, name)
+		return
+	}
+
+	s.dependencyFailures[name]++
+	if s.dependencyFailures[name] >= dependencyFailureThreshold {
+		s.dependencies[name] = err.Error()
+	}
+}
+
+// failingDependencies returns the sorted names of dependencies that have
+// exceeded the consecutive-failure threshold. Caller must hold at least a read
+// lock.
+func (s *Server) failingDependencies() []string {
+	if len(s.dependencies) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(s.dependencies))
+	for name := range s.dependencies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // SetRemediationHistory sets the remediation history provider for the /remediation/history endpoint.
@@ -365,12 +461,25 @@ func (s *Server) SetRemediationHistory(provider RemediationHistoryProvider) {
 	s.remediationHistory = provider
 }
 
-// handleHealthz handles the /healthz endpoint (liveness probe).
+// handleHealthz handles the /healthz endpoint (LIVENESS probe).
+//
+// Liveness == "the process is alive and not wedged". A 503 here causes the
+// kubelet to KILL and restart the container, so this handler deliberately
+// consults ONLY process-internal state:
+//
+//   - s.healthy, set explicitly via SetHealthy
+//   - s.healthChecks, which are documented as process-internal only
+//
+// It must NOT consult s.ready, s.readinessChecks or s.dependencies. Downstream
+// failures (API server unreachable, exporter erroring) belong to /ready: they
+// make the pod NotReady, never restart it. Restarting node-doctor because the
+// node it is diagnosing is broken is the exact crashloop this split prevents
+// (#node-doctor-246). TestLivenessIgnoresDownstreamFailures locks this in.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Run all health checks
+	// Run all LIVENESS checks
 	checks := make([]Check, 0, len(s.healthChecks))
 	allHealthy := s.healthy
 
@@ -405,7 +514,19 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-// handleReady handles the /ready endpoint (readiness probe).
+// handleReady handles the /ready endpoint (READINESS probe).
+//
+// Readiness == "this agent can currently do its job". Unlike /healthz, a 503
+// here only marks the pod NotReady — it never restarts the container. That is
+// the correct response to a downstream failure, so this handler DOES consult:
+//
+//   - s.ready: at least one monitor has produced a status
+//   - s.readinessChecks: caller-registered "can I work?" predicates
+//   - s.dependencies: per-exporter export outcomes reported by the detector
+//
+// Reached over the same per-pod unix socket as liveness via the
+// `-healthcheck-ready` exec probe, so it is immune to a foreign host process
+// squatting hostPort 8080 on a hostNetwork node.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -415,11 +536,34 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		Timestamp: time.Now(),
 	}
 
-	if !s.ready {
+	switch {
+	case !s.ready:
 		response.Message = "Not ready: monitors not yet initialized"
+	default:
+		// Downstream dependency failures reported by the detector.
+		if failing := s.failingDependencies(); len(failing) > 0 {
+			response.Ready = false
+			response.Message = "Not ready: downstream dependency failure: " + strings.Join(failing, ", ")
+			break
+		}
+		// Caller-registered readiness predicates.
+		var failed []string
+		for _, rc := range s.readinessChecks {
+			if err := rc.Check(); err != nil {
+				failed = append(failed, rc.Name+": "+err.Error())
+			}
+		}
+		if len(failed) > 0 {
+			response.Ready = false
+			response.Message = "Not ready: " + strings.Join(failed, "; ")
+			break
+		}
+		response.Message = "Ready"
+	}
+
+	if !response.Ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else {
-		response.Message = "Ready"
 		w.WriteHeader(http.StatusOK)
 	}
 
