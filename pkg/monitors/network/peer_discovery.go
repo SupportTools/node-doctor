@@ -151,9 +151,19 @@ func (d *kubernetesPeerDiscovery) GetPeers() []Peer {
 }
 
 // Refresh forces an immediate refresh of the peer list.
+//
+// On success the freshly discovered set REPLACES the previous one: peers that have
+// disappeared from the API (node removed, renamed, or re-addressed) are dropped, so a
+// long-running agent converges on the same peer set a freshly started agent would see.
+//
+// On failure the previous peer set is deliberately left intact and the error is
+// returned. A transient API/list failure must never wipe the mesh: an empty peer set
+// would make every consumer believe it has no peers to probe. Callers keep probing the
+// last known-good set until a successful list produces a new authoritative one.
 func (d *kubernetesPeerDiscovery) Refresh(ctx context.Context) error {
 	peers, err := d.discoverPeers(ctx)
 	if err != nil {
+		// Fail safe: record the error but keep d.peers as-is.
 		d.mu.Lock()
 		d.lastError = err
 		d.mu.Unlock()

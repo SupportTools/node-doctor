@@ -58,6 +58,8 @@ type Metrics struct {
 	PeerReachable                 *prometheus.GaugeVec
 	PeersTotal                    *prometheus.GaugeVec
 	PeersReachableTotal           *prometheus.GaugeVec
+	PeerSetSize                   *prometheus.GaugeVec
+	PeerSetChurnTotal             *prometheus.CounterVec
 	DNSLatencySeconds             *prometheus.GaugeVec
 	DNSNameserverHealthScore      *prometheus.GaugeVec
 	DNSNameserverSuccessScore     *prometheus.GaugeVec
@@ -397,6 +399,28 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 			[]string{"node"},
 		),
 
+		PeerSetSize: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peer_set_size",
+				Help:        "Number of peers in the current authoritative discovered peer set. Should equal (cluster nodes - 1) on every node regardless of agent uptime; a node reporting more than its neighbours is holding stale peers.",
+				ConstLabels: labels,
+			},
+			[]string{"node"},
+		),
+
+		PeerSetChurnTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace:   namespace,
+				Subsystem:   subsystem,
+				Name:        "peer_set_churn_total",
+				Help:        "Cumulative count of peer identities entering (change=added) or leaving (change=removed) the exported peer set. A peer identity is the (peer_node, peer_ip, address_family) tuple, so a rename or re-address counts as one removal plus one addition.",
+				ConstLabels: labels,
+			},
+			[]string{"node", "change"},
+		),
+
 		DNSLatencySeconds: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace:   namespace,
@@ -625,6 +649,8 @@ func (m *Metrics) Register(registry *prometheus.Registry) error {
 		m.PeerReachable,
 		m.PeersTotal,
 		m.PeersReachableTotal,
+		m.PeerSetSize,
+		m.PeerSetChurnTotal,
 		m.DNSLatencySeconds,
 		m.DNSNameserverHealthScore,
 		m.DNSNameserverSuccessScore,
@@ -683,6 +709,8 @@ func (m *Metrics) Unregister(registry *prometheus.Registry) {
 		m.PeerReachable,
 		m.PeersTotal,
 		m.PeersReachableTotal,
+		m.PeerSetSize,
+		m.PeerSetChurnTotal,
 		m.DNSLatencySeconds,
 		m.DNSNameserverHealthScore,
 		m.DNSNameserverSuccessScore,

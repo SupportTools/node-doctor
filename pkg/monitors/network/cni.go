@@ -511,12 +511,25 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	persistentlyUnreachablePeers := make([]string, 0) // Peers exceeding failure threshold
 	var totalLatency time.Duration
 
+	// The discovered peer set is AUTHORITATIVE for this cycle. Statuses are collected
+	// into a fresh map that is swapped in wholesale below, so a peer that disappeared
+	// from discovery (node removed, renamed, or re-addressed) is dropped instead of
+	// lingering forever. Before this, m.peerStatuses only ever grew: pre-rename
+	// identities kept their last-written values and were still exported as
+	// peer_latency_seconds / peer_reachable series, which pinned peer reachability
+	// below 100% and inflated max-latency alerts until the agent was restarted.
+	//
+	// This is safe against a transient discovery failure because the discovery layer
+	// itself fails safe: on a list error it keeps (and keeps serving) the previous
+	// peer set rather than returning an empty one, so `peers` here is never emptied
+	// by an API blip. The len(peers)==0 early return above is a further backstop --
+	// it leaves the previous statuses untouched and publishes no latency metrics.
+	nextStatuses := make(map[string]*PeerStatus, len(peers))
+
 	for result := range resultsCh {
 		peerStatus := result.status
 
-		m.mu.Lock()
-		m.peerStatuses[result.peer.NodeName] = peerStatus
-		m.mu.Unlock()
+		nextStatuses[result.peer.NodeName] = peerStatus
 
 		if peerStatus.Reachable {
 			reachableCount++
@@ -538,6 +551,12 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 			}
 		}
 	}
+
+	// Swap in the authoritative status map for this cycle, dropping any peer that
+	// is no longer present in discovery.
+	m.mu.Lock()
+	m.peerStatuses = nextStatuses
+	m.mu.Unlock()
 
 	// Emit aggregate events only on state changes (delta-based emission, fixes issue #8)
 	// This prevents duplicate events when the same peers are problematic across checks
