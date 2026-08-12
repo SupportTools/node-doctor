@@ -41,6 +41,11 @@ type PrometheusExporter struct {
 	// TOCTOU race.
 	ephemeral bool
 
+	// lastPeerSeries is the set of peer identities published on the most recent
+	// peer-carrying status. It is the baseline for deleting stale peer gauge
+	// series and for computing peer-set churn. Guarded by mu.
+	lastPeerSeries map[peerSeriesKey]struct{}
+
 	// consecutiveFailures tracks the running count of failed exports since the
 	// last successful export. It backs the ExporterConsecutiveFailures gauge and
 	// is guarded by mu to avoid racy read-modify-write on the gauge itself.
@@ -408,6 +413,97 @@ func (e *PrometheusExporter) ObserveCircuitState(state int) {
 	e.metrics.RemediatorCircuitBreakerState.WithLabelValues(e.nodeName).Set(float64(state))
 }
 
+// peerSeriesKey identifies one exported peer identity: the label tuple that a
+// peer gauge series is keyed by (excluding the constant "node" label of the
+// exporting agent). A rename or re-address produces a DIFFERENT key, which is
+// exactly what makes the pre-rename identity detectable as stale.
+type peerSeriesKey struct {
+	node   string
+	ip     string
+	family string
+}
+
+// reconcilePeerSeries makes the peer set published by this cycle authoritative for
+// the Prometheus registry and records peer-set churn.
+//
+// Prometheus *Vec collectors keep every label combination they have ever been
+// handed until the series is explicitly deleted or the process restarts. Without
+// this reconciliation, a peer that was renamed or re-addressed left its old
+// (peer_node, peer_ip, address_family) series behind at its last written value
+// forever. Those frozen series are indistinguishable from live ones to PromQL, so
+//
+//	avg by (node, address_family) (node_doctor_monitor_peer_reachable)
+//
+// stayed pinned below 100% (e.g. exactly 75% with one dead target out of four) and
+//
+//	max by (node) (node_doctor_monitor_peer_latency_seconds)
+//
+// reported the dead target's last, worst latency. Both correlated perfectly with
+// agent uptime and cleared only on restart.
+//
+// Called only with a non-empty current set, so a status that carries no peers (a
+// discovery blip, or a different monitor's latency status) never deletes series.
+func (e *PrometheusExporter) reconcilePeerSeries(current map[peerSeriesKey]struct{}) {
+	e.mu.Lock()
+	previous := e.lastPeerSeries
+	e.lastPeerSeries = current
+	e.mu.Unlock()
+
+	var added, removed int
+
+	for key := range current {
+		if _, ok := previous[key]; !ok {
+			added++
+		}
+	}
+
+	for key := range previous {
+		if _, ok := current[key]; ok {
+			continue
+		}
+		removed++
+
+		labels := prometheus.Labels{
+			"node":           e.nodeName,
+			"peer_node":      key.node,
+			"peer_ip":        key.ip,
+			"address_family": key.family,
+		}
+		e.metrics.PeerLatencySeconds.Delete(labels)
+		e.metrics.PeerLatencyAvgSeconds.Delete(labels)
+		e.metrics.PeerReachable.Delete(labels)
+	}
+
+	// The latency histogram is keyed only by peer_node, so it is dropped only when
+	// the peer name itself is gone (a re-address keeps the same histogram series).
+	for key := range previous {
+		if _, ok := current[key]; ok {
+			continue
+		}
+		stillPresent := false
+		for cur := range current {
+			if cur.node == key.node {
+				stillPresent = true
+				break
+			}
+		}
+		if !stillPresent {
+			e.metrics.PeerLatencyHistogram.DeleteLabelValues(e.nodeName, key.node)
+		}
+	}
+
+	if added > 0 {
+		e.metrics.PeerSetChurnTotal.WithLabelValues(e.nodeName, "added").Add(float64(added))
+	}
+	if removed > 0 {
+		e.metrics.PeerSetChurnTotal.WithLabelValues(e.nodeName, "removed").Add(float64(removed))
+	}
+	// Touch both series so they exist at 0 from the first publication and PromQL
+	// rate()/increase() over them is well defined.
+	e.metrics.PeerSetChurnTotal.WithLabelValues(e.nodeName, "added")
+	e.metrics.PeerSetChurnTotal.WithLabelValues(e.nodeName, "removed")
+}
+
 // recordLatencyMetrics extracts latency metrics from status metadata and records them
 func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 	latencyMetrics := status.GetLatencyMetrics()
@@ -430,11 +526,14 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 	// Record peer latency metrics
 	if len(latencyMetrics.Peers) > 0 {
 		reachableCount := 0
+		current := make(map[peerSeriesKey]struct{}, len(latencyMetrics.Peers))
+
 		for _, peer := range latencyMetrics.Peers {
 			latencySeconds := peer.LatencyMs / 1000.0
 			avgLatencySeconds := peer.AvgLatencyMs / 1000.0
 
 			family := familyLabel(peer.AddressFamily)
+			current[peerSeriesKey{node: peer.PeerNode, ip: peer.PeerIP, family: family}] = struct{}{}
 
 			e.metrics.PeerLatencySeconds.WithLabelValues(
 				e.nodeName, peer.PeerNode, peer.PeerIP, family).Set(latencySeconds)
@@ -454,8 +553,11 @@ func (e *PrometheusExporter) recordLatencyMetrics(status *types.Status) {
 				e.nodeName, peer.PeerNode).Observe(latencySeconds)
 		}
 
+		e.reconcilePeerSeries(current)
+
 		e.metrics.PeersTotal.WithLabelValues(e.nodeName).Set(float64(len(latencyMetrics.Peers)))
 		e.metrics.PeersReachableTotal.WithLabelValues(e.nodeName).Set(float64(reachableCount))
+		e.metrics.PeerSetSize.WithLabelValues(e.nodeName).Set(float64(len(current)))
 	}
 
 	// Record DNS latency metrics

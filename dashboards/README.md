@@ -89,6 +89,8 @@ These dashboards require the following Prometheus metrics exported by Node Docto
 | `node_doctor_monitor_peer_reachable` | Gauge | node, peer_node, peer_ip | Peer reachability (1=reachable, 0=unreachable) |
 | `node_doctor_monitor_peers_total` | Gauge | node | Total number of discovered peers |
 | `node_doctor_monitor_peers_reachable_total` | Gauge | node | Number of reachable peers |
+| `node_doctor_monitor_peer_set_size` | Gauge | node | Size of the current authoritative discovered peer set. Should equal (nodes - 1) on every node regardless of agent uptime; a node reporting more than its neighbours is holding stale peers |
+| `node_doctor_monitor_peer_set_churn_total` | Counter | node, change | Peer identities entering (`change="added"`) or leaving (`change="removed"`) the exported peer set. A rename or re-address is one removal plus one addition |
 | `node_doctor_monitor_peer_latency_histogram_seconds` | Histogram | node | Histogram of peer latency for percentile calculations |
 | `node_doctor_monitor_gateway_latency_seconds` | Gauge | node | Latency to default gateway |
 | `node_doctor_monitor_gateway_latency_histogram_seconds` | Histogram | node | Histogram of gateway latency |
