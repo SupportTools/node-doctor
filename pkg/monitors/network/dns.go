@@ -590,7 +590,18 @@ func init() {
 			IntervalString: "30s",
 			TimeoutString:  "10s",
 			Config: map[string]interface{}{
-				"clusterDomains":         []interface{}{"kubernetes.default.svc.cluster.local"},
+				// NOTE: "clusterDomains" is deliberately ABSENT here, not set to
+				// "kubernetes.default.svc.cluster.local". This map is injected verbatim by
+				// ApplyDefaultMonitors when a config omits network-dns-check, and any value
+				// present here is an EXPLICIT setting that wins over derivation in
+				// applyDefaults (which only fills a nil ClusterDomains). Hardcoding
+				// cluster.local here therefore pins every auto-defaulted node to a name that
+				// is a guaranteed NXDOMAIN on clusters with a custom cluster-domain (RKE2
+				// `cluster-domain`), producing fleet-wide false ClusterDNSResolutionFailed.
+				// Leaving the key unset lets applyDefaults derive the real domain from the
+				// resolver search list (see defaultClusterDomains / pkg/clusterdns), while
+				// operators can still set clusterDomains explicitly — including [] to
+				// disable the cluster check entirely, as the Helm chart does.
 				"externalDomains":        []interface{}{"google.com", "cloudflare.com"},
 				"latencyThreshold":       "1s",
 				"checkNameservers":       true,
