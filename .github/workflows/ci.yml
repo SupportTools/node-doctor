@@ -28,7 +28,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
@@ -49,6 +52,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # envsubst (gettext-base) is preinstalled on ubuntu-latest but not baked into
+      # the self-hosted runner image; same install step release.yml uses.
+      - name: Install envsubst
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gettext-base
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
@@ -71,7 +81,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Download dependencies
         run: go mod download
@@ -147,7 +160,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Download dependencies
         run: go mod download
@@ -175,7 +191,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Run gosec
         uses: securego/gosec@v2.25.0
@@ -201,7 +220,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Download dependencies
         run: go mod download
