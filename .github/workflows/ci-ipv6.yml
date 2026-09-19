@@ -53,7 +53,7 @@ jobs:
   # ---------------------------------------------------------------------------
   ipv6-icmp:
     name: IPv6 ICMP Integration
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     timeout-minutes: 10
     permissions:
       contents: read
@@ -105,7 +105,7 @@ jobs:
   # ---------------------------------------------------------------------------
   ipv6-kind-dualstack:
     name: IPv6 Kind Dual-Stack Cluster
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     timeout-minutes: 40
     permissions:
       contents: read

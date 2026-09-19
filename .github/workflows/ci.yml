@@ -19,7 +19,7 @@ jobs:
   # Lint job - runs golangci-lint
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -45,7 +45,7 @@ jobs:
   # fails the build whenever the two diverge.
   helm-chart:
     name: Helm Chart
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -62,7 +62,7 @@ jobs:
   # Test job - runs unit and integration tests
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -138,7 +138,7 @@ jobs:
   # loudly instead of silently passing without exercising real ICMP.
   pinger-icmp-integration:
     name: Pinger ICMP Integration
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -163,7 +163,7 @@ jobs:
   # Security scan - gosec
   security-gosec:
     name: Security Scan (gosec)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     permissions:
       security-events: write
       contents: read
@@ -191,7 +191,7 @@ jobs:
   # Build job - builds the binary
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [lint, test]
     steps:
       - name: Checkout code
@@ -250,7 +250,7 @@ jobs:
   # here needs a *published* image and therefore moved to release.yml.
   docker:
     name: Docker Build (no push)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [lint, test, build, security-gosec]
     permissions:
       contents: read
@@ -306,7 +306,7 @@ jobs:
   # `needs:` gates the new job without touching branch protection.
   ci-success:
     name: CI Success
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [lint, test, build, security-gosec, helm-chart, docker]
     if: always()
     steps:
