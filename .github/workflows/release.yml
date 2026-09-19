@@ -24,7 +24,7 @@ jobs:
   # push:false validation build. Do not reintroduce a push from any other workflow.
   docker:
     name: Build & Push Docker Images
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -127,7 +127,7 @@ jobs:
   # Build and push overlay-test Docker image (multi-arch)
   docker-overlay-test:
     name: Build & Push Overlay Test Image
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -169,7 +169,7 @@ jobs:
   # Create GitHub Release
   github-release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [docker, docker-overlay-test]
     steps:
       - name: Checkout code
@@ -242,7 +242,7 @@ jobs:
   # in the registry. That assertion is only meaningful once both images have been pushed.
   helm-publish:
     name: Publish Helm Chart
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [docker, docker-overlay-test]
     outputs:
       chart-version: ${{ steps.get-chart-version.outputs.version }}
@@ -456,7 +456,7 @@ jobs:
   # org's self-hosted air-gapped mirror — acceptable, the scanned image is public.
   grype-scan:
     name: Grype Scan (informational)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [docker]
     permissions:
       contents: read
@@ -481,7 +481,7 @@ jobs:
   # Summary job
   release-complete:
     name: Release Complete
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [docker, docker-overlay-test, github-release, helm-publish]
     if: always()
     steps:
@@ -528,7 +528,7 @@ jobs:
   # cd.yml and SupportTools/website cloudflare-workers-notifications.yml.
   notify-failure:
     name: Notify Release Failure
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [docker, docker-overlay-test, github-release, helm-publish, grype-scan, release-complete]
     if: failure()
     steps:

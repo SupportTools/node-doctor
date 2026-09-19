@@ -53,7 +53,7 @@ jobs:
   # ---------------------------------------------------------------------------
   ipv6-icmp:
     name: IPv6 ICMP Integration
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     timeout-minutes: 10
     permissions:
       contents: read
@@ -66,7 +66,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Download dependencies
         run: go mod download
@@ -105,7 +108,7 @@ jobs:
   # ---------------------------------------------------------------------------
   ipv6-kind-dualstack:
     name: IPv6 Kind Dual-Stack Cluster
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     timeout-minutes: 40
     permissions:
       contents: read
@@ -118,7 +121,10 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache: true
+          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
+          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
+          # timed out ipv6-icmp's 10 min budget after its tests had passed).
+          cache: false
 
       - name: Download dependencies
         run: go mod download
@@ -133,8 +139,23 @@ jobs:
       # back before proceeding.  The `ip6tables` + `experimental` flags are
       # required for kernel IPv6 NAT support inside the kind node containers.
       # -----------------------------------------------------------------------
+      #
+      # On the self-hosted ARC pool Docker is a dind sidecar (DOCKER_HOST=unix://),
+      # not a systemd service: there is no daemon here to reconfigure/restart. A
+      # modern dockerd creates user-defined --ipv6 networks (what kind uses) and
+      # enables IPv6 forwarding itself without daemon.json "ipv6": true, so on that
+      # path we only PROVE IPv6 networking works, failing loudly if it does not.
+      # -----------------------------------------------------------------------
       - name: Enable Docker daemon IPv6
         run: |
+          if [ ! -d /run/systemd/system ]; then
+            echo "No systemd (dind sidecar): verifying the daemon can create an IPv6 network"
+            docker network create --ipv6 --subnet fd00:dead:beef::/64 nd-ipv6-probe
+            docker network inspect nd-ipv6-probe --format 'EnableIPv6={{.EnableIPv6}} {{json .IPAM.Config}}'
+            docker network rm nd-ipv6-probe
+            docker info
+            exit 0
+          fi
           sudo mkdir -p /etc/docker
           # Merge our IPv6 settings into daemon.json (overwrite is safe on a
           # fresh GitHub runner where /etc/docker/daemon.json does not exist).

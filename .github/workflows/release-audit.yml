@@ -26,7 +26,7 @@ permissions:
 jobs:
   tag-vs-chart:
     name: Newest tag has a published chart
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     outputs:
       detail: ${{ steps.audit.outputs.detail }}
     steps:
@@ -110,7 +110,7 @@ jobs:
 
   notify-failure:
     name: Notify Audit Failure
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     needs: [tag-vs-chart]
     if: failure()
     steps:
