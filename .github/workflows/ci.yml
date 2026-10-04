@@ -33,8 +33,12 @@ jobs:
           # timed out ipv6-icmp's 10 min budget after its tests had passed).
           cache: false
 
+      # The runner image bakes golangci-lint v2, but .golangci.yml is still a v1 config
+      # and v2 raises 47 new findings on this tree (taskforge-2677). Until the config is
+      # migrated, keep the pinned v1 build, resolved through the Athens GOPROXY rather
+      # than downloaded as a release binary.
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8  # jobtime-download-ok: .golangci.yml is v1; baked binary is v2 - pinned module via Athens until the config migration
 
       - name: Run golangci-lint
         run: golangci-lint run --timeout=5m
@@ -60,8 +64,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gettext-base
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
+      # helm is pre-baked into the self-hosted runner image (SupportTools/ci-runners
+      # Dockerfile.arc2). azure/setup-helm downloaded it at job time, a flake source
+      # (taskforge-2677). No download fallback: a missing helm is a runner-image defect.
+      - name: Verify pre-baked helm
+        run: |
+          set -euo pipefail
+          command -v helm >/dev/null 2>&1 || { echo "::error::helm is missing from this self-hosted runner. It must be pre-baked into the runner image (SupportTools/ci-runners Dockerfile.arc2) - there is deliberately no download fallback. Fix the runner image."; exit 1; }
+          helm version --short
 
       - name: Verify Chart.yaml/values.yaml match their templates
         run: make helm-verify-generated
