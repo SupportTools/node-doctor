@@ -24,7 +24,7 @@ this one covers only what lives in this directory.
    `Chart.yaml`/`values.yaml` from `*.template` before packaging, so hand-edits to the committed
    copies never reach the published chart. See
    [docs/release-process.md](../../docs/release-process.md#which-helm-chart-files-actually-ship).
-3. **Test** — single Go version (`env.GO_VERSION`, currently 1.25 — there is no version matrix).
+3. **Test** — single Go version: the runner image's baked Go (no `setup-go`, no version matrix; `go.mod` sets the minimum).
    Unit tests with `-race -short`, then integration tests from `test/integration/` if present.
    Enforces a **70% unit coverage threshold inline**; that inline check is the hard gate.
    Codecov upload is `continue-on-error` and purely informational.
