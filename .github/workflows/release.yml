@@ -84,10 +84,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-        with:
-          cosign-release: "v2.2.2"
+      # cosign is pre-baked into the self-hosted runner image (SupportTools/ci-runners
+      # Dockerfile.arc2). sigstore/cosign-installer downloaded it at job time, a flake
+      # source (taskforge-2677). No download fallback: a missing cosign is a runner-image
+      # defect and must fail here, before the image is published unsigned.
+      - name: Verify pre-baked cosign
+        run: |
+          set -euo pipefail
+          command -v cosign >/dev/null 2>&1 || { echo "::error::cosign is missing from this self-hosted runner. It must be pre-baked into the runner image - there is deliberately no download fallback. Fix the runner image."; exit 1; }
+          cosign version
 
       - name: Sign Docker image
         env:
@@ -256,8 +261,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gettext-base
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4.2.0
+      # helm is pre-baked into the self-hosted runner image (SupportTools/ci-runners
+      # Dockerfile.arc2). azure/setup-helm downloaded it at job time, a flake source
+      # (taskforge-2677). No download fallback: a missing helm is a runner-image defect.
+      - name: Verify pre-baked helm
+        run: |
+          set -euo pipefail
+          command -v helm >/dev/null 2>&1 || { echo "::error::helm is missing from this self-hosted runner. It must be pre-baked into the runner image (SupportTools/ci-runners Dockerfile.arc2) - there is deliberately no download fallback. Fix the runner image."; exit 1; }
+          helm version --short
 
       - name: Determine Chart Version
         id: get-chart-version

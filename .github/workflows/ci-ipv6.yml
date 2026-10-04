@@ -28,7 +28,9 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION: '1.25'
+  # Go is the runner image's baked toolchain (SupportTools/ci-runners Dockerfile.arc2,
+  # /usr/local/go). actions/setup-go pinned to 1.25 downloaded a toolchain at job time
+  # (taskforge-2677); go.mod's `go 1.25.3` directive is satisfied by the baked Go.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # Cancel in-flight runs for the same PR / branch so stale runs don't waste
@@ -61,15 +63,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
-          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
-          # timed out ipv6-icmp's 10 min budget after its tests had passed).
-          cache: false
 
       - name: Download dependencies
         run: go mod download
@@ -116,15 +109,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          # Off on the self-hosted pool: GOCACHE/GOMODCACHE are the shared node-level
-          # /cache, and setup-go's post-step tars ALL of it (12-27 min/job, and it
-          # timed out ipv6-icmp's 10 min budget after its tests had passed).
-          cache: false
 
       - name: Download dependencies
         run: go mod download
