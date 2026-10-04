@@ -33,8 +33,14 @@ jobs:
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8  # jobtime-download-ok: .golangci.yml is v1; baked binary is v2 - pinned module via Athens until the config migration
 
+      # Invoke the v1 build by path: the runner's baked v2 golangci-lint is earlier on PATH
+      # (setup-go used to prepend GOPATH/bin; without it a bare name resolves to v2).
       - name: Run golangci-lint
-        run: golangci-lint run --timeout=5m
+        run: |
+          set -euo pipefail
+          GCL="$(go env GOPATH)/bin/golangci-lint"
+          "$GCL" version
+          "$GCL" run --timeout=5m
 
   # Helm chart job - guards the generated-vs-template trap and lints the chart.
   #
