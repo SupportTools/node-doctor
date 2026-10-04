@@ -20,6 +20,10 @@ type ConfigWatcher struct {
 	mu               sync.Mutex
 	running          bool
 	stopCh           chan struct{}
+	// doneCh is closed when processEvents returns. Stop waits on it before
+	// closing changeCh, so the event goroutine can never send on (or race with
+	// the close of) a closed channel.
+	doneCh chan struct{}
 }
 
 // NewConfigWatcher creates a new configuration file watcher.
@@ -43,6 +47,7 @@ func NewConfigWatcher(configPath string, debounceInterval time.Duration) (*Confi
 		watcher:          watcher,
 		changeCh:         make(chan struct{}, 1), // Buffered to prevent blocking
 		stopCh:           make(chan struct{}),
+		doneCh:           make(chan struct{}),
 	}, nil
 }
 
@@ -82,12 +87,16 @@ func (cw *ConfigWatcher) Stop() {
 
 	close(cw.stopCh)
 	cw.watcher.Close()
+	// Wait for processEvents to exit before closing changeCh: it is the only
+	// sender, and closing first raced its send (pkg/reload -race failure).
+	<-cw.doneCh
 	close(cw.changeCh)
 	cw.running = false
 }
 
 // processEvents handles file system events with debouncing.
 func (cw *ConfigWatcher) processEvents(ctx context.Context) {
+	defer close(cw.doneCh)
 	var debounceTimer *time.Timer
 	var timerCh <-chan time.Time
 
