@@ -486,6 +486,13 @@ jobs:
         id: grype
         uses: anchore/scan-action@v6
         with:
+          # Pin grype to the version baked into runner:v21.1-arc2 (registered in the tool
+          # cache at /opt/hostedtoolcache/grype/0.117.0). scan-action resolves grype via
+          # tool-cache find(grype, version) and only downloads on a miss; without this pin it
+          # asks for its own default (v0.97.1 on v6), misses, and downloads at job time.
+          # Keep in sync with the runner image (taskforge-2850). The vuln DB fetch is data,
+          # not a tool download.
+          grype-version: v0.117.0
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
           fail-build: false
           severity-cutoff: high
