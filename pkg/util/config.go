@@ -2,8 +2,11 @@
 package util
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -14,32 +17,27 @@ import (
 // LoadConfig loads configuration from a file (YAML or JSON).
 // The file format is determined by extension (.yaml, .yml, .json).
 // Environment variables are substituted, defaults are applied, and validation is performed.
+// Unknown keys anywhere in the typed schema are rejected; monitor `config` maps stay free-form.
 func LoadConfig(path string) (*types.NodeDoctorConfig, error) {
-	// Read file
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
 
-	// Substitute environment variables in raw data BEFORE parsing
-	// This allows env vars to work in non-string fields (e.g., port: ${PORT})
+	// Expand before parsing so env vars also work in non-string fields (e.g. port: ${PORT}).
 	data = []byte(os.ExpandEnv(string(data)))
-
-	// Determine format by extension
-	ext := filepath.Ext(path)
 
 	var config types.NodeDoctorConfig
 
-	switch ext {
+	switch filepath.Ext(path) {
 	case ".yaml", ".yml":
-		err = yaml.Unmarshal(data, &config)
+		err = decodeYAMLStrict(data, &config)
 	case ".json":
-		err = json.Unmarshal(data, &config)
+		err = decodeJSONStrict(data, &config)
 	default:
-		// Try YAML first, then JSON
-		err = yaml.Unmarshal(data, &config)
+		err = decodeYAMLStrict(data, &config)
 		if err != nil {
-			err = json.Unmarshal(data, &config)
+			err = decodeJSONStrict(data, &config)
 		}
 	}
 
@@ -47,20 +45,33 @@ func LoadConfig(path string) (*types.NodeDoctorConfig, error) {
 		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
 
-	// Substitute environment variables in string fields (for dynamic map values)
 	config.SubstituteEnvVars()
 
-	// Apply defaults
 	if err := config.ApplyDefaults(); err != nil {
 		return nil, fmt.Errorf("failed to apply defaults: %w", err)
 	}
 
-	// Validate configuration
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
 
 	return &config, nil
+}
+
+func decodeYAMLStrict(data []byte, out *types.NodeDoctorConfig) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	err := dec.Decode(out)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+func decodeJSONStrict(data []byte, out *types.NodeDoctorConfig) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(out)
 }
 
 // LoadConfigOrDefault loads configuration from a file, or returns default if file doesn't exist.

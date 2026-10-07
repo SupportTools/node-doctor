@@ -244,8 +244,19 @@ func parseEndpointConfig(configMap map[string]interface{}) (EndpointConfig, erro
 	return endpoint, nil
 }
 
+var (
+	knownConnectivityConfigKeys = []string{"failureThreshold", "endpoints"}
+	knownEndpointConfigKeys     = []string{"url", "name", "method", "expectedStatusCode", "timeout", "followRedirects", "headers"}
+)
+
+func warnUnknownConnectivityKeys(name string, cfg map[string]interface{}) {
+	monitors.WarnUnknownKeys(name, cfg, knownConnectivityConfigKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "endpoints", knownEndpointConfigKeys...)
+}
+
 // ValidateConnectivityConfig validates the connectivity monitor configuration.
 func ValidateConnectivityConfig(config types.MonitorConfig) error {
+	warnUnknownConnectivityKeys(config.Name, config.Config)
 	_, err := parseConnectivityConfig(config.Config)
 	return err
 }

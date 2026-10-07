@@ -451,8 +451,11 @@ func (c *PluginMonitorConfig) applyDefaults() {
 	}
 }
 
+var knownPluginConfigKeys = []string{"pluginPath", "args", "outputFormat", "failureThreshold", "apiTimeout", "env"}
+
 // ValidatePluginConfig validates the plugin monitor configuration
 func ValidatePluginConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownPluginConfigKeys...)
 	// Parse the configuration
 	pluginConfig, err := parsePluginConfig(config.Config)
 	if err != nil {

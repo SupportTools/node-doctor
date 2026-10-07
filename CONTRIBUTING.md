@@ -337,7 +337,7 @@ func (r *ServiceRemediator) GetCooldown() time.Duration {
 
 ### Test Coverage Expectations
 
-- **Minimum Coverage**: 80% overall code coverage
+- **Minimum Coverage**: 70% unit test coverage (`make coverage-check`; CI enforces the same threshold)
 - **Target Coverage**: 85%+ for production code
 - **New Code**: Must include tests for all new functionality
 
@@ -677,8 +677,7 @@ When contributing to Node Doctor:
 - **[Architecture Guide](docs/architecture.md)** - System design and component overview
 - **[Monitors Guide](docs/monitors.md)** - Monitor implementation details
 - **[Remediation Guide](docs/remediation.md)** - Remediator patterns and safety mechanisms
-- **[Task Execution Workflow](docs/development/task-execution-workflow.md)** - Development process
-- **[Validation Quick Reference](docs/development/validation-quick-reference.md)** - Testing and validation
+- **[Testing Guide](docs/testing-guide.md)** - Testing and validation
 
 ### Build Targets
 

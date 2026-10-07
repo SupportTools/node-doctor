@@ -119,8 +119,11 @@ func parseIPv6RouteConfig(configMap map[string]any) (*IPv6RouteConfig, error) {
 	return config, nil
 }
 
+var knownIPv6RouteConfigKeys = []string{"expectDefaultRoute", "procPath"}
+
 // ValidateIPv6RouteConfig validates the IPv6 default-route monitor configuration.
 func ValidateIPv6RouteConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownIPv6RouteConfigKeys...)
 	_, err := parseIPv6RouteConfig(config.Config)
 	return err
 }

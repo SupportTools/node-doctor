@@ -1,6 +1,7 @@
 package network
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -793,9 +794,25 @@ func TestCheckHealth(t *testing.T) {
 	}
 }
 
+func loopbackInterfaceName(t *testing.T) string {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatalf("net.Interfaces: %v", err)
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			return iface.Name
+		}
+	}
+	t.Fatal("no loopback interface found")
+	return ""
+}
+
 func TestCheckInterfaces(t *testing.T) {
 	// This test relies on actual system interfaces, so we test behavior
 	// rather than specific interface names
+	lo := loopbackInterfaceName(t)
 
 	t.Run("no expected interfaces", func(t *testing.T) {
 		checker := NewCNIHealthChecker(CNIHealthConfig{
@@ -834,20 +851,20 @@ func TestCheckInterfaces(t *testing.T) {
 		}
 	})
 
-	t.Run("lo interface exists on all systems", func(t *testing.T) {
+	t.Run("loopback interface exists on all systems", func(t *testing.T) {
 		checker := NewCNIHealthChecker(CNIHealthConfig{
 			ConfigPath:         t.TempDir(),
 			CheckInterfaces:    true,
-			ExpectedInterfaces: []string{"lo"},
+			ExpectedInterfaces: []string{lo},
 		})
 
 		result := checker.CheckInterfaces()
 
 		if !result.Healthy {
-			t.Errorf("Should be healthy when 'lo' interface exists. Errors: %v", result.Errors)
+			t.Errorf("Should be healthy when %q interface exists. Errors: %v", lo, result.Errors)
 		}
-		if len(result.FoundInterfaces) != 1 || result.FoundInterfaces[0] != "lo" {
-			t.Errorf("Expected 'lo' in FoundInterfaces, got %v", result.FoundInterfaces)
+		if len(result.FoundInterfaces) != 1 || result.FoundInterfaces[0] != lo {
+			t.Errorf("Expected %q in FoundInterfaces, got %v", lo, result.FoundInterfaces)
 		}
 	})
 
@@ -855,7 +872,7 @@ func TestCheckInterfaces(t *testing.T) {
 		checker := NewCNIHealthChecker(CNIHealthConfig{
 			ConfigPath:         t.TempDir(),
 			CheckInterfaces:    true,
-			ExpectedInterfaces: []string{"lo", "nonexistent-xyz123"},
+			ExpectedInterfaces: []string{lo, "nonexistent-xyz123"},
 		})
 
 		result := checker.CheckInterfaces()
@@ -864,7 +881,7 @@ func TestCheckInterfaces(t *testing.T) {
 			t.Error("Should be unhealthy when some expected interfaces are missing")
 		}
 		if len(result.FoundInterfaces) != 1 {
-			t.Errorf("FoundInterfaces should have 1 entry (lo), got %v", result.FoundInterfaces)
+			t.Errorf("FoundInterfaces should have 1 entry (%s), got %v", lo, result.FoundInterfaces)
 		}
 		if len(result.MissingInterfaces) != 1 {
 			t.Errorf("MissingInterfaces should have 1 entry, got %v", result.MissingInterfaces)

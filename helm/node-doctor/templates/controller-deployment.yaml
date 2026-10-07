@@ -34,7 +34,7 @@ spec:
       {{- end }}
       containers:
         - name: controller
-          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Values.image.tag }}"
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
           args:
             - --config=/etc/node-doctor/controller.yaml

@@ -544,8 +544,11 @@ func (c *APIServerMonitorConfig) applyDefaults() error {
 	return nil
 }
 
+var knownAPIServerConfigKeys = []string{"endpoint", "latencyThreshold", "checkVersion", "checkAuth", "failureThreshold", "httpTimeout"}
+
 // ValidateAPIServerConfig validates the API server monitor configuration.
 func ValidateAPIServerConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownAPIServerConfigKeys...)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

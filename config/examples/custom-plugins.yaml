@@ -51,13 +51,8 @@ monitors:
         - "--check-fans"
         - "--check-power"
 
-      # Exit code mapping (standard monitoring plugin format)
+      # Exit codes follow the standard plugin convention:
       # 0 = OK, 1 = WARNING, 2 = CRITICAL, 3 = UNKNOWN
-      exitCodeMapping:
-        0: healthy
-        1: degraded
-        2: unhealthy
-        3: unknown
 
     # Remediation: Alert operations team
     remediation:
@@ -81,10 +76,6 @@ monitors:
       args:
         - "--service=my-critical-service"
         - "--port=9999"
-      exitCodeMapping:
-        0: healthy
-        1: degraded
-        2: unhealthy
 
   # Example 3: Custom compliance check
   - name: custom-compliance-check
@@ -97,10 +88,6 @@ monitors:
       args:
         - "--profile=cis-benchmark"
         - "--level=1"
-      exitCodeMapping:
-        0: healthy
-        1: degraded
-        2: unhealthy
 
   # ==========================================
   # LOG PATTERN MONITORS
@@ -117,16 +104,19 @@ monitors:
       # Patterns to match in logs (regex)
       patterns:
         # OOM killer patterns
-        - pattern: "Out of memory: Kill process"
+        - name: oom-killer-invoked
+          regex: "Out of memory: Kill process"
           severity: critical
           description: "OOM killer invoked"
 
-        - pattern: "oom_reaper: reaped process"
+        - name: oom-reaper
+          regex: "oom_reaper: reaped process"
           severity: critical
           description: "Process killed by OOM"
 
         # Memory pressure warnings
-        - pattern: "page allocation failure"
+        - name: page-allocation-failure
+          regex: "page allocation failure"
           severity: warning
           description: "Memory allocation failure"
 
@@ -150,16 +140,19 @@ monitors:
     config:
       patterns:
         # Containerd errors
-        - pattern: 'containerd.*error.*creating container'
+        - name: containerd-create-error
+          regex: 'containerd.*error.*creating container'
           severity: critical
           description: "Container creation failure"
 
-        - pattern: 'containerd.*failed to start container'
+        - name: containerd-start-failure
+          regex: 'containerd.*failed to start container'
           severity: critical
           description: "Container start failure"
 
         # Docker errors (if using Docker)
-        - pattern: 'docker.*Error response from daemon'
+        - name: docker-daemon-error
+          regex: 'docker.*Error response from daemon'
           severity: warning
           description: "Docker daemon error"
 
@@ -177,17 +170,20 @@ monitors:
     config:
       patterns:
         # CNI plugin errors
-        - pattern: 'CNI plugin.*failed'
+        - name: cni-plugin-failure
+          regex: 'CNI plugin.*failed'
           severity: critical
           description: "CNI plugin failure"
 
         # Network unreachable
-        - pattern: 'Network is unreachable'
+        - name: network-unreachable
+          regex: 'Network is unreachable'
           severity: critical
           description: "Network unreachable"
 
         # Interface down
-        - pattern: 'link is not ready'
+        - name: link-not-ready
+          regex: 'link is not ready'
           severity: warning
           description: "Network interface not ready"
 
@@ -223,8 +219,7 @@ monitors:
     dependsOn:
       - network-base-check  # Only run if network is working
     config:
-      warningLatency: 500
-      criticalLatency: 2000
+      latencyThreshold: 500ms
 
   # ==========================================
   # MULTI-STEP REMEDIATION STRATEGIES
@@ -277,7 +272,7 @@ monitors:
     interval: 1m
     timeout: 30s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95

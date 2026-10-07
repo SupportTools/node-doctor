@@ -661,7 +661,7 @@ exporters:
     path: "/metrics"
   http:
     enabled: false
-    hostPort: 8080
+    workers: 2
 `
 
 	err = os.WriteFile(configPath, []byte(complexContent), 0644)

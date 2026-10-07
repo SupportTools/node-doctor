@@ -604,9 +604,8 @@ func init() {
 				// disable the cluster check entirely, as the Helm chart does.
 				"externalDomains":        []interface{}{"google.com", "cloudflare.com"},
 				"latencyThreshold":       "1s",
-				"checkNameservers":       true,
+				"nameserverCheckEnabled": true,
 				"failureCountThreshold":  3,
-				"enableNameserverChecks": true,
 			},
 		},
 	})
@@ -674,8 +673,34 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 	return monitor, nil
 }
 
+var (
+	knownDNSConfigKeys  = []string{"clusterDomains", "externalDomains", "customQueries", "latencyThreshold", "nameserverCheckEnabled", "resolverPath", "failureCountThreshold", "successRateTracking", "consistencyChecking", "healthScoring", "predictiveAlerting", "correlation", "trendDetection", "historicalMetrics"}
+	knownDNSSectionKeys = map[string][]string{
+		"customQueries":       {"domain", "recordType", "testEachNameserver", "consistencyCheck"},
+		"successRateTracking": {"enabled", "windowSize", "failureRateThreshold", "minSamplesRequired"},
+		"consistencyChecking": {"enabled", "queriesPerCheck", "intervalBetweenQueries"},
+		"healthScoring":       {"enabled", "degradedThreshold", "unhealthyThreshold", "successRateWeight", "latencyWeight", "errorDiversityWeight", "consistencyWeight", "windowSize", "latencyBaseline", "latencyMax"},
+		"predictiveAlerting":  {"enabled", "predictionWindow", "warningLeadTime", "minDataPoints", "confidenceThreshold"},
+		"correlation":         {"enabled", "minConfidence", "windowMinutes", "nameserverFailureThreshold", "minNameserversForDomainCorrelation"},
+		"trendDetection":      {"enabled", "windowSize", "degradationThreshold", "anomalyZScore", "flapDetection"},
+		"historicalMetrics":   {"enabled", "storagePath", "retentionDays"},
+	}
+	knownDNSFlapDetectionKeys = []string{"enabled", "minOscillations", "windowMinutes"}
+)
+
+func warnUnknownDNSKeys(name string, cfg map[string]interface{}) {
+	monitors.WarnUnknownKeys(name, cfg, knownDNSConfigKeys...)
+	for section, known := range knownDNSSectionKeys {
+		monitors.WarnUnknownNestedKeys(name, cfg, section, known...)
+	}
+	if td, ok := cfg["trendDetection"].(map[string]interface{}); ok {
+		monitors.WarnUnknownNestedKeys(name+".trendDetection", td, "flapDetection", knownDNSFlapDetectionKeys...)
+	}
+}
+
 // ValidateDNSConfig validates the DNS monitor configuration.
 func ValidateDNSConfig(config types.MonitorConfig) error {
+	warnUnknownDNSKeys(config.Name, config.Config)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

@@ -30,8 +30,6 @@ builds:
     flags:
       - -trimpath
     mod_timestamp: '{{.CommitTimestamp}}'
-    # Note: Darwin builds temporarily disabled due to cross-compilation type issues
-    # TODO: Fix pkg/monitors/system/disk.go:58 uint32->int64 conversion for darwin
 
 # Archive configuration
 archives:

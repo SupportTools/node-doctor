@@ -144,7 +144,7 @@ helm install node-doctor supporttools/node-doctor \
   --namespace node-doctor \
   --create-namespace \
   --set settings.logLevel=debug \
-  --set settings.enableRemediation=false
+  --set remediation.enabled=false
 ```
 
 See [helm/node-doctor/README.md](helm/node-doctor/README.md) for complete Helm chart documentation and configuration options.
@@ -513,7 +513,7 @@ node-doctor/
 - [Monitors](docs/monitors.md) - Health check monitor implementations
 - [Remediation](docs/remediation.md) - Auto-remediation system
 - [Configuration](docs/configuration.md) - Configuration reference
-- [Deployment](docs/deployment.md) - Deployment guide for production clusters
+- [Deployment](deployment/README.md) - Deployment guide for production clusters
 - [Release Process](docs/release-process.md) - Release management and versioning
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and debugging guide
 
