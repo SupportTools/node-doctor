@@ -144,7 +144,7 @@ helm install node-doctor supporttools/node-doctor \
   --namespace node-doctor \
   --create-namespace \
   --set settings.logLevel=debug \
-  --set settings.enableRemediation=false
+  --set remediation.enabled=false
 ```
 
 See [helm/node-doctor/README.md](helm/node-doctor/README.md) for complete Helm chart documentation and configuration options.

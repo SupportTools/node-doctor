@@ -54,15 +54,10 @@ monitors:
     interval: 10s       # Fast interval for testing
     timeout: 5s
     config:
-      loadAverageThresholds:
-        warning: 70      # Lower thresholds to trigger during stress tests
-        critical: 90
-      thermalThresholds:
-        warning: 80
-        critical: 95
-      cpuUsageThresholds:
-        warning: 70      # Lower for testing
-        critical: 90
+      warningLoadFactor: 0.7    # Lower thresholds to trigger during stress tests
+      criticalLoadFactor: 1.2
+      checkThermalThrottle: true
+      checkLoadAverage: true
 
   # System Memory Monitor - CAUTION (OOM can be triggered)
   - name: memory-health
@@ -71,13 +66,11 @@ monitors:
     interval: 10s
     timeout: 5s
     config:
-      memoryThresholds:
-        warning: 70      # Lower for testing
-        critical: 90
-      swapThresholds:
-        warning: 30      # Lower for testing
-        critical: 60
-      oomDetection: true
+      warningThreshold: 70       # Lower for testing
+      criticalThreshold: 90
+      swapWarningThreshold: 30   # Lower for testing
+      swapCriticalThreshold: 60
+      checkOOMKills: true
       kmsgPath: /dev/kmsg
 
   # System Disk Monitor - SAFE to DESTRUCTIVE depending on test
@@ -87,22 +80,24 @@ monitors:
     interval: 15s
     timeout: 10s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 75   # Lower for testing
           criticalThreshold: 90
+          inodeWarningThreshold: 80
+          inodeCriticalThreshold: 95
         - path: "/var/lib/kubelet"
           warningThreshold: 75
           criticalThreshold: 90
+          inodeWarningThreshold: 80
+          inodeCriticalThreshold: 95
         - path: "/tmp"
           warningThreshold: 70   # /tmp often used for test files
           criticalThreshold: 85
-      inodeThresholds:
-        warning: 80
-        critical: 95
-      readOnlyDetection: true
-      ioHealthCheck: true
-      ioThreshold: 70           # Lower for testing
+          inodeWarningThreshold: 80
+          inodeCriticalThreshold: 95
+      checkReadonly: true
+      checkIOHealth: true
 
   # ============================================
   # KUBERNETES MONITORS
@@ -126,8 +121,7 @@ monitors:
     interval: 10s
     timeout: 5s
     config:
-      warningLatency: 200    # Lower for faster detection
-      criticalLatency: 1000
+      latencyThreshold: 200ms   # Lower for faster detection
 
   # Container Runtime Monitor - SAFE to DESTRUCTIVE
   - name: runtime-health
@@ -136,7 +130,7 @@ monitors:
     interval: 15s
     timeout: 10s
     config:
-      checkPods: true
+      checkRuntimeInfo: true
 
   # Pod Capacity Monitor - SAFE
   - name: capacity-health
@@ -160,11 +154,12 @@ monitors:
     interval: 15s
     timeout: 5s
     config:
-      domains:
+      clusterDomains:
         - kubernetes.default.svc.cluster.local
+      externalDomains:
         - google.com
         - cloudflare.com
-      timeout: 2s
+      latencyThreshold: 2s
 
   # Gateway Check - SAFE
   - name: gateway-health
@@ -173,9 +168,8 @@ monitors:
     interval: 15s
     timeout: 5s
     config:
-      count: 3
-      warningLatency: 30    # Lower for testing
-      criticalLatency: 75
+      pingCount: 3
+      latencyThreshold: 75ms   # Lower for testing
 
   # Connectivity Check - SAFE
   - name: connectivity-health
@@ -187,11 +181,13 @@ monitors:
       endpoints:
         - url: https://kubernetes.default.svc.cluster.local
           timeout: 5s
+          followRedirects: true
         - url: https://www.google.com
           timeout: 5s
+          followRedirects: true
         - url: https://cloudflare.com
           timeout: 5s
-      followRedirects: true
+          followRedirects: true
 
   # CNI Health Check - CAUTION
   - name: cni-health
@@ -200,9 +196,10 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      warningLatency: 20    # Lower for testing
-      criticalLatency: 50
-      minReachablePeers: 1
+      connectivity:
+        warningLatency: 20ms    # Lower for testing
+        criticalLatency: 50ms
+        minReachablePeers: 1
 
   # ============================================
   # CUSTOM MONITORS
@@ -213,14 +210,11 @@ monitors:
     type: custom-logpattern
     enabled: true
     interval: 5s         # Very fast for testing pattern detection
-    timeout: 5s
+    timeout: 3s
     config:
-      useDefaultPatterns: true   # Enable all 58 default patterns
+      useDefaults: true          # Enable all default patterns
       checkKmsg: true            # Read /dev/kmsg
       checkKernelJournal: true   # Read journalctl -k
-      checkInterval: 5s          # Fast check interval
-      logBufferSize: 200         # Larger buffer for testing
-      maxMatchesPerPattern: 20   # More matches for testing
 
 # Exporters - enable all for test verification
 exporters:

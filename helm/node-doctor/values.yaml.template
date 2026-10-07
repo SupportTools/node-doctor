@@ -14,8 +14,6 @@ settings:
   resyncInterval: 5m
   # Heartbeat interval
   heartbeatInterval: 1m
-  # Enable remediation actions
-  enableRemediation: true
   # Dry run mode (log actions without executing)
   dryRunMode: false
   # Kubernetes API QPS
@@ -411,50 +409,50 @@ monitors:
     enabled: true
     interval: 30s
     timeout: 10s
-    loadAverageThresholds:
-      warning: 80
-      critical: 95
-    thermalThresholds:
-      warning: 85
-      critical: 95
-    cpuUsageThresholds:
-      warning: 85
-      critical: 95
+    # Load average divided by CPU count; 1.0 means every core is busy
+    warningLoadFactor: 0.8
+    criticalLoadFactor: 1.5
+    checkThermalThrottle: true
 
   memory:
     enabled: true
     interval: 30s
     timeout: 10s
-    memoryThresholds:
-      warning: 85
-      critical: 95
-    swapThresholds:
-      warning: 50
-      critical: 80
-    oomDetection: true
+    # Usage percentages
+    warningThreshold: 85
+    criticalThreshold: 95
+    swapWarningThreshold: 50
+    swapCriticalThreshold: 80
+    checkOOMKills: true
 
   disk:
     enabled: true
     interval: 1m
     timeout: 30s
-    paths:
+    # Usage and inode percentages per mount point
+    mountPoints:
       - path: "/"
         warningThreshold: 85
         criticalThreshold: 95
+        inodeWarningThreshold: 85
+        inodeCriticalThreshold: 95
       - path: "/var/lib/kubelet"
         warningThreshold: 85
         criticalThreshold: 95
+        inodeWarningThreshold: 85
+        inodeCriticalThreshold: 95
       - path: "/var/lib/docker"
         warningThreshold: 80
         criticalThreshold: 90
+        inodeWarningThreshold: 85
+        inodeCriticalThreshold: 95
       - path: "/var/lib/containerd"
         warningThreshold: 80
         criticalThreshold: 90
-    inodeThresholds:
-      warning: 85
-      critical: 95
-    readOnlyDetection: true
-    ioHealthCheck: true
+        inodeWarningThreshold: 85
+        inodeCriticalThreshold: 95
+    checkReadonly: true
+    checkIOHealth: true
 
   ipForwarding:
     enabled: true
@@ -524,13 +522,9 @@ exporters:
     namespace: node_doctor
     subsystem: monitor
 
+  # Webhook pusher; configure webhooks via a values override when enabling it
   http:
     enabled: false
-    # "::" = dual-stack (listens on IPv4 and IPv6); the server falls back to
-    # "0.0.0.0" automatically if the host kernel has IPv6 disabled.
-    bindAddress: "::"
-    port: 8080
-    tlsEnabled: false
 
 # Remediation configuration
 remediation:
