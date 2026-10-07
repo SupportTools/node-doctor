@@ -145,13 +145,6 @@ func (m *mockKmsgReader) ReadKmsg(ctx context.Context, path string) ([]byte, err
 type mockCommandExecutor struct {
 	outputs map[string]string // command key -> output
 	errors  map[string]error  // command key -> error
-	calls   []commandCall     // Track all calls for verification
-}
-
-// commandCall records a command execution
-type commandCall struct {
-	command string
-	args    []string
 }
 
 // newMockCommandExecutor creates a new mock command executor
@@ -159,7 +152,6 @@ func newMockCommandExecutor() *mockCommandExecutor {
 	return &mockCommandExecutor{
 		outputs: make(map[string]string),
 		errors:  make(map[string]error),
-		calls:   make([]commandCall, 0),
 	}
 }
 
@@ -177,12 +169,6 @@ func (m *mockCommandExecutor) setError(command string, args []string, err error)
 
 // ExecuteCommand implements CommandExecutor.ExecuteCommand
 func (m *mockCommandExecutor) ExecuteCommand(ctx context.Context, command string, args []string) ([]byte, error) {
-	// Record the call
-	m.calls = append(m.calls, commandCall{
-		command: command,
-		args:    args,
-	})
-
 	key := m.makeKey(command, args)
 
 	// Check for error first
@@ -197,22 +183,6 @@ func (m *mockCommandExecutor) ExecuteCommand(ctx context.Context, command string
 
 	// Default: return empty output
 	return []byte{}, nil
-}
-
-// getCalls returns all recorded command calls
-func (m *mockCommandExecutor) getCalls() []commandCall {
-	return m.calls
-}
-
-// wasCalled checks if a command was called with specific args
-func (m *mockCommandExecutor) wasCalled(command string, args []string) bool {
-	key := m.makeKey(command, args)
-	for _, call := range m.calls {
-		if m.makeKey(call.command, call.args) == key {
-			return true
-		}
-	}
-	return false
 }
 
 // makeKey creates a unique key for a command and its args
@@ -235,7 +205,6 @@ const (
 	testOOMKillLog      = "<4>[12345.678901] Out of memory: Kill process 1234 (test-process) score 1000"
 	testDiskErrorLog    = "<3>[12346.789012] EXT4-fs (sda1): error count: 5"
 	testNetworkErrorLog = "<4>[12347.890123] NETDEV WATCHDOG: eth0 (e1000e): transmit queue 0 timed out"
-	testKernelPanicLog  = "<0>[12348.901234] Kernel panic - not syncing: VFS: Unable to mount root fs"
 	testNormalLog       = "<6>[12349.012345] systemd[1]: Started User Manager for UID 1000."
 	testKubeletErrorLog = "kubelet: Failed to initialize CSI driver"
 	testContainerdLog   = "containerd: error creating container"

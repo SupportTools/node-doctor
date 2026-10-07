@@ -754,4 +754,4 @@ Listed explicitly because previous versions of this document claimed otherwise:
 - [Helm rollback](https://helm.sh/docs/helm/helm_rollback/)
 - [GitHub Actions Workflows](../.github/workflows/)
 - [Node Doctor Architecture](./architecture.md)
-- [Deployment Guide](./deployment.md)
+- [Deployment Guide](../deployment/README.md)
