@@ -444,7 +444,7 @@ func (v *ConfigValidator) validateRemediation(remediation *types.RemediationConf
 func (v *ConfigValidator) validateMonitorRemediation(remediation *types.MonitorRemediationConfig, prefix string, result *ValidationResult) {
 	if remediation.Strategy == "" {
 		v.addError(result, prefix+".strategy", "remediation strategy is required")
-	} else if !v.isValidRemediationStrategy(remediation.Strategy) {
+	} else if !types.IsValidRemediationStrategy(remediation.Strategy) {
 		v.addError(result, prefix+".strategy",
 			fmt.Sprintf("unsupported remediation strategy '%s'", remediation.Strategy))
 	}
@@ -610,16 +610,6 @@ func (v *ConfigValidator) isValidMonitorType(monitorType string) bool {
 		}
 	}
 
-	return false
-}
-
-func (v *ConfigValidator) isValidRemediationStrategy(strategy string) bool {
-	validStrategies := []string{"restart", "recreate", "script", "webhook"}
-	for _, validStrategy := range validStrategies {
-		if strategy == validStrategy {
-			return true
-		}
-	}
 	return false
 }
 

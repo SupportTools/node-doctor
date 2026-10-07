@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// t.TempDir() paths can exceed the unix socket path limit (104 bytes on macOS).
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "nd")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "health.sock")
+}
+
 // getOverUnixSocket issues an HTTP GET for path against a health server listening
 // on a unix domain socket, returning the status code.
 func getOverUnixSocket(t *testing.T, socketPath, path string) int {
@@ -37,7 +48,7 @@ func getOverUnixSocket(t *testing.T, socketPath, path string) int {
 // TestServer_UnixSocket verifies the health endpoints are served over the per-pod
 // unix socket and that the socket file is cleaned up on Stop.
 func TestServer_UnixSocket(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "health.sock")
+	sockPath := testSocketPath(t)
 	srv, err := NewServer(&Config{
 		Enabled:    true,
 		Port:       0, // ephemeral TCP — no conflict
@@ -81,7 +92,7 @@ func TestServer_TCPConflictNonFatal(t *testing.T) {
 	defer func() { _ = squatter.Close() }()
 	occupiedPort := squatter.Addr().(*net.TCPAddr).Port
 
-	sockPath := filepath.Join(t.TempDir(), "health.sock")
+	sockPath := testSocketPath(t)
 	srv, err := NewServer(&Config{
 		Enabled:     true,
 		BindAddress: "127.0.0.1", // non-dual-stack: bind fails outright on the taken port

@@ -171,11 +171,72 @@ jobs:
           cache-from: type=gha,scope=overlay-test
           cache-to: type=gha,mode=max,scope=overlay-test
 
+  # Build, push and sign the controller Docker image (multi-arch)
+  docker-controller:
+    name: Build & Push Controller Image
+    runs-on: self-hosted-linux
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/supporttools/node-doctor-controller
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'alpha') }}
+
+      - name: Build and push controller image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.controller
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha,scope=controller
+          cache-to: type=gha,mode=max,scope=controller
+
+      - name: Verify pre-baked cosign
+        run: |
+          set -euo pipefail
+          command -v cosign >/dev/null 2>&1 || { echo "::error::cosign is missing from this self-hosted runner. It must be pre-baked into the runner image - there is deliberately no download fallback. Fix the runner image."; exit 1; }
+          cosign version
+
+      - name: Sign controller image
+        env:
+          COSIGN_EXPERIMENTAL: 1
+          IMAGE_REF: ${{ env.REGISTRY }}/supporttools/node-doctor-controller:${{ steps.meta.outputs.version }}
+        run: |
+          echo "Signing controller image with cosign (keyless)..."
+          echo "Tag: ${IMAGE_REF}"
+          cosign sign --yes "${IMAGE_REF}"
+
   # Create GitHub Release
   github-release:
     name: Create GitHub Release
     runs-on: self-hosted-linux
-    needs: [docker, docker-overlay-test]
+    needs: [docker, docker-overlay-test, docker-controller]
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -242,13 +303,13 @@ jobs:
 
   # Helm Chart Publishing
   #
-  # Depends on docker-overlay-test as well as docker: the chart's default values reference
-  # BOTH images, and the post-package guard below asserts those references actually resolve
-  # in the registry. That assertion is only meaningful once both images have been pushed.
+  # Depends on every image job: the chart's default values reference all three images, and
+  # the post-package guard below asserts those references actually resolve in the registry.
+  # That assertion is only meaningful once all of them have been pushed.
   helm-publish:
     name: Publish Helm Chart
     runs-on: self-hosted-linux
-    needs: [docker, docker-overlay-test]
+    needs: [docker, docker-overlay-test, docker-controller]
     outputs:
       chart-version: ${{ steps.get-chart-version.outputs.version }}
 
@@ -289,7 +350,7 @@ jobs:
       # docker/metadata-action in the `docker` job publishes
       # `type=semver,pattern={{version}}`, which strips the leading v: the image lands on
       # Docker Hub as `1.8.7`, never `v1.8.7`. values.yaml.template feeds ${IMAGE_TAG} into
-      # BOTH image.tag and overlayTest.image.tag, so when IMAGE_TAG carried the v, every
+      # image.tag, overlayTest.image.tag and controller.image.tag, so when IMAGE_TAG carried the v, every
       # published chart defaulted to an image tag that was never pushed —
       # `helm install supporttools/node-doctor` with default values gave ImagePullBackOff
       # on both DaemonSets. node-doctor-overlay-test has never had a v-prefixed tag for any
@@ -354,7 +415,7 @@ jobs:
           with open('/tmp/chart-verify/node-doctor/values.yaml') as fh:
               v = yaml.safe_load(fh)
           refs = []
-          for path in (('image',), ('overlayTest', 'image')):
+          for path in (('image',), ('overlayTest', 'image'), ('controller', 'image')):
               node = v
               for key in path:
                   node = (node or {}).get(key)
@@ -509,7 +570,7 @@ jobs:
   release-complete:
     name: Release Complete
     runs-on: self-hosted-linux
-    needs: [docker, docker-overlay-test, github-release, helm-publish]
+    needs: [docker, docker-overlay-test, docker-controller, github-release, helm-publish]
     if: always()
     steps:
       - name: Check release status
@@ -523,6 +584,10 @@ jobs:
           fi
           if [[ "${{ needs.docker-overlay-test.result }}" != "success" ]]; then
             echo "❌ Overlay test Docker build job failed"
+            exit 1
+          fi
+          if [[ "${{ needs.docker-controller.result }}" != "success" ]]; then
+            echo "❌ Controller Docker build job failed"
             exit 1
           fi
           if [[ "${{ needs.github-release.result }}" != "success" ]]; then
@@ -556,7 +621,7 @@ jobs:
   notify-failure:
     name: Notify Release Failure
     runs-on: self-hosted-linux
-    needs: [docker, docker-overlay-test, github-release, helm-publish, grype-scan, release-complete]
+    needs: [docker, docker-overlay-test, docker-controller, github-release, helm-publish, grype-scan, release-complete]
     if: failure()
     steps:
       # A tag name may legally contain characters that would break out of the JSON
@@ -580,6 +645,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Docker images | ${{ needs.docker.result }} |"
             echo "| Overlay test image | ${{ needs.docker-overlay-test.result }} |"
+            echo "| Controller image | ${{ needs.docker-controller.result }} |"
             echo "| GitHub release | ${{ needs.github-release.result }} |"
             echo "| Helm chart publish | ${{ needs.helm-publish.result }} |"
             echo "| Grype scan | ${{ needs.grype-scan.result }} |"
@@ -600,7 +666,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "❌ *node-doctor* release *${{ steps.ctx.outputs.ref }}* *FAILED*\n\n*Docker images:* `${{ needs.docker.result }}`\n*Overlay test image:* `${{ needs.docker-overlay-test.result }}`\n*GitHub release:* `${{ needs.github-release.result }}`\n*Helm chart publish:* `${{ needs.helm-publish.result }}`\n\nA failed chart publish means charts.support.tools still serves the previous version.\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
+                    "text": "❌ *node-doctor* release *${{ steps.ctx.outputs.ref }}* *FAILED*\n\n*Docker images:* `${{ needs.docker.result }}`\n*Overlay test image:* `${{ needs.docker-overlay-test.result }}`\n*Controller image:* `${{ needs.docker-controller.result }}`\n*GitHub release:* `${{ needs.github-release.result }}`\n*Helm chart publish:* `${{ needs.helm-publish.result }}`\n\nA failed chart publish means charts.support.tools still serves the previous version.\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
                   }
                 }
               ]

@@ -1849,3 +1849,46 @@ func TestRemediateWithStrategies(t *testing.T) {
 		}
 	})
 }
+
+func runRemediationsWhileToggling(t *testing.T, registry *RemediatorRegistry, toggle func(i int)) {
+	t.Helper()
+	mock := newMockRemediator("test", false)
+	registry.Register(RemediatorInfo{
+		Type:    "test",
+		Factory: func() (types.Remediator, error) { return mock, nil },
+	})
+	problem := createTestProblem("test-type", "test-resource")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				toggle(i)
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		mock.ClearCooldown(problem)
+		mock.ResetAttempts(problem)
+		_ = registry.Remediate(context.Background(), "test", problem)
+	}
+	close(stop)
+	wg.Wait()
+}
+
+func TestSetDryRunConcurrentWithRemediate(t *testing.T) {
+	registry := NewRegistry(0, 100)
+	runRemediationsWhileToggling(t, registry, func(i int) { registry.SetDryRun(i%2 == 0) })
+}
+
+func TestSetMaxRemediationsPerHourConcurrentWithRemediate(t *testing.T) {
+	registry := NewRegistry(0, 100)
+	runRemediationsWhileToggling(t, registry, func(i int) { registry.SetMaxRemediationsPerHour((i % 2) * 1000) })
+}

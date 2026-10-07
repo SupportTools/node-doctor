@@ -84,7 +84,7 @@ func (p *defaultStatfsProvider) Statfs(path string) (*FilesystemStats, error) {
 		BlocksAvail: stat.Bavail,
 		Files:       stat.Files,
 		FilesFree:   stat.Ffree,
-		BlockSize:   stat.Bsize,
+		BlockSize:   int64(stat.Bsize), //nolint:unconvert // Bsize is uint32 on darwin
 		Flags:       uint64(stat.Flags),
 	}, nil
 }

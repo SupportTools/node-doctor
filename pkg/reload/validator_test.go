@@ -615,7 +615,7 @@ func TestValidate_RemediationConsistency(t *testing.T) {
 	config.Remediation.Enabled = false
 	config.Monitors[0].Remediation = &types.MonitorRemediationConfig{
 		Enabled:  true,
-		Strategy: "restart",
+		Strategy: "systemd-restart",
 	}
 
 	validator := NewConfigValidator()
@@ -817,7 +817,7 @@ func createValidConfig() *types.NodeDoctorConfig {
 			MaxAttemptsGlobal:        3,
 			HistorySize:              100,
 			CircuitBreaker: types.CircuitBreakerConfig{
-				Enabled:          true,
+				Enabled:          boolPtr(true),
 				Threshold:        5,
 				TimeoutString:    "30m",
 				Timeout:          30 * time.Minute,
@@ -1853,3 +1853,42 @@ func TestValidate_ReloadRejectsUnregisteredMonitorType(t *testing.T) {
 		t.Errorf("Expected monitors[0].type error, got: %v", result.Errors)
 	}
 }
+
+func TestValidateMonitorRemediation_StrategyNames(t *testing.T) {
+	validator := NewConfigValidator()
+	tests := []struct {
+		strategy string
+		valid    bool
+	}{
+		{"systemd-restart", true},
+		{"webhook", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.strategy, func(t *testing.T) {
+			result := &ValidationResult{Valid: true}
+			validator.validateMonitorRemediation(&types.MonitorRemediationConfig{
+				Enabled:  true,
+				Strategy: tt.strategy,
+			}, "monitors[0].remediation", result)
+			if result.Valid != tt.valid {
+				t.Errorf("strategy %q valid = %v, want %v (errors: %v)", tt.strategy, result.Valid, tt.valid, result.Errors)
+			}
+		})
+	}
+}
+
+func TestValidate_MonitorRemediationSystemdRestartPasses(t *testing.T) {
+	config := createValidConfig()
+	config.Monitors[0].Remediation = &types.MonitorRemediationConfig{
+		Enabled:  true,
+		Strategy: "systemd-restart",
+		Service:  "kubelet",
+	}
+
+	result := NewConfigValidator().Validate(config)
+	if !result.Valid {
+		t.Fatalf("reload validation must accept systemd-restart, got errors: %v", result.Errors)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

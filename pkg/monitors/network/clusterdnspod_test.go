@@ -22,6 +22,7 @@ import (
 // with no registered result respond 404, simulating an unreachable/errored pod.
 func startFakeOverlayServers(t *testing.T, hostToResult map[string]clusterdns.ProbeResult) (port int, cleanup func()) {
 	t.Helper()
+	requireLoopbackAliases(t, hostToResult)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/clusterdns", func(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +55,18 @@ func startFakeOverlayServers(t *testing.T, hostToResult map[string]clusterdns.Pr
 	}
 
 	return tcpAddr.Port, ts.Close
+}
+
+// Linux routes all of 127.0.0.0/8 to lo; macOS only configures 127.0.0.1.
+func requireLoopbackAliases(t *testing.T, hostToResult map[string]clusterdns.ProbeResult) {
+	t.Helper()
+	for host := range hostToResult {
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+		if err != nil {
+			t.Skipf("loopback alias %s not available: %v", host, err)
+		}
+		_ = ln.Close()
+	}
 }
 
 func newTestClusterDNSPodMonitor(port int, peers []Peer, opts func(*ClusterDNSPodConfig)) *ClusterDNSPodMonitor {
