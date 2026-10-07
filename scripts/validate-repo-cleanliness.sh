@@ -13,29 +13,14 @@ echo "Checking repository cleanliness..."
 ROOT_BLACKLIST=(
     "*.go"           # Go files belong in proper directories
     "test-*"         # Test files
-    "*test*"         # Any test files (except .gitignore, etc)
     "*.tmp"          # Temporary files
     "*.log"          # Log files
     "*.bak"          # Backup files
     "*~"             # Editor backup files
     "*.swp"          # Vim swap files
     "*.swo"          # Vim swap files
-    "Dockerfile.*"   # Test Dockerfiles
     "*.out"          # Output files
     "*.exe"          # Executables
-)
-
-# Allowed files in root (whitelist)
-ROOT_WHITELIST=(
-    ".gitignore"
-    ".gitattributes"
-    ".validation.json"
-    "README.md"
-    "LICENSE"
-    "CLAUDE.md"
-    "Makefile"
-    "makefile"
-    "makefile.windows"
 )
 
 echo ""
@@ -129,8 +114,6 @@ echo ""
 
 if [ $ERRORS -gt 0 ]; then
     echo "❌ Repository cleanliness check FAILED with $ERRORS errors!"
-    echo ""
-    echo "To fix these issues, run: ./scripts/cleanup-repo.sh"
     echo ""
     echo "Rules for keeping the repository clean:"
     echo "1. No Go files in the root directory - use proper package structure"

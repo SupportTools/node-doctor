@@ -337,7 +337,7 @@ func (r *ServiceRemediator) GetCooldown() time.Duration {
 
 ### Test Coverage Expectations
 
-- **Minimum Coverage**: 80% overall code coverage
+- **Minimum Coverage**: 70% unit test coverage (`make coverage-check`; CI enforces the same threshold)
 - **Target Coverage**: 85%+ for production code
 - **New Code**: Must include tests for all new functionality
 

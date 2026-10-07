@@ -338,7 +338,7 @@ prerelease marker — is treated as a prerelease.
 `ci.yml` used to defeat this exclusion entirely: it had no prerelease gate and pushed `:latest`
 (amd64-only) on **every** `v*` tag, so cutting an RC could leave `latest` pointing at RC
 content, on one architecture. `ci.yml` no longer pushes anything, so `release.yml`'s exclusion
-is now the only thing that decides `:latest`. `make bump-rc` likewise no longer tags `:latest`.
+is now the only thing that decides `:latest`. The Makefile never tags or pushes `:latest`.
 
 ## Creating a Release
 
@@ -460,9 +460,7 @@ step, no `crazy-max/ghaction-import-gpg`, and no `.asc` output. If you previousl
 `GPG_PRIVATE_KEY` repository secret, nothing consumes it — it should be removed and the key
 material revoked, because an unused secret is pure attack surface.
 
-`scripts/setup-gpg-signing-subkey.sh` and `scripts/verify-gpg-setup.sh` are left over from a
-signing scheme that was never wired into the workflow. Running them configures nothing.
-Likewise `.goreleaser.yml` exists in the repo root but **is never invoked** — no workflow runs
+`.goreleaser.yml` exists in the repo root but **is never invoked** — no workflow runs
 GoReleaser, so it produces no binaries, no archives, and no `checksums.txt`.
 
 ### Verifying an image
@@ -529,8 +527,7 @@ helm -n node-doctor get manifest node-doctor | grep -A6 'Minimal resources'
 
 ### If the cluster was deployed with raw manifests
 
-Deployments made with `kubectl apply -f deployment/daemonset.yaml` (or `make deploy-prd-kubectl`)
-are not Helm releases and have no `helm history`. Roll those back with:
+Deployments made with `kubectl apply -f deployment/daemonset.yaml` are not Helm releases and have no `helm history`. Roll those back with:
 
 ```bash
 kubectl -n node-doctor rollout undo daemonset/node-doctor
@@ -570,53 +567,14 @@ version must be unreachable, delete the tags from Docker Hub and revert the char
 
 ### `VERSION` defaults to an epoch timestamp
 
-`Makefile:42` sets `VERSION := $(shell date +%s)`. Every target that interpolates `$(VERSION)`
-without an override gets an integer like `1786... `, which is never a published image tag.
+`VERSION := $(shell date +%s)` in the Makefile, so local `make build-*-image` tags images with an
+integer that is never a published tag. `make docker-push` / `push-*-image` refuse to run unless
+`VERSION` is set explicitly (`make docker-push VERSION=1.8.7`), and no Makefile target tags or
+pushes `:latest`; only `release.yml` does.
 
-```bash
-make deploy-dev    # helm upgrade --install ... --set image.tag=1786132891
-make deploy-stg    # same
-make deploy-prd    # same, behind a y/n prompt
-```
-
-**These three targets are broken as written.** They deploy the local chart with an image tag that
-does not exist in any registry, producing `ImagePullBackOff`. If you use them, always override:
-
-```bash
-make deploy-dev VERSION=1.8.7
-```
-
-They also pass `--set environment=<env>`, a value the chart templates do not consume.
-
-`make build-*-image` / `push-*-image` have the same `VERSION` default; locally built images are
-tagged with the epoch and with `latest`. Pushing those tags to `docker.io/supporttools`
-overwrites the registry `latest` with a local build — avoid `make docker-push` unless that is
-explicitly what you want.
-
-### `make helm-publish` does nothing
-
-The `helm-publish` target packages the chart and then hits a `# CUSTOMIZE: Add your Helm chart publish
-command` placeholder before printing "Helm chart published". It publishes nothing. The only path
-to `charts.support.tools` is the `helm-publish` job in `release.yml`, i.e. a tag push.
-
-### `make bump-rc` is a direct-to-production path
-
-It increments `.version-rc`, builds and pushes a multi-arch image, rewrites the image line in
-`deployment/daemonset.yaml` with `sed`, applies it to the `a1-ops-prd` cluster, then commits,
-tags and **pushes to `main` with `--tags`**. Pushing the tag re-triggers the full `release.yml`.
-Understand all of that before running it.
-
-Two things about it were fixed alongside the tag-naming work, worth knowing if you remember the
-old behaviour:
-
-- It used to also tag `:latest`, so a workstation build of a *release candidate* could overwrite
-  the `:latest` that `release.yml` publishes only for stable tags. It now pushes only the RC tag.
-- Its `git commit` / `git tag` / `git push` steps used to end in `|| true`, silently swallowing
-  failures — leaving an image pushed and a cluster deployed from a revision that was never
-  tagged or pushed anywhere. They now fail loudly.
-
-Its console output used to claim it pushes "to Harbor"; it pushes to Docker Hub
-(`REGISTRY := docker.io/supporttools`), and the strings now say so.
+The former `deploy-dev/stg/prd`, `deploy-prd-kubectl`, `bump`, `bump-rc` and `helm-publish`
+targets were removed. Deploy with Helm from `charts.support.tools` (see Rollback Procedures for
+the equivalent `helm upgrade` commands); publishing is a `v*` tag push.
 
 ### Useful and accurate
 

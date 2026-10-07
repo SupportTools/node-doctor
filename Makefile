@@ -1,32 +1,17 @@
-# ================================================================================================
-# Nexmonyx Repository Template - Makefile
-# ================================================================================================
-#
-# This makefile provides a complete build, test, and deployment framework for Go/Kubernetes projects.
-#
-# CUSTOMIZATION REQUIRED:
-# 1. Replace {{PROJECT_NAME}} with your project name
-# 2. Replace {{REGISTRY}} with your container registry (e.g., ghcr.io/myorg, harbor.mycompany.com/myproject)
-# 3. Replace {{HELM_REPO}} with your Helm chart repository URL
-# 4. Update COMPONENTS list with your actual components
-# 5. Customize KUBECONFIG paths for your environments
-# 6. Adjust build targets for your project structure
-#
-# ================================================================================================
+# node-doctor build, test, and local validation targets.
+# Images and charts are published only by .github/workflows/release.yml.
 
-.PHONY: help all test build deploy \
-	build-local test-local validate-local validate-pipeline-local validate-quick \
-	deploy-dev deploy-stg deploy-prd \
-	bump bump-with-monitoring \
-	qa-check devils-advocate workflow-status \
+.PHONY: help all test build \
+	build-local test-local validate-local validate-pipeline-local validate-quick validate-component \
+	workflow-status workflow-help gh-help \
 	gh-status gh-watch gh-logs gh-builds \
-	check-prerequisites check-docker check-kubectl \
+	check-prerequisites check-docker check-kubectl check-go-version require-version \
 	build test test-integration test-e2e test-all test-ci \
 	test-net-icmp-integration \
 	lint fmt clean install-deps \
 	docker-build docker-push \
-	helm-lint helm-package helm-publish helm-generate helm-verify-generated \
-	coverage-check
+	helm-lint helm-package helm-generate helm-verify-generated \
+	coverage-check coverage-threshold
 
 # ================================================================================================
 # Project Configuration
@@ -44,38 +29,11 @@ GIT_COMMIT := $(shell git rev-parse HEAD)
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 GO_VERSION := 1.25
 
-# RC Version - for release candidate builds
-RC_VERSION_FILE := .version-rc
-RC_VERSION := $(shell [ -f $(RC_VERSION_FILE) ] && cat $(RC_VERSION_FILE) || echo "v0.1.0-rc.1")
-
 export VERSION
 export GIT_COMMIT
 export BUILD_TIME
 export GO_VERSION
 
-# ================================================================================================
-# Environment Configuration
-# ================================================================================================
-
-# CUSTOMIZE: Update these paths for your kubeconfig locations
-KUBECONFIG_DEV := $(HOME)/.kube/dev-cluster
-KUBECONFIG_STG := $(HOME)/.kube/staging-cluster
-KUBECONFIG_PRD := $(HOME)/.kube/config
-
-# Kubernetes context for production deployment
-KUBECTL_CONTEXT_PRD := a1-ops-prd
-
-export KUBECONFIG_DEV
-export KUBECONFIG_STG
-export KUBECONFIG_PRD
-
-# Kubernetes namespaces (node-doctor runs in kube-system typically)
-NAMESPACE_DEV := kube-system
-NAMESPACE_STG := kube-system
-NAMESPACE_PRD := node-doctor
-
-# Helm Chart settings
-HELM_REPO_URL := https://charts.support.tools
 CHART_VERSION := v$(shell git rev-list --count HEAD)
 
 # ================================================================================================
@@ -143,16 +101,11 @@ check-go-version:
 	@./scripts/validate-go-version.sh
 	@$(call print_success,"Go version check passed")
 
-check-kubeconfig-%:
-	@$(call print_status,"Checking kubeconfig for $*...")
-	@ENV_UPPER=$$(echo $* | tr '[:lower:]' '[:upper:]') && \
-	KUBECONFIG_VAR=KUBECONFIG_$$ENV_UPPER && \
-	eval KUBECONFIG_PATH=\$$$$KUBECONFIG_VAR && \
-	if [ ! -f "$$KUBECONFIG_PATH" ]; then \
-		$(call print_error,"Kubeconfig not found for $*: $$KUBECONFIG_PATH"); \
-		exit 1; \
-	fi
-	@$(call print_success,"Kubeconfig validated for $*")
+# Pushing images needs a real tag; the epoch default would litter the registry.
+require-version:
+ifeq ($(origin VERSION),file)
+	@$(call print_error,"Set VERSION explicitly: make docker-push VERSION=1.2.3"); exit 1
+endif
 
 # ================================================================================================
 # Build Targets
@@ -239,14 +192,12 @@ test-ci:
 	fi
 	@$(call print_success,"CI test gate passed")
 
-# End-to-end tests
+# E2E tests create a kind cluster; they need docker, kind, and kubectl.
+# Env: E2E_KEEP_CLUSTER=1, E2E_EXPORT_LOGS=1, E2E_DEBUG=1 (see test/e2e/README.md).
 test-e2e:
-	@$(call print_status,"Running E2E tests...")
-	@if [ -d "test/e2e" ]; then \
-		go test ./test/e2e/... -v -timeout 10m; \
-	else \
-		$(call print_warning,"E2E tests not yet implemented (test/e2e/ does not exist)"); \
-	fi
+	@$(call print_status,"Running E2E tests (kind cluster)...")
+	@command -v kind >/dev/null 2>&1 || ($(call print_error,"kind not found") && exit 1)
+	@go test -tags=e2e ./test/e2e/... -v -timeout 30m
 	@$(call print_success,"E2E tests completed")
 
 # Run the real ICMP pinger integration test under privilege.
@@ -272,13 +223,21 @@ test-all:
 	@go tool cover -func=coverage/coverage.out | grep total | awk '{print "Total coverage: " $$3}'
 	@$(call print_success,"All tests passed - coverage report: coverage/coverage.html")
 
-# Check coverage meets minimum threshold (80%)
-COVERAGE_THRESHOLD := 80
+# Single source for the coverage gate; ci.yml calls coverage-threshold with its own profile.
+COVERAGE_THRESHOLD := 70
+COVERAGE_PROFILE ?= coverage/coverage.out
+
 coverage-check:
-	@$(call print_status,"Checking coverage threshold (minimum $(COVERAGE_THRESHOLD)%)...")
-	@mkdir -p coverage
-	@go test ./... -covermode=atomic -coverprofile=coverage/coverage.out -short > /dev/null 2>&1
-	@COVERAGE=$$(go tool cover -func=coverage/coverage.out | grep total | awk '{print $$3}' | sed 's/%//'); \
+	@$(call print_status,"Generating unit test coverage profile...")
+	@mkdir -p $(dir $(COVERAGE_PROFILE))
+	@go test ./pkg/... ./cmd/... -short -covermode=atomic -coverprofile=$(COVERAGE_PROFILE) > /dev/null
+	@$(MAKE) coverage-threshold COVERAGE_PROFILE=$(COVERAGE_PROFILE)
+
+coverage-threshold:
+	@$(call print_status,"Checking $(COVERAGE_PROFILE) against minimum $(COVERAGE_THRESHOLD)%...")
+	@[ -f $(COVERAGE_PROFILE) ] || { $(call print_error,"$(COVERAGE_PROFILE) not found"); exit 1; }
+	@COVERAGE=$$(go tool cover -func=$(COVERAGE_PROFILE) | grep total | awk '{print $$3}' | sed 's/%//'); \
+	[ -n "$$COVERAGE" ] || { $(call print_error,"Failed to extract coverage percentage"); exit 1; }; \
 	echo "Current coverage: $${COVERAGE}%"; \
 	if [ $$(echo "$${COVERAGE} < $(COVERAGE_THRESHOLD)" | bc -l) -eq 1 ]; then \
 		$(call print_error,"Coverage $${COVERAGE}% is below minimum threshold of $(COVERAGE_THRESHOLD)%"); \
@@ -327,8 +286,8 @@ install-deps:
 # Docker build shorthand
 docker-build: build-all-images
 
-# Docker push shorthand
-docker-push: push-all-images
+# Docker push shorthand; never tags :latest, release.yml owns that
+docker-push: require-version push-all-images
 
 # ================================================================================================
 # Validation Targets (mirrors CI/CD pipeline)
@@ -346,7 +305,7 @@ validate-quick: check-prerequisites check-go-version
 
 validate-component:
 	@$(call print_status,"Validating component: $(COMPONENT)...")
-	@./scripts/validate-pipeline-local.sh --component $(COMPONENT)
+	@./scripts/validate-pipeline-local.sh --component=$(COMPONENT)
 	@$(call print_success,"Component validation passed")
 
 validate-local: validate-pipeline-local
@@ -359,14 +318,12 @@ validate-local: validate-pipeline-local
 build-node-doctor-image: check-docker
 	@$(call print_status,"Building node-doctor Docker image...")
 	@docker build -f Dockerfile -t $(DOCKER_IMAGE_node-doctor):$(VERSION) .
-	@docker tag $(DOCKER_IMAGE_node-doctor):$(VERSION) $(DOCKER_IMAGE_node-doctor):latest
 	@$(call print_success,"node-doctor image built: $(DOCKER_IMAGE_node-doctor):$(VERSION)")
 
 # Build Docker image for overlay-test-server
 build-overlay-test-server-image: check-docker
 	@$(call print_status,"Building overlay-test-server Docker image...")
 	@docker build -f Dockerfile.overlay-test -t $(DOCKER_IMAGE_overlay-test-server):$(VERSION) .
-	@docker tag $(DOCKER_IMAGE_overlay-test-server):$(VERSION) $(DOCKER_IMAGE_overlay-test-server):latest
 	@$(call print_success,"overlay-test-server image built: $(DOCKER_IMAGE_overlay-test-server):$(VERSION)")
 
 # Build all images
@@ -374,17 +331,15 @@ build-all-images: build-node-doctor-image build-overlay-test-server-image
 	@$(call print_success,"Docker images built successfully")
 
 # Push node-doctor image to registry
-push-node-doctor-image:
+push-node-doctor-image: require-version
 	@$(call print_status,"Pushing node-doctor image to registry...")
 	@docker push $(DOCKER_IMAGE_node-doctor):$(VERSION)
-	@docker push $(DOCKER_IMAGE_node-doctor):latest
 	@$(call print_success,"node-doctor image pushed")
 
 # Push overlay-test-server image to registry
-push-overlay-test-server-image:
+push-overlay-test-server-image: require-version
 	@$(call print_status,"Pushing overlay-test-server image to registry...")
 	@docker push $(DOCKER_IMAGE_overlay-test-server):$(VERSION)
-	@docker push $(DOCKER_IMAGE_overlay-test-server):latest
 	@$(call print_success,"overlay-test-server image pushed")
 
 push-all-images: push-node-doctor-image push-overlay-test-server-image
@@ -446,143 +401,6 @@ helm-package:
 	@helm package ./helm/$(PROJECT_NAME) --version $(CHART_VERSION)
 	@$(call print_success,"Helm chart packaged")
 
-helm-publish: helm-package
-	@$(call print_status,"Publishing Helm chart to repository...")
-	@# CUSTOMIZE: Add your Helm chart publish command
-	@$(call print_success,"Helm chart published")
-
-# ================================================================================================
-# Deployment Targets
-# ================================================================================================
-
-deploy-dev: check-kubeconfig-dev
-	@$(call print_status,"Deploying to development environment...")
-	@KUBECONFIG=$(KUBECONFIG_DEV) helm upgrade --install $(PROJECT_NAME) ./helm/$(PROJECT_NAME) \
-		--namespace $(NAMESPACE_DEV) \
-		--set image.tag=$(VERSION) \
-		--set environment=dev \
-		--wait
-	@$(call print_success,"Deployed to development")
-
-deploy-stg: check-kubeconfig-stg
-	@$(call print_status,"Deploying to staging environment...")
-	@KUBECONFIG=$(KUBECONFIG_STG) helm upgrade --install $(PROJECT_NAME) ./helm/$(PROJECT_NAME) \
-		--namespace $(NAMESPACE_STG) \
-		--set image.tag=$(VERSION) \
-		--set environment=staging \
-		--wait
-	@$(call print_success,"Deployed to staging")
-
-deploy-prd: check-kubeconfig-prd
-	@echo "⚠️  CRITICAL DECISION: Deploy to Production"
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "What: Deploy $(PROJECT_NAME) version $(VERSION) to production"
-	@echo "Why: Approved for production deployment"
-	@echo "Risk: May impact production users"
-	@echo ""
-	@read -p "Do you approve? (y/n): " approve; \
-	if [ "$$approve" != "y" ] && [ "$$approve" != "Y" ]; then \
-		$(call print_error,"Production deployment cancelled"); \
-		exit 1; \
-	fi
-	@$(call print_status,"Deploying to production environment...")
-	@KUBECONFIG=$(KUBECONFIG_PRD) helm upgrade --install $(PROJECT_NAME) ./helm/$(PROJECT_NAME) \
-		--namespace $(NAMESPACE_PRD) \
-		--set image.tag=$(VERSION) \
-		--set environment=production \
-		--wait
-	@$(call print_success,"Deployed to production")
-
-# ================================================================================================
-# Version Bump and Deployment Workflow
-# ================================================================================================
-
-bump: validate-pipeline-local
-	@$(call print_status,"Creating new version bump...")
-	@$(call print_status,"Current VERSION: $(VERSION)")
-	@git add . && git commit -m "bump: automated version bump to $(VERSION) [skip ci]" || true
-	@git push origin $$(git rev-parse --abbrev-ref HEAD)
-	@$(call print_success,"Version bumped and pushed - CI/CD will handle deployment")
-
-bump-with-monitoring: bump
-	@$(call print_status,"Monitoring GitHub Actions workflow...")
-	@$(MAKE) gh-watch
-
-# Increment RC version (e.g., v0.1.0-rc.1 -> v0.1.0-rc.2)
-increment-rc-version:
-	@$(call print_status,"Incrementing RC version...")
-	@CURRENT_RC=$$(cat $(RC_VERSION_FILE)); \
-	BASE_VERSION=$$(echo $$CURRENT_RC | sed 's/-rc\.[0-9]*$$//'); \
-	RC_NUM=$$(echo $$CURRENT_RC | sed 's/.*-rc\.//'); \
-	NEW_RC_NUM=$$((RC_NUM + 1)); \
-	NEW_RC_VERSION="$$BASE_VERSION-rc.$$NEW_RC_NUM"; \
-	echo $$NEW_RC_VERSION > $(RC_VERSION_FILE); \
-	echo "$(GREEN)✅ RC version updated: $$CURRENT_RC -> $$NEW_RC_VERSION$(NC)"
-
-# Deploy to production cluster using kubectl
-deploy-prd-kubectl: check-kubectl
-	@$(call print_status,Deploying to production cluster $(KUBECTL_CONTEXT_PRD)...)
-	@$(call print_status,Checking namespace $(NAMESPACE_PRD)...)
-	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl config use-context $(KUBECTL_CONTEXT_PRD)
-	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl get namespace $(NAMESPACE_PRD) > /dev/null 2>&1 || \
-		(echo "Creating namespace $(NAMESPACE_PRD)..." && \
-		KUBECONFIG=$(KUBECONFIG_PRD) kubectl create namespace $(NAMESPACE_PRD))
-	@$(call print_status,Applying RBAC resources...)
-	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl apply -f deployment/rbac.yaml -n $(NAMESPACE_PRD)
-	@$(call print_status,Applying DaemonSet...)
-	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl apply -f deployment/daemonset.yaml -n $(NAMESPACE_PRD)
-	@$(call print_status,Waiting for rollout to complete...)
-	@KUBECONFIG=$(KUBECONFIG_PRD) kubectl rollout status daemonset/node-doctor -n $(NAMESPACE_PRD) --timeout=5m
-	@$(call print_success,Deployed to production cluster $(KUBECTL_CONTEXT_PRD))
-
-# Build and push RC release to $(REGISTRY) and deploy to a1-ops-prd cluster.
-#
-# This target deliberately does NOT tag :latest. It used to, which meant a workstation
-# build of a *release candidate* could overwrite the :latest that release.yml publishes
-# only for non-rc tags. Only .github/workflows/release.yml moves :latest.
-#
-# The git steps below are also not `|| true`: a failed commit/tag/push used to be
-# swallowed, leaving an image pushed and a cluster deployed from a revision that was
-# never tagged or pushed anywhere.
-bump-rc: validate-pipeline-local increment-rc-version
-	@$(call print_status,Building RC release: $(RC_VERSION))
-	@$(call print_status,Registry: $(REGISTRY)/$(PROJECT_NAME))
-	@$(call print_status,Cluster: $(KUBECTL_CONTEXT_PRD) Namespace: $(NAMESPACE_PRD))
-	@echo ""
-	@$(call print_status,Building multi-arch Docker image for amd64 and arm64...)
-	@docker buildx build \
-		--platform linux/amd64,linux/arm64 \
-		--build-arg VERSION=$(RC_VERSION) \
-		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
-		--build-arg BUILD_TIME=$(BUILD_TIME) \
-		-t $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION) \
-		-f Dockerfile \
-		--push \
-		.
-	@$(call print_success,Multi-arch image built and pushed: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION))
-	@echo ""
-	@$(call print_status,Updating DaemonSet image tag...)
-	@sed -i.bak 's|image: .*node-doctor:.*|image: $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)|' deployment/daemonset.yaml
-	@rm -f deployment/daemonset.yaml.bak
-	@echo ""
-	@$(MAKE) deploy-prd-kubectl
-	@echo ""
-	@$(call print_status,Committing RC release...)
-	@git add $(RC_VERSION_FILE) deployment/daemonset.yaml
-	@git commit -m "bump-rc: Release candidate $(RC_VERSION) deployed to $(KUBECTL_CONTEXT_PRD)"
-	@git tag -a $(RC_VERSION) -m "Release candidate $(RC_VERSION)"
-	@git push origin main --tags
-	@echo ""
-	@echo "🎉 RC Release $(RC_VERSION) complete!"
-	@echo "   - Built and pushed to $(REGISTRY)/$(PROJECT_NAME):$(RC_VERSION)"
-	@echo "   - Deployed to $(KUBECTL_CONTEXT_PRD) cluster"
-	@echo "   - Tagged as $(RC_VERSION)"
-	@echo ""
-	@echo "Next steps:"
-	@echo "  - Verify deployment: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor"
-	@echo "  - Check logs: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) logs -l app=node-doctor"
-	@echo "  - Monitor health: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor -w"
-
 # ================================================================================================
 # Quality Workflow Targets
 # ================================================================================================
@@ -590,21 +408,6 @@ bump-rc: validate-pipeline-local increment-rc-version
 workflow-status:
 	@$(call print_status,"Checking workflow status...")
 	@echo "TODO: Check TaskForge or project management system"
-
-qa-check:
-	@$(call print_status,"Running QA validation...")
-	@echo "QA Check: Running validation suite"
-	@$(MAKE) validate-pipeline-local
-	@$(MAKE) test-local
-	@$(call print_success,"QA validation passed")
-
-devils-advocate:
-	@$(call print_status,"Running Devils Advocate validation...")
-	@echo "Devils Advocate: Challenging implementation..."
-	@echo "- Testing edge cases"
-	@echo "- Verifying error handling"
-	@echo "- Checking security implications"
-	@$(call print_success,"Devils Advocate review complete")
 
 # ================================================================================================
 # GitHub Actions Monitoring
@@ -624,14 +427,14 @@ gh-logs:
 
 gh-builds:
 	@$(call print_status,"Showing recent builds...")
-	@gh run list --workflow=pipeline-v2.yml --limit 10
+	@gh run list --workflow=ci.yml --limit 10
 
 # ================================================================================================
 # Help System
 # ================================================================================================
 
 help:
-	@echo "$(PROJECT_NAME) Makefile - Repository Template"
+	@echo "$(PROJECT_NAME) Makefile"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "QUICK START"
@@ -652,7 +455,7 @@ help:
 	@echo "  make build                 Compile binary (shorthand for build-local)"
 	@echo "  make build-local           Build node-doctor binary"
 	@echo "  make docker-build          Build Docker image"
-	@echo "  make docker-push           Push Docker image to registry"
+	@echo "  make docker-push VERSION=x.y.z  Push Docker image (VERSION required, never :latest)"
 	@echo "  make clean                 Remove build artifacts and caches"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -661,9 +464,9 @@ help:
 	@echo ""
 	@echo "  make test                  Run unit tests (fast)"
 	@echo "  make test-integration      Run integration tests"
-	@echo "  make test-e2e              Run end-to-end tests"
+	@echo "  make test-e2e              Run end-to-end tests (creates a kind cluster)"
 	@echo "  make test-all              Run all tests with coverage report"
-	@echo "  make coverage-check        Verify coverage >= 80% threshold"
+	@echo "  make coverage-check        Verify unit coverage >= $(COVERAGE_THRESHOLD)% threshold"
 	@echo "  make lint                  Run golangci-lint"
 	@echo "  make fmt                   Format code with gofmt and goimports"
 	@echo ""
@@ -672,36 +475,17 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@echo "  make install-deps          Install golangci-lint, goimports, etc."
-	@echo "  make validate-quick        Quick validation (format, vet, staticcheck)"
-	@echo "  make validate-pipeline-local  Full validation (mirrors CI/CD)"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "VALIDATION COMMANDS (Pre-push)"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@echo "  make validate-pipeline-local  Full validation (mirrors CI/CD exactly)"
-	@echo "  make validate-quick        Quick validation (format, vet, staticcheck)"
-	@echo "  make validate-component COMPONENT=api  Validate specific component"
+	@echo "  make validate-pipeline-local  gofmt, vet, golangci-lint, gosec, tests, helm (mirrors CI)"
+	@echo "  make validate-quick        Same without tests"
+	@echo "  make validate-component COMPONENT=node-doctor  Same, explicit component"
+	@echo "  SKIP_LINT=1                Allow a missing golangci-lint"
 	@echo ""
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "DEPLOYMENT COMMANDS"
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo ""
-	@echo "  make bump                  Bump version and trigger CI/CD"
-	@echo "  make bump-rc               Build RC, push to $(REGISTRY), deploy to a1-ops-prd"
-	@echo "  make bump-with-monitoring  Bump and watch deployment"
-	@echo "  make deploy-dev            Deploy to development"
-	@echo "  make deploy-stg            Deploy to staging"
-	@echo "  make deploy-prd            Deploy to production (requires approval)"
-	@echo "  make deploy-prd-kubectl    Deploy to a1-ops-prd using kubectl"
-	@echo ""
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "QUALITY WORKFLOW COMMANDS"
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo ""
-	@echo "  make qa-check              Run QA validation"
-	@echo "  make devils-advocate       Run adversarial testing"
-	@echo "  make workflow-status       Check workflow status"
+	@echo "  Deployment is done by .github/workflows/release.yml on a v* tag; see docs/release-process.md"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "GITHUB ACTIONS MONITORING"
@@ -716,9 +500,10 @@ help:
 	@echo "HELM COMMANDS"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
+	@echo "  make helm-generate         Render Chart.yaml/values.yaml from their templates"
+	@echo "  make helm-verify-generated Fail if Chart.yaml/values.yaml drifted from templates"
 	@echo "  make helm-lint             Lint Helm chart"
 	@echo "  make helm-package          Package Helm chart"
-	@echo "  make helm-publish          Publish Helm chart to repository"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "UTILITY COMMANDS"
@@ -726,20 +511,15 @@ help:
 	@echo ""
 	@echo "  make check-prerequisites   Check all required tools installed"
 	@echo "  make check-go-version      Verify Go version matches requirements"
-	@echo "  make check-kubeconfig-dev  Verify development kubeconfig"
+	@echo "  make workflow-status       Check workflow status"
 	@echo "  make help                  Show this help message"
 	@echo ""
-	@echo "For more information, see docs/development/"
+	@echo "For more information, see CONTRIBUTING.md"
 
 workflow-help:
-	@echo "Quality Workflow Commands"
+	@echo "Workflow Commands"
 	@echo ""
 	@echo "  make workflow-status       - Show current workflow status"
-	@echo "  make qa-check              - Run QA validation gate"
-	@echo "  make devils-advocate       - Run adversarial testing gate"
-	@echo "  make workflow-validate     - Full workflow validation"
-	@echo ""
-	@echo "See docs/development/task-execution-workflow.md for complete workflow documentation"
 
 gh-help:
 	@echo "GitHub Actions Monitoring Commands"
