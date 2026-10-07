@@ -281,21 +281,14 @@ func main() {
 	// /remediation/history immediately on start (no race window).
 	var remediatorRegistry *remediators.RemediatorRegistry
 	if config.Remediation.Enabled {
-		maxPerHour := config.Remediation.MaxRemediationsPerHour
-		if maxPerHour == 0 {
-			maxPerHour = 10 // sensible default
+		var err error
+		remediatorRegistry, err = remediators.NewRegistryFromConfig(&config.Remediation, config.Settings.DryRunMode)
+		if err != nil {
+			log.Fatalf("Failed to initialize remediator registry: %v", err)
 		}
-		historySize := config.Remediation.HistorySize
-		if historySize == 0 {
-			historySize = 100
-		}
-		remediatorRegistry = remediators.NewRegistry(maxPerHour, historySize)
-		remediatorRegistry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
-		// Wire the per-minute token-bucket burst limit. A value of 0 leaves the
-		// per-minute check disabled (only the per-hour window applies).
-		remediatorRegistry.SetMaxRemediationsPerMinute(config.Remediation.MaxRemediationsPerMinute)
-		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d, maxPerMinute=%d)",
-			remediatorRegistry.IsDryRun(), maxPerHour, config.Remediation.MaxRemediationsPerMinute)
+		stats := remediatorRegistry.GetStats()
+		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d, maxPerMinute=%d, circuitBreaker=%+v)",
+			stats.DryRun, stats.MaxPerHour, config.Remediation.MaxRemediationsPerMinute, remediatorRegistry.GetCircuitBreakerConfig())
 
 		// Register the built-in remediator strategies so the detector's dispatch
 		// (which addresses a remediator by its strategy type) can find one.

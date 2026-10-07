@@ -3220,3 +3220,38 @@ func TestPrometheusExporterConfigApplyDefaults(t *testing.T) {
 		}
 	})
 }
+
+func TestRemediationStrategyHelpers(t *testing.T) {
+	for _, name := range ValidRemediationStrategies() {
+		if !IsValidRemediationStrategy(name) {
+			t.Errorf("%q listed as valid but rejected", name)
+		}
+	}
+	if IsValidRemediationStrategy("webhook") {
+		t.Error("webhook must not be a valid strategy")
+	}
+
+	err := (&MonitorRemediationConfig{Enabled: true, Strategy: "webhook"}).Validate()
+	if err == nil {
+		t.Fatal("expected an error for an unknown strategy")
+	}
+	for _, name := range ValidRemediationStrategies() {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q should list %q", err.Error(), name)
+		}
+	}
+}
+
+func TestRemediationConfigApplyDefaults_DisabledCircuitBreakerStillGetsDefaults(t *testing.T) {
+	r := RemediationConfig{CircuitBreaker: CircuitBreakerConfig{Enabled: false}}
+	if err := r.ApplyDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	cb := r.CircuitBreaker
+	if cb.Enabled {
+		t.Error("ApplyDefaults must not flip Enabled")
+	}
+	if cb.Threshold != DefaultCircuitBreakerThreshold || cb.Timeout != 30*time.Minute || cb.SuccessThreshold != 2 {
+		t.Errorf("disabled circuit breaker must still get usable defaults, got %+v", cb)
+	}
+}

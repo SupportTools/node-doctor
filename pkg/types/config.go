@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -88,6 +89,21 @@ var (
 	MinHeartbeatInterval = 5 * time.Second  // Minimum heartbeat check interval
 	MinCooldownPeriod    = 10 * time.Second // Minimum cooldown between remediation attempts
 )
+
+// IsValidRemediationStrategy reports whether strategy names a known remediation strategy.
+func IsValidRemediationStrategy(strategy string) bool {
+	return validRemediationStrategies[strategy]
+}
+
+// ValidRemediationStrategies returns the known remediation strategy names, sorted.
+func ValidRemediationStrategies() []string {
+	names := make([]string, 0, len(validRemediationStrategies))
+	for name := range validRemediationStrategies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // MonitorRegistryValidator provides an interface for validating monitor types
 // without creating an import cycle between config and monitors packages.
@@ -1032,21 +1048,19 @@ func (r *RemediationConfig) ApplyDefaults() error {
 		return fmt.Errorf("invalid cooldownPeriod %q: %w", r.CooldownPeriodString, err)
 	}
 
-	// Circuit breaker defaults
-	if r.CircuitBreaker.Enabled {
-		if r.CircuitBreaker.Threshold == 0 {
-			r.CircuitBreaker.Threshold = DefaultCircuitBreakerThreshold
-		}
-		if r.CircuitBreaker.TimeoutString == "" {
-			r.CircuitBreaker.TimeoutString = DefaultCircuitBreakerTimeout
-		}
-		r.CircuitBreaker.Timeout, err = time.ParseDuration(r.CircuitBreaker.TimeoutString)
-		if err != nil {
-			return fmt.Errorf("invalid circuit breaker timeout %q: %w", r.CircuitBreaker.TimeoutString, err)
-		}
-		if r.CircuitBreaker.SuccessThreshold == 0 {
-			r.CircuitBreaker.SuccessThreshold = 2
-		}
+	// Circuit breaker defaults apply even when disabled so a later enable or reload has usable values
+	if r.CircuitBreaker.Threshold == 0 {
+		r.CircuitBreaker.Threshold = DefaultCircuitBreakerThreshold
+	}
+	if r.CircuitBreaker.TimeoutString == "" {
+		r.CircuitBreaker.TimeoutString = DefaultCircuitBreakerTimeout
+	}
+	r.CircuitBreaker.Timeout, err = time.ParseDuration(r.CircuitBreaker.TimeoutString)
+	if err != nil {
+		return fmt.Errorf("invalid circuit breaker timeout %q: %w", r.CircuitBreaker.TimeoutString, err)
+	}
+	if r.CircuitBreaker.SuccessThreshold == 0 {
+		r.CircuitBreaker.SuccessThreshold = 2
 	}
 
 	// Apply defaults to overrides
@@ -1301,8 +1315,8 @@ func (r *MonitorRemediationConfig) Validate() error {
 	if r.Strategy == "" {
 		return fmt.Errorf("strategy is required when remediation is enabled")
 	}
-	if !validRemediationStrategies[r.Strategy] {
-		return fmt.Errorf("invalid strategy %q, must be one of: systemd-restart, custom-script, node-reboot, pod-delete, flush-dns, restart-interface, reset-routing, flush-ipv6-route", r.Strategy)
+	if !IsValidRemediationStrategy(r.Strategy) {
+		return fmt.Errorf("invalid strategy %q, must be one of: %s", r.Strategy, strings.Join(ValidRemediationStrategies(), ", "))
 	}
 
 	// Strategy-specific validation

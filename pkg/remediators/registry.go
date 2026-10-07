@@ -194,6 +194,9 @@ func (r RemediationRecord) MarshalJSON() ([]byte, error) {
 
 // CircuitBreakerConfig contains configuration for the circuit breaker.
 type CircuitBreakerConfig struct {
+	// Disabled makes every check pass and stops failures from tripping the circuit
+	Disabled bool
+
 	// Threshold is the number of consecutive failures before opening the circuit
 	Threshold int
 
@@ -307,6 +310,31 @@ func NewRegistry(maxPerHour, maxHistory int) *RemediatorRegistry {
 		maxHistory:       maxHistory,
 		dryRun:           false,
 	}
+}
+
+// NewRegistryFromConfig builds a registry wired exactly as a hot reload would
+// leave it, so startup and reload share one source of truth.
+func NewRegistryFromConfig(cfg *types.RemediationConfig, dryRunMode bool) (*RemediatorRegistry, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("remediation config cannot be nil")
+	}
+
+	maxPerHour := cfg.MaxRemediationsPerHour
+	if maxPerHour == 0 {
+		maxPerHour = types.DefaultMaxRemediationsPerHour
+	}
+	historySize := cfg.HistorySize
+	if historySize == 0 {
+		historySize = types.DefaultHistorySize
+	}
+
+	r := NewRegistry(maxPerHour, historySize)
+	r.SetDryRun(cfg.DryRun || dryRunMode)
+	r.SetMaxRemediationsPerMinute(cfg.MaxRemediationsPerMinute)
+	if err := r.applyCircuitBreakerConfig(cfg.CircuitBreaker); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // Register adds a new remediator type to the registry.
@@ -443,22 +471,31 @@ func (r *RemediatorRegistry) ApplyConfig(cfg *types.RemediationConfig, dryRunMod
 	r.SetMaxRemediationsPerHour(cfg.MaxRemediationsPerHour)
 	r.SetMaxRemediationsPerMinute(cfg.MaxRemediationsPerMinute)
 
-	// Only push a circuit-breaker update when the new values are actually
-	// usable. A zero/absent circuitBreaker block must not clobber the running
-	// configuration with invalid values, so treat it as "leave as-is".
-	cb := CircuitBreakerConfig{
-		Threshold:        cfg.CircuitBreaker.Threshold,
-		Timeout:          cfg.CircuitBreaker.Timeout,
-		SuccessThreshold: cfg.CircuitBreaker.SuccessThreshold,
-	}
-	if cb.Threshold > 0 && cb.Timeout > 0 && cb.SuccessThreshold > 0 {
-		if err := r.SetCircuitBreakerConfig(cb); err != nil {
-			return fmt.Errorf("apply circuit breaker config: %w", err)
-		}
+	if err := r.applyCircuitBreakerConfig(cfg.CircuitBreaker); err != nil {
+		return err
 	}
 
 	r.logInfof("Remediation config reloaded in place (dryRun=%v maxPerHour=%d maxPerMinute=%d)",
 		r.IsDryRun(), cfg.MaxRemediationsPerHour, cfg.MaxRemediationsPerMinute)
+	return nil
+}
+
+// applyCircuitBreakerConfig converts the typed config and applies it. A
+// zero/absent circuitBreaker block is treated as "leave as-is" so it cannot
+// clobber the running configuration with invalid values.
+func (r *RemediatorRegistry) applyCircuitBreakerConfig(cfg types.CircuitBreakerConfig) error {
+	cb := CircuitBreakerConfig{
+		Disabled:         !cfg.Enabled,
+		Threshold:        cfg.Threshold,
+		Timeout:          cfg.Timeout,
+		SuccessThreshold: cfg.SuccessThreshold,
+	}
+	if cb.Threshold <= 0 || cb.Timeout <= 0 || cb.SuccessThreshold <= 0 {
+		return nil
+	}
+	if err := r.SetCircuitBreakerConfig(cb); err != nil {
+		return fmt.Errorf("apply circuit breaker config: %w", err)
+	}
 	return nil
 }
 
@@ -537,8 +574,21 @@ func (r *RemediatorRegistry) SetCircuitBreakerConfig(config CircuitBreakerConfig
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.circuitConfig = config
+	if config.Disabled && r.circuitState != CircuitClosed {
+		r.circuitState = CircuitClosed
+		r.circuitOpenedAt = time.Time{}
+		r.circuitLastStateChange = time.Now()
+		r.notifyCircuitStateObserver(r.circuitState)
+	}
 	r.logInfof("Circuit breaker config updated: %+v", config)
 	return nil
+}
+
+// GetCircuitBreakerConfig returns the active circuit breaker configuration.
+func (r *RemediatorRegistry) GetCircuitBreakerConfig() CircuitBreakerConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.circuitConfig
 }
 
 // GetRegisteredTypes returns a sorted list of all registered remediator types.
@@ -757,11 +807,12 @@ func (r *RemediatorRegistry) Remediate(ctx context.Context, remediatorType strin
 		return remediationErr
 	}
 
+	dryRun := r.IsDryRun()
 	r.logInfof("Executing remediation: type=%s problem=%s dry-run=%v",
-		remediatorType, GenerateProblemKey(problem), r.dryRun)
+		remediatorType, GenerateProblemKey(problem), dryRun)
 
 	// Phase 5: Execute remediation (or skip in dry-run mode)
-	if r.dryRun {
+	if dryRun {
 		r.logInfof("[DRY-RUN] Would execute remediation for %s", GenerateProblemKey(problem))
 		success = true
 		r.recordCircuitBreakerSuccess()
@@ -843,6 +894,10 @@ func (r *RemediatorRegistry) RemediateWithStrategies(ctx context.Context, strate
 // checkCircuitBreaker checks if the circuit breaker allows remediation.
 // This must be called with the lock held.
 func (r *RemediatorRegistry) checkCircuitBreaker() error {
+	if r.circuitConfig.Disabled {
+		return nil
+	}
+
 	switch r.circuitState {
 	case CircuitClosed:
 		// Normal operation
@@ -925,12 +980,12 @@ func (r *RemediatorRegistry) checkPerMinuteRate() error {
 
 // recordRateLimitEntry records a successful remediation for rate limiting.
 func (r *RemediatorRegistry) recordRateLimitEntry() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.maxPerHour == 0 {
 		return // Rate limiting disabled
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	r.remediationTimes = append(r.remediationTimes, time.Now())
 }
@@ -939,6 +994,10 @@ func (r *RemediatorRegistry) recordRateLimitEntry() {
 func (r *RemediatorRegistry) recordCircuitBreakerSuccess() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if r.circuitConfig.Disabled {
+		return
+	}
 
 	r.consecutiveFailures = 0
 	r.consecutiveSuccesses++
@@ -959,6 +1018,10 @@ func (r *RemediatorRegistry) recordCircuitBreakerSuccess() {
 func (r *RemediatorRegistry) recordCircuitBreakerFailure() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if r.circuitConfig.Disabled {
+		return
+	}
 
 	r.consecutiveSuccesses = 0
 	r.consecutiveFailures++
