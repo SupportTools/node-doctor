@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +28,7 @@ import (
 // anyone reorders createExporters so networked init runs first, this test hangs
 // on an unservable socket and fails.
 func TestHealthEndpointServesBeforeNetworkedExporters(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "health.sock")
+	socket := testSocketPath(t)
 
 	// Phase 2 blocks until we release it — standing in for a wedged exporter
 	// Start() on a degraded node.

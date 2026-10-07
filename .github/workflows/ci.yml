@@ -107,29 +107,9 @@ jobs:
             go tool cover -func=coverage-integration.out | grep total | awk '{print "Integration test coverage: " $3}'
           fi
 
+      # Threshold lives in the Makefile (COVERAGE_THRESHOLD) so local and CI gates agree.
       - name: Check coverage threshold
-        run: |
-          if [ ! -f coverage.out ]; then
-            echo "::error::Coverage file not found"
-            exit 1
-          fi
-
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-
-          if [ -z "$COVERAGE" ]; then
-            echo "::error::Failed to extract coverage percentage"
-            exit 1
-          fi
-
-          THRESHOLD=70
-          echo "Current coverage: ${COVERAGE}%"
-          echo "Minimum threshold: ${THRESHOLD}%"
-
-          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
-            echo "::error::Coverage ${COVERAGE}% is below minimum threshold of ${THRESHOLD}%"
-            exit 1
-          fi
-          echo "Coverage check passed!"
+        run: make coverage-threshold COVERAGE_PROFILE=coverage.out
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -219,6 +199,12 @@ jobs:
           cd cmd/overlay-test-server
           go build -o ../../bin/overlay-test-server
 
+      - name: Build node-doctor-controller binary
+        run: |
+          mkdir -p bin
+          cd cmd/node-doctor-controller
+          go build -o ../../bin/node-doctor-controller
+
       - name: Test binary
         run: ./bin/node-doctor --version
 
@@ -292,6 +278,21 @@ jobs:
             BUILD_TIME=${{ steps.meta.outputs.BUILD_TIME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build controller Docker image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.controller
+          platforms: linux/amd64
+          push: false
+          tags: ${{ env.REGISTRY }}/node-doctor-controller:ci-${{ github.sha }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.VERSION }}
+            GIT_COMMIT=${{ steps.meta.outputs.GIT_COMMIT }}
+            BUILD_TIME=${{ steps.meta.outputs.BUILD_TIME }}
+          cache-from: type=gha,scope=controller
+          cache-to: type=gha,mode=max,scope=controller
 
   # Summary job - provides overall status
   #

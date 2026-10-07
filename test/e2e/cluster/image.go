@@ -18,42 +18,45 @@ import (
 	"time"
 )
 
-// BuildAndLoadImage builds the Node Doctor Docker image and loads it into KIND cluster
+var e2eImages = []struct {
+	name       string
+	dockerfile string
+}{
+	{name: "node-doctor:e2e-test", dockerfile: "Dockerfile"},
+	{name: "node-doctor-controller:e2e-test", dockerfile: "Dockerfile.controller"},
+}
+
+// BuildAndLoadImage builds the agent and controller images and loads them into the KIND cluster
 func BuildAndLoadImage(ctx context.Context, clusterName string) error {
-	// Get project root (should be 3 levels up from test/e2e/cluster)
 	projectRoot, err := getProjectRoot()
 	if err != nil {
 		return fmt.Errorf("failed to find project root: %w", err)
 	}
 
-	imageName := "node-doctor:e2e-test"
+	for _, img := range e2eImages {
+		fmt.Printf("Building Docker image: %s\n", img.name)
+		if err := buildDockerImage(ctx, projectRoot, img.dockerfile, img.name); err != nil {
+			return fmt.Errorf("failed to build image %s: %w", img.name, err)
+		}
 
-	// Step 1: Build Docker image
-	fmt.Printf("Building Docker image: %s\n", imageName)
-	if err := buildDockerImage(ctx, projectRoot, imageName); err != nil {
-		return fmt.Errorf("failed to build image: %w", err)
+		fmt.Printf("Loading image into KIND cluster: %s\n", clusterName)
+		if err := loadImageIntoKIND(ctx, clusterName, img.name); err != nil {
+			return fmt.Errorf("failed to load image %s into KIND: %w", img.name, err)
+		}
+
+		fmt.Printf("Image %s built and loaded successfully\n", img.name)
 	}
 
-	// Step 2: Load image into KIND cluster
-	fmt.Printf("Loading image into KIND cluster: %s\n", clusterName)
-	if err := loadImageIntoKIND(ctx, clusterName, imageName); err != nil {
-		return fmt.Errorf("failed to load image into KIND: %w", err)
-	}
-
-	fmt.Printf("Image %s built and loaded successfully\n", imageName)
 	return nil
 }
 
-// buildDockerImage builds the Node Doctor Docker image
-func buildDockerImage(ctx context.Context, projectRoot, imageName string) error {
-	// Create timeout for build operation
+func buildDockerImage(ctx context.Context, projectRoot, dockerfile, imageName string) error {
 	buildCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Check if Dockerfile exists
-	dockerfilePath := filepath.Join(projectRoot, "Dockerfile")
+	dockerfilePath := filepath.Join(projectRoot, dockerfile)
 	if _, err := os.Stat(dockerfilePath); err != nil {
-		return fmt.Errorf("Dockerfile not found at %s: %w", dockerfilePath, err)
+		return fmt.Errorf("%s not found at %s: %w", dockerfile, dockerfilePath, err)
 	}
 
 	// Build the image

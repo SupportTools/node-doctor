@@ -590,8 +590,8 @@ controller:
   image:
     repository: supporttools/node-doctor-controller
     pullPolicy: IfNotPresent
-    # Defaults to chart appVersion when empty
-    tag: ""
+    # Falls back to image.tag when empty
+    tag: "${IMAGE_TAG}"
 
   # Service account for the controller
   serviceAccount:
