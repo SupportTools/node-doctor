@@ -413,35 +413,51 @@ func main() {
 		log.Fatalf("No monitors started successfully — check monitor configuration (all %d configured monitor(s) failed)", len(config.Monitors))
 	}
 
+	if healthServer != nil {
+		healthServer.SetReady(true)
+	}
 	log.Printf("[INFO] Node Doctor started successfully")
 
-	// Wait for shutdown signal
 	<-sigCh
 	log.Printf("[INFO] Received shutdown signal, stopping...")
 
-	// Create shutdown context with timeout
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
-
-	// Stop detector (the Run method handles its own cleanup)
-	log.Printf("[INFO] Stopping detector...")
-	// Cancel the context to signal shutdown
-	cancel()
-
-	// Stop exporters
-	log.Printf("[INFO] Stopping exporters...")
-	for _, exporter := range exporters {
-		if err := exporter.Stop(); err != nil {
-			log.Printf("[WARN] Error stopping exporter: %v", err)
-		}
+	if healthServer != nil {
+		healthServer.SetReady(false)
 	}
-
-	// Wait for shutdown to complete or timeout
-	select {
-	case <-shutdownCtx.Done():
-		log.Printf("[WARN] Shutdown timeout exceeded")
-	default:
+	if shutdown(det, exporters, 30*time.Second) {
 		log.Printf("[INFO] Node Doctor stopped successfully")
+	} else {
+		log.Printf("[WARN] Shutdown timeout exceeded")
+	}
+}
+
+type stopper interface {
+	Stop() error
+}
+
+// shutdown stops the detector first so no status is exported to a stopped
+// exporter, then stops exporters in reverse start order (health server last).
+func shutdown(det stopper, exporters []ExporterLifecycle, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		log.Printf("[INFO] Stopping detector...")
+		if err := det.Stop(); err != nil {
+			log.Printf("[WARN] Error stopping detector: %v", err)
+		}
+		log.Printf("[INFO] Stopping exporters...")
+		for i := len(exporters) - 1; i >= 0; i-- {
+			if err := exporters[i].Stop(); err != nil {
+				log.Printf("[WARN] Error stopping exporter: %v", err)
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 
@@ -531,6 +547,7 @@ func startHealthServer(ctx context.Context, remediationProvider health.Remediati
 		healthServer.SetRemediationHistory(remediationProvider)
 		log.Printf("[INFO] Remediation history wired to /remediation/history endpoint")
 	}
+	healthServer.SetVersion(Version)
 	if err := healthServer.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start health server: %w", err)
 	}
