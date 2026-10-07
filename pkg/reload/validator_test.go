@@ -817,7 +817,7 @@ func createValidConfig() *types.NodeDoctorConfig {
 			MaxAttemptsGlobal:        3,
 			HistorySize:              100,
 			CircuitBreaker: types.CircuitBreakerConfig{
-				Enabled:          true,
+				Enabled:          boolPtr(true),
 				Threshold:        5,
 				TimeoutString:    "30m",
 				Timeout:          30 * time.Minute,
@@ -1890,3 +1890,5 @@ func TestValidate_MonitorRemediationSystemdRestartPasses(t *testing.T) {
 		t.Fatalf("reload validation must accept systemd-restart, got errors: %v", result.Errors)
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

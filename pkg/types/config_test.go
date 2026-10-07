@@ -209,7 +209,7 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 			name: "circuit breaker enabled gets defaults",
 			input: RemediationConfig{
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled: true,
+					Enabled: boolPtr(true),
 				},
 			},
 			expected: RemediationConfig{
@@ -220,7 +220,7 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 				MaxAttemptsGlobal:        DefaultMaxAttemptsGlobal,
 				HistorySize:              DefaultHistorySize,
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled:          true,
+					Enabled:          boolPtr(true),
 					Threshold:        DefaultCircuitBreakerThreshold,
 					TimeoutString:    DefaultCircuitBreakerTimeout,
 					Timeout:          30 * time.Minute,
@@ -240,7 +240,7 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 			name: "invalid circuit breaker timeout",
 			input: RemediationConfig{
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled:       true,
+					Enabled:       boolPtr(true),
 					TimeoutString: "invalid",
 				},
 			},
@@ -1476,7 +1476,7 @@ func TestRemediationConfigValidation(t *testing.T) {
 				MaxAttemptsGlobal:        3,
 				HistorySize:              100,
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled:   true,
+					Enabled:   boolPtr(true),
 					Threshold: 0,
 					Timeout:   30 * time.Minute,
 				},
@@ -1863,7 +1863,7 @@ func TestComplexConfigurationValidation(t *testing.T) {
 			MaxAttemptsGlobal:        5,
 			HistorySize:              200,
 			CircuitBreaker: CircuitBreakerConfig{
-				Enabled:          true,
+				Enabled:          boolPtr(true),
 				Threshold:        10,
 				Timeout:          45 * time.Minute,
 				SuccessThreshold: 3,
@@ -3242,14 +3242,32 @@ func TestRemediationStrategyHelpers(t *testing.T) {
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+func TestRemediationConfigApplyDefaults_AbsentCircuitBreakerIsEnabled(t *testing.T) {
+	r := RemediationConfig{}
+	if err := r.ApplyDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	if r.CircuitBreaker.Enabled == nil || !*r.CircuitBreaker.Enabled {
+		t.Error("an absent circuitBreaker block must default to enabled")
+	}
+	if !r.CircuitBreaker.IsEnabled() {
+		t.Error("IsEnabled must report true after defaults")
+	}
+	if !(&CircuitBreakerConfig{}).IsEnabled() {
+		t.Error("IsEnabled on a zero-value block must be true")
+	}
+}
+
 func TestRemediationConfigApplyDefaults_DisabledCircuitBreakerStillGetsDefaults(t *testing.T) {
-	r := RemediationConfig{CircuitBreaker: CircuitBreakerConfig{Enabled: false}}
+	r := RemediationConfig{CircuitBreaker: CircuitBreakerConfig{Enabled: boolPtr(false)}}
 	if err := r.ApplyDefaults(); err != nil {
 		t.Fatal(err)
 	}
 	cb := r.CircuitBreaker
-	if cb.Enabled {
-		t.Error("ApplyDefaults must not flip Enabled")
+	if cb.IsEnabled() {
+		t.Error("ApplyDefaults must not flip an explicit false")
 	}
 	if cb.Threshold != DefaultCircuitBreakerThreshold || cb.Timeout != 30*time.Minute || cb.SuccessThreshold != 2 {
 		t.Errorf("disabled circuit breaker must still get usable defaults, got %+v", cb)

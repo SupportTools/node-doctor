@@ -138,7 +138,7 @@ func TestNewRegistryFromConfigAppliesCircuitBreakerAtStartup(t *testing.T) {
 	r, err := NewRegistryFromConfig(&types.RemediationConfig{
 		Enabled: true,
 		CircuitBreaker: types.CircuitBreakerConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			Threshold:        5,
 			Timeout:          7 * time.Minute,
 			SuccessThreshold: 2,
@@ -188,7 +188,7 @@ func TestCircuitBreakerDisabledNeverBlocks(t *testing.T) {
 	r, err := NewRegistryFromConfig(&types.RemediationConfig{
 		Enabled: true,
 		CircuitBreaker: types.CircuitBreakerConfig{
-			Enabled:          false,
+			Enabled:          boolPtr(false),
 			Threshold:        1,
 			Timeout:          time.Hour,
 			SuccessThreshold: 1,
@@ -237,7 +237,7 @@ func TestApplyConfigDisablingCircuitBreakerClosesOpenCircuit(t *testing.T) {
 	err := r.ApplyConfig(&types.RemediationConfig{
 		Enabled: true,
 		CircuitBreaker: types.CircuitBreakerConfig{
-			Enabled:          false,
+			Enabled:          boolPtr(false),
 			Threshold:        1,
 			Timeout:          time.Hour,
 			SuccessThreshold: 1,
@@ -248,5 +248,26 @@ func TestApplyConfigDisablingCircuitBreakerClosesOpenCircuit(t *testing.T) {
 	}
 	if r.GetCircuitState() != CircuitClosed {
 		t.Errorf("disabling the breaker must report Closed, got %v", r.GetCircuitState())
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestNewRegistryFromConfigAbsentCircuitBreakerBlockEnablesBreaker(t *testing.T) {
+	cfg := types.RemediationConfig{Enabled: true}
+	if err := cfg.ApplyDefaults(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := NewRegistryFromConfig(&cfg, false)
+	if err != nil {
+		t.Fatalf("NewRegistryFromConfig: %v", err)
+	}
+	got := r.GetCircuitBreakerConfig()
+	if got.Disabled {
+		t.Fatal("omitting the circuitBreaker block must leave the breaker enabled")
+	}
+	if got.Threshold != types.DefaultCircuitBreakerThreshold || got.Timeout != 30*time.Minute || got.SuccessThreshold != 2 {
+		t.Errorf("breaker must run with the config defaults, got %+v", got)
 	}
 }

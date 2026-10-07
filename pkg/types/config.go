@@ -504,11 +504,20 @@ type RemediationCoordinationConfig struct {
 
 // CircuitBreakerConfig configures circuit breaker behavior.
 type CircuitBreakerConfig struct {
-	Enabled          bool          `json:"enabled" yaml:"enabled"`
+	// Enabled is a *bool so an absent key defaults to true while an explicit false disables
+	Enabled          *bool         `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Threshold        int           `json:"threshold,omitempty" yaml:"threshold,omitempty"`
 	TimeoutString    string        `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Timeout          time.Duration `json:"-" yaml:"-"`
 	SuccessThreshold int           `json:"successThreshold,omitempty" yaml:"successThreshold,omitempty"`
+}
+
+// IsEnabled reports whether the circuit breaker is on; unset means enabled.
+func (c *CircuitBreakerConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // RemediationOverride allows problem-specific remediation overrides.
@@ -1048,7 +1057,11 @@ func (r *RemediationConfig) ApplyDefaults() error {
 		return fmt.Errorf("invalid cooldownPeriod %q: %w", r.CooldownPeriodString, err)
 	}
 
-	// Circuit breaker defaults apply even when disabled so a later enable or reload has usable values
+	if r.CircuitBreaker.Enabled == nil {
+		enabled := true
+		r.CircuitBreaker.Enabled = &enabled
+	}
+	// Threshold defaults apply even when disabled so a later enable or reload has usable values
 	if r.CircuitBreaker.Threshold == 0 {
 		r.CircuitBreaker.Threshold = DefaultCircuitBreakerThreshold
 	}
@@ -1649,8 +1662,8 @@ func (r *RemediationConfig) Validate() error {
 		return fmt.Errorf("historySize must be positive, got %d", r.HistorySize)
 	}
 
-	// Validate circuit breaker
-	if r.CircuitBreaker.Enabled {
+	// Validate circuit breaker only when explicitly enabled; a nil Enabled means defaults have not run yet
+	if r.CircuitBreaker.Enabled != nil && *r.CircuitBreaker.Enabled {
 		if r.CircuitBreaker.Threshold <= 0 {
 			return fmt.Errorf("circuitBreaker.threshold must be positive, got %d", r.CircuitBreaker.Threshold)
 		}

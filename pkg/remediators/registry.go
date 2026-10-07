@@ -485,7 +485,7 @@ func (r *RemediatorRegistry) ApplyConfig(cfg *types.RemediationConfig, dryRunMod
 // clobber the running configuration with invalid values.
 func (r *RemediatorRegistry) applyCircuitBreakerConfig(cfg types.CircuitBreakerConfig) error {
 	cb := CircuitBreakerConfig{
-		Disabled:         !cfg.Enabled,
+		Disabled:         !cfg.IsEnabled(),
 		Threshold:        cfg.Threshold,
 		Timeout:          cfg.Timeout,
 		SuccessThreshold: cfg.SuccessThreshold,
