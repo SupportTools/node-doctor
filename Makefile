@@ -41,11 +41,12 @@ CHART_VERSION := v$(shell git rev-list --count HEAD)
 # ================================================================================================
 
 # Node Doctor binaries
-COMPONENTS := node-doctor overlay-test-server
+COMPONENTS := node-doctor overlay-test-server node-doctor-controller
 
 # Docker images
 DOCKER_IMAGE_node-doctor := $(REGISTRY)/$(PROJECT_NAME)
 DOCKER_IMAGE_overlay-test-server := $(REGISTRY)/$(PROJECT_NAME)-overlay-test
+DOCKER_IMAGE_node-doctor-controller := $(REGISTRY)/$(PROJECT_NAME)-controller
 
 # ================================================================================================
 # Color Output Functions
@@ -133,6 +134,12 @@ build-overlay-test-server-local:
 	@mkdir -p bin
 	@cd cmd/overlay-test-server && go build -o ../../bin/overlay-test-server
 	@$(call print_success,"overlay-test-server built: bin/overlay-test-server")
+
+build-node-doctor-controller-local:
+	@$(call print_status,"Building node-doctor-controller locally...")
+	@mkdir -p bin
+	@cd cmd/node-doctor-controller && go build -ldflags="-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildTime=$(BUILD_TIME)" -o ../../bin/node-doctor-controller
+	@$(call print_success,"node-doctor-controller built: bin/node-doctor-controller")
 
 build-local: build-all-local
 
@@ -326,8 +333,16 @@ build-overlay-test-server-image: check-docker
 	@docker build -f Dockerfile.overlay-test -t $(DOCKER_IMAGE_overlay-test-server):$(VERSION) .
 	@$(call print_success,"overlay-test-server image built: $(DOCKER_IMAGE_overlay-test-server):$(VERSION)")
 
+build-node-doctor-controller-image: check-docker
+	@$(call print_status,"Building node-doctor-controller Docker image...")
+	@docker build -f Dockerfile.controller \
+		--build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t $(DOCKER_IMAGE_node-doctor-controller):$(VERSION) .
+	@docker tag $(DOCKER_IMAGE_node-doctor-controller):$(VERSION) $(DOCKER_IMAGE_node-doctor-controller):latest
+	@$(call print_success,"node-doctor-controller image built: $(DOCKER_IMAGE_node-doctor-controller):$(VERSION)")
+
 # Build all images
-build-all-images: build-node-doctor-image build-overlay-test-server-image
+build-all-images: build-node-doctor-image build-overlay-test-server-image build-node-doctor-controller-image
 	@$(call print_success,"Docker images built successfully")
 
 # Push node-doctor image to registry
@@ -342,7 +357,13 @@ push-overlay-test-server-image: require-version
 	@docker push $(DOCKER_IMAGE_overlay-test-server):$(VERSION)
 	@$(call print_success,"overlay-test-server image pushed")
 
-push-all-images: push-node-doctor-image push-overlay-test-server-image
+push-node-doctor-controller-image:
+	@$(call print_status,"Pushing node-doctor-controller image to registry...")
+	@docker push $(DOCKER_IMAGE_node-doctor-controller):$(VERSION)
+	@docker push $(DOCKER_IMAGE_node-doctor-controller):latest
+	@$(call print_success,"node-doctor-controller image pushed")
+
+push-all-images: push-node-doctor-image push-overlay-test-server-image push-node-doctor-controller-image
 	@$(call print_success,"Images pushed to registry")
 
 # ================================================================================================
