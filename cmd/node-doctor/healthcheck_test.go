@@ -2,17 +2,29 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/supporttools/node-doctor/pkg/health"
 )
 
+// t.TempDir() paths can exceed the unix socket path limit (104 bytes on macOS).
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "nd")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "health.sock")
+}
+
 // TestRunHealthCheck exercises the exec-probe health check against a real health
 // server unix socket. This is the code path the Kubernetes exec probes invoke, and
 // the reason a1pinode01-class hostPort-8080 conflicts no longer crashloop the pod.
 func TestRunHealthCheck(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "health.sock")
+	sockPath := testSocketPath(t)
 	srv, err := health.NewServer(&health.Config{
 		Enabled:    true,
 		Port:       0, // ephemeral TCP, no conflict

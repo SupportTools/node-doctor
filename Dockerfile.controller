@@ -1,0 +1,46 @@
+# Dockerfile for node-doctor-controller - cluster-wide coordination API for node-doctor agents
+# Pure-Go SQLite (modernc.org/sqlite), so the binary is fully static and runs from scratch.
+
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG TARGETARCH
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+    -ldflags="-X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildTime=${BUILD_TIME} -w -s" \
+    -trimpath \
+    -o node-doctor-controller \
+    ./cmd/node-doctor-controller
+
+# SQLite needs a writable data dir; in-cluster this is replaced by the PVC mount.
+RUN mkdir -p /data && chown 65534:65534 /data
+
+FROM scratch
+
+COPY --from=builder /build/node-doctor-controller /usr/local/bin/node-doctor-controller
+COPY --from=builder --chown=65534:65534 /data /data
+
+USER 65534:65534
+
+# 8080: HTTP API, health and metrics endpoint
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/node-doctor-controller"]
+
+LABEL org.opencontainers.image.title="Node Doctor Controller" \
+      org.opencontainers.image.description="Cluster-wide coordination controller for node-doctor agents" \
+      org.opencontainers.image.vendor="SupportTools" \
+      org.opencontainers.image.url="https://github.com/supporttools/node-doctor" \
+      org.opencontainers.image.source="https://github.com/supporttools/node-doctor" \
+      org.opencontainers.image.licenses="Apache-2.0"

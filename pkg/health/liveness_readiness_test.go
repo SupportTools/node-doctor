@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 func newSocketServer(t *testing.T) (*Server, *http.Client) {
 	t.Helper()
 
-	socket := filepath.Join(t.TempDir(), "health.sock")
+	socket := testSocketPath(t)
 	srv, err := NewServer(&Config{
 		Enabled:      true,
 		BindAddress:  "127.0.0.1",

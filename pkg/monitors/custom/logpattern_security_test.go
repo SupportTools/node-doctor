@@ -781,32 +781,30 @@ func TestSecurity_MemoryEstimation_Accuracy(t *testing.T) {
 				units[i] = "test-" + string(rune(i)) + ".service"
 			}
 
-			_ = &LogPatternMonitorConfig{
+			config := &LogPatternMonitorConfig{
 				Patterns:            patterns,
 				JournalUnits:        units,
 				MaxEventsPerPattern: cfg.events,
 				DedupWindow:         5 * time.Minute,
 			}
 
-			// 			estimate := estimateMemoryUsage(config)
-			//
-			// 			// Estimates should scale with config size
-			// 			expectedMin := cfg.patterns * 1024 // At least 1KB per pattern
-			// 			if estimate < expectedMin {
-			// 				t.Errorf("Estimate too low: got %d bytes, expected at least %d",
-			// 					estimate, expectedMin)
-			// 			}
-			//
-			// 			// Estimates should be conservative (reasonable upper bound)
-			// 			expectedMax := 50 * 1024 * 1024 // 50MB max
-			// 			if estimate > expectedMax {
-			// 				t.Errorf("Estimate too high: got %d bytes, expected at most %d",
-			// 					estimate, expectedMax)
-			// 			}
+			estimate := config.estimateMemoryUsage()
 
-			// 			t.Logf("%s config: %d patterns, %d events, %d units = %.2f MB estimated",
-			// 				cfg.name, cfg.patterns, cfg.events, cfg.units,
-			// 				float64(estimate)/(1024*1024))
+			expectedMin := cfg.patterns * 1024
+			if estimate < expectedMin {
+				t.Errorf("Estimate too low: got %d bytes, expected at least %d",
+					estimate, expectedMin)
+			}
+
+			expectedMax := 50 * 1024 * 1024
+			if estimate > expectedMax {
+				t.Errorf("Estimate too high: got %d bytes, expected at most %d",
+					estimate, expectedMax)
+			}
+
+			t.Logf("%s config: %d patterns, %d events, %d units = %.2f MB estimated",
+				cfg.name, cfg.patterns, cfg.events, cfg.units,
+				float64(estimate)/(1024*1024))
 		})
 	}
 }
