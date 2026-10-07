@@ -410,10 +410,12 @@ func TestRemediationStrategies(t *testing.T) {
 	}
 }
 
-// These factories build an in-cluster Kubernetes client, which unit tests cannot provide.
+// These factories need an in-cluster Kubernetes client or a container runtime socket,
+// which unit tests cannot provide.
 var needsClusterAtConstruction = map[string]bool{
 	"kubernetes-apiserver-check": true,
 	"kubernetes-capacity-check":  true,
+	"kubernetes-runtime-check":   true,
 	"network-cni-check":          true,
 	"network-cluster-dns-pod":    true,
 }
