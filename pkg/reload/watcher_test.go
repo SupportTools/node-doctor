@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -215,6 +216,9 @@ func TestConfigWatcherDebouncing(t *testing.T) {
 
 // TestConfigWatcherKubernetesSymlink tests handling of Kubernetes ConfigMap atomic updates
 func TestConfigWatcherKubernetesSymlink(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("rename-over of an existing symlink only surfaces as a Create event with inotify")
+	}
 	// This test simulates how Kubernetes updates ConfigMaps:
 	// 1. Creates new directory with timestamp
 	// 2. Writes files to new directory
