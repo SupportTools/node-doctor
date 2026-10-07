@@ -676,14 +676,14 @@ func NewDNSMonitor(ctx context.Context, config types.MonitorConfig) (types.Monit
 var (
 	knownDNSConfigKeys  = []string{"clusterDomains", "externalDomains", "customQueries", "latencyThreshold", "nameserverCheckEnabled", "resolverPath", "failureCountThreshold", "successRateTracking", "consistencyChecking", "healthScoring", "predictiveAlerting", "correlation", "trendDetection", "historicalMetrics"}
 	knownDNSSectionKeys = map[string][]string{
-		"customQueries":       []string{"domain", "recordType", "testEachNameserver", "consistencyCheck"},
-		"successRateTracking": []string{"enabled", "windowSize", "failureRateThreshold", "minSamplesRequired"},
-		"consistencyChecking": []string{"enabled", "queriesPerCheck", "intervalBetweenQueries"},
-		"healthScoring":       []string{"enabled", "degradedThreshold", "unhealthyThreshold", "successRateWeight", "latencyWeight", "errorDiversityWeight", "consistencyWeight", "windowSize", "latencyBaseline", "latencyMax"},
-		"predictiveAlerting":  []string{"enabled", "predictionWindow", "warningLeadTime", "minDataPoints", "confidenceThreshold"},
-		"correlation":         []string{"enabled", "minConfidence", "windowMinutes", "nameserverFailureThreshold", "minNameserversForDomainCorrelation"},
-		"trendDetection":      []string{"enabled", "windowSize", "degradationThreshold", "anomalyZScore", "flapDetection"},
-		"historicalMetrics":   []string{"enabled", "storagePath", "retentionDays"},
+		"customQueries":       {"domain", "recordType", "testEachNameserver", "consistencyCheck"},
+		"successRateTracking": {"enabled", "windowSize", "failureRateThreshold", "minSamplesRequired"},
+		"consistencyChecking": {"enabled", "queriesPerCheck", "intervalBetweenQueries"},
+		"healthScoring":       {"enabled", "degradedThreshold", "unhealthyThreshold", "successRateWeight", "latencyWeight", "errorDiversityWeight", "consistencyWeight", "windowSize", "latencyBaseline", "latencyMax"},
+		"predictiveAlerting":  {"enabled", "predictionWindow", "warningLeadTime", "minDataPoints", "confidenceThreshold"},
+		"correlation":         {"enabled", "minConfidence", "windowMinutes", "nameserverFailureThreshold", "minNameserversForDomainCorrelation"},
+		"trendDetection":      {"enabled", "windowSize", "degradationThreshold", "anomalyZScore", "flapDetection"},
+		"historicalMetrics":   {"enabled", "storagePath", "retentionDays"},
 	}
 	knownDNSFlapDetectionKeys = []string{"enabled", "minOscillations", "windowMinutes"}
 )
