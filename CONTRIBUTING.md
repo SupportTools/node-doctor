@@ -677,8 +677,7 @@ When contributing to Node Doctor:
 - **[Architecture Guide](docs/architecture.md)** - System design and component overview
 - **[Monitors Guide](docs/monitors.md)** - Monitor implementation details
 - **[Remediation Guide](docs/remediation.md)** - Remediator patterns and safety mechanisms
-- **[Task Execution Workflow](docs/development/task-execution-workflow.md)** - Development process
-- **[Validation Quick Reference](docs/development/validation-quick-reference.md)** - Testing and validation
+- **[Testing Guide](docs/testing-guide.md)** - Testing and validation
 
 ### Build Targets
 
