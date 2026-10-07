@@ -114,6 +114,9 @@ type MonitorRegistryValidator interface {
 
 	// GetRegisteredTypes returns a sorted list of all registered monitor types
 	GetRegisteredTypes() []string
+
+	// ValidateConfig runs the type-specific validator for a monitor configuration
+	ValidateConfig(config MonitorConfig) error
 }
 
 // NodeDoctorConfig is the top-level configuration structure.
@@ -2043,12 +2046,17 @@ func (c *NodeDoctorConfig) ValidateWithRegistry(registry MonitorRegistryValidato
 		return err
 	}
 
-	// Validate monitor types are registered
 	if registry != nil {
 		for _, monitor := range c.Monitors {
 			if !registry.IsRegistered(monitor.Type) {
 				return fmt.Errorf("unknown monitor type %q for monitor %q, available types: %v",
 					monitor.Type, monitor.Name, registry.GetRegisteredTypes())
+			}
+			if !monitor.Enabled {
+				continue
+			}
+			if err := registry.ValidateConfig(monitor); err != nil {
+				return fmt.Errorf("monitor %q: %w", monitor.Name, err)
 			}
 		}
 	}

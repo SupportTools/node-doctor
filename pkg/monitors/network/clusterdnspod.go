@@ -173,8 +173,11 @@ func parseClusterDNSPodConfig(configMap map[string]interface{}) (*ClusterDNSPodC
 	return config, nil
 }
 
+var knownClusterDNSPodConfigKeys = []string{"enabled", "labelSelector", "namespace", "probePort", "probePath", "timeout", "failureCountThreshold", "minSuccessPods"}
+
 // ValidateClusterDNSPodConfig validates the cluster-DNS-pod monitor configuration.
 func ValidateClusterDNSPodConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownClusterDNSPodConfigKeys...)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

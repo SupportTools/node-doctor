@@ -476,8 +476,11 @@ func (c *CapacityMonitorConfig) applyDefaults() error {
 	return nil
 }
 
+var knownCapacityConfigKeys = []string{"nodeName", "warningThreshold", "criticalThreshold", "failureThreshold", "apiTimeout", "checkAllocatable"}
+
 // ValidateCapacityConfig validates the capacity monitor configuration
 func ValidateCapacityConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownCapacityConfigKeys...)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

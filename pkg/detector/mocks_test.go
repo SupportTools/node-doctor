@@ -501,3 +501,5 @@ func (m *mockRegistryValidator) GetRegisteredTypes() []string {
 	}
 	return out
 }
+
+func (m *mockRegistryValidator) ValidateConfig(types.MonitorConfig) error { return nil }

@@ -201,8 +201,11 @@ func parseIPv6NeighborConfig(configMap map[string]any) (*IPv6NeighborConfig, err
 	return config, nil
 }
 
+var knownIPv6NeighborConfigKeys = []string{"expectIPv6Enabled", "checkPerInterface", "requireGlobalAddress", "interfaces", "skipInterfaces", "procPath"}
+
 // ValidateIPv6NeighborConfig validates the IPv6 neighbor monitor configuration.
 func ValidateIPv6NeighborConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownIPv6NeighborConfigKeys...)
 	_, err := parseIPv6NeighborConfig(config.Config)
 	return err
 }

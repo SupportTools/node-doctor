@@ -22,7 +22,6 @@ exporters:
     enabled: false
   http:
     enabled: false
-    port: 8081
   prometheus:
     enabled: false
     port: 9090
@@ -30,8 +29,7 @@ exporters:
 remediation:
   enabled: true
   dryRun: true
-  globalCooldown: 5m
-  maxConcurrentRemediations: 1
+  cooldownPeriod: 5m
 features:
   enableProfiling: false
   profilingPort: 6060

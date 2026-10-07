@@ -2381,6 +2381,8 @@ func (m *mockMonitorRegistry) GetRegisteredTypes() []string {
 	return types
 }
 
+func (m *mockMonitorRegistry) ValidateConfig(MonitorConfig) error { return nil }
+
 // TestValidateWithRegistry tests configuration validation with monitor registry
 func TestValidateWithRegistry(t *testing.T) {
 	// Create a mock registry with some registered types

@@ -183,8 +183,11 @@ func parseStringList(v any, fieldName string) ([]string, error) {
 	}
 }
 
+var knownIPv6SysctlConfigKeys = []string{"expectIPv6Enabled", "checkPerInterface", "interfaces", "skipInterfaces", "procPath"}
+
 // ValidateIPv6SysctlConfig validates the IPv6 sysctl monitor configuration.
 func ValidateIPv6SysctlConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownIPv6SysctlConfigKeys...)
 	_, err := parseIPv6SysctlConfig(config.Config)
 	return err
 }

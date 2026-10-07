@@ -356,8 +356,11 @@ func NewRuntimeMonitorForTesting(config types.MonitorConfig, client RuntimeClien
 	return monitor, nil
 }
 
+var knownRuntimeConfigKeys = []string{"runtimeType", "dockerSocket", "containerdSocket", "crioSocket", "checkSocketConnectivity", "checkSystemdStatus", "checkRuntimeInfo", "failureThreshold", "timeout"}
+
 // ValidateRuntimeConfig validates the runtime monitor configuration.
 func ValidateRuntimeConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownRuntimeConfigKeys...)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

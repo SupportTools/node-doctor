@@ -163,8 +163,11 @@ func parseIPForwardingConfig(configMap map[string]any) (*IPForwardingConfig, err
 	return config, nil
 }
 
+var knownIPForwardingConfigKeys = []string{"checkIPv4", "checkIPv6", "checkPerInterface", "interfaces", "procPath"}
+
 // ValidateIPForwardingConfig validates the IP forwarding monitor configuration.
 func ValidateIPForwardingConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownIPForwardingConfigKeys...)
 	_, err := parseIPForwardingConfig(config.Config)
 	return err
 }
