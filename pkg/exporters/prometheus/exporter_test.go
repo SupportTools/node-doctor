@@ -1118,8 +1118,8 @@ func TestExportProblemBeforeStart(t *testing.T) {
 }
 
 func TestPrometheusExporter_StartBindFailure(t *testing.T) {
-	// Occupy a port so the exporter cannot bind to it.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// Squat on the wildcard: BSD lets a wildcard bind coexist with a 127.0.0.1 bind.
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("failed to grab a free port: %v", err)
 	}
