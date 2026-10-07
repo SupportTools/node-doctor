@@ -204,8 +204,11 @@ func parseIPv6FirewallConfig(configMap map[string]any) (*IPv6FirewallConfig, err
 	return config, nil
 }
 
+var knownIPv6FirewallConfigKeys = []string{"expectIPv6Enabled", "backend"}
+
 // ValidateIPv6FirewallConfig validates the IPv6 firewall monitor configuration.
 func ValidateIPv6FirewallConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownIPv6FirewallConfigKeys...)
 	_, err := parseIPv6FirewallConfig(config.Config)
 	return err
 }

@@ -1539,8 +1539,19 @@ func (c *LogPatternMonitorConfig) estimateMemoryUsage() int {
 	return memory
 }
 
+var (
+	knownLogPatternConfigKeys = []string{"useDefaults", "patterns", "kmsgPath", "checkKmsg", "checkKernelJournal", "journalUnits", "checkJournal", "maxEventsPerPattern", "dedupWindow"}
+	knownLogPatternEntryKeys  = []string{"name", "regex", "severity", "description", "source"}
+)
+
+func warnUnknownLogPatternKeys(name string, cfg map[string]interface{}) {
+	monitors.WarnUnknownKeys(name, cfg, knownLogPatternConfigKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "patterns", knownLogPatternEntryKeys...)
+}
+
 // ValidateLogPatternConfig validates the log pattern monitor configuration
 func ValidateLogPatternConfig(config types.MonitorConfig) error {
+	warnUnknownLogPatternKeys(config.Name, config.Config)
 	// Parse the configuration
 	logConfig, err := parseLogPatternConfig(config.Config)
 	if err != nil {

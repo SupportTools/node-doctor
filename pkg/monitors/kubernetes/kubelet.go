@@ -712,6 +712,19 @@ func init() {
 		Factory:     NewKubeletMonitor,
 		Validator:   ValidateKubeletConfig,
 		Description: "Monitors kubelet health including /healthz endpoint, systemd status, and PLEG performance",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "kubelet-health",
+			Type:           "kubernetes-kubelet-check",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"healthzURL":         defaultKubeletHealthzURL,
+				"checkSystemdStatus": false,
+				"checkPLEG":          false,
+				"failureThreshold":   defaultKubeletFailureThreshold,
+			},
+		},
 	})
 }
 
@@ -790,8 +803,21 @@ func NewKubeletMonitorWithMetrics(ctx context.Context, config types.MonitorConfi
 	return monitor, nil
 }
 
+var (
+	knownKubeletConfigKeys         = []string{"healthzURL", "metricsURL", "checkSystemdStatus", "checkPLEG", "plegThreshold", "failureThreshold", "httpTimeout", "auth", "circuitBreaker"}
+	knownKubeletAuthKeys           = []string{"type", "tokenFile", "bearerToken", "certFile", "keyFile", "insecureSkipVerify"}
+	knownKubeletCircuitBreakerKeys = []string{"enabled", "failureThreshold", "openTimeout", "halfOpenMaxRequests", "useExponentialBackoff", "maxBackoffTimeout"}
+)
+
+func warnUnknownKubeletKeys(name string, cfg map[string]interface{}) {
+	monitors.WarnUnknownKeys(name, cfg, knownKubeletConfigKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "auth", knownKubeletAuthKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "circuitBreaker", knownKubeletCircuitBreakerKeys...)
+}
+
 // ValidateKubeletConfig validates the kubelet monitor configuration.
 func ValidateKubeletConfig(config types.MonitorConfig) error {
+	warnUnknownKubeletKeys(config.Name, config.Config)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

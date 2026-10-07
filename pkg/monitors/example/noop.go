@@ -113,6 +113,8 @@ func NewNoOpMonitor(ctx context.Context, config types.MonitorConfig) (types.Moni
 	return monitor, nil
 }
 
+var knownNoOpConfigKeys = []string{"interval", "testMessage", "includeEvents"}
+
 // ValidateNoOpConfig validates the no-op monitor configuration.
 // This function demonstrates configuration validation patterns and provides
 // early error detection before monitor creation.
@@ -120,6 +122,7 @@ func NewNoOpMonitor(ctx context.Context, config types.MonitorConfig) (types.Moni
 // While the no-op monitor is very permissive, real monitors should validate
 // required parameters, file paths, network addresses, etc.
 func ValidateNoOpConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownNoOpConfigKeys...)
 	// Basic validation - all monitors should check this
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")

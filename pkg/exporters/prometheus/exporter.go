@@ -274,6 +274,12 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 	e.metrics.StatusUpdatesTotal.WithLabelValues(
 		e.nodeName, status.Source).Inc()
 
+	up := 1.0
+	if monitorCheckFailed(status) {
+		up = 0.0
+	}
+	e.metrics.MonitorUp.WithLabelValues(e.nodeName, status.Source).Set(up)
+
 	// Update conditions
 	for _, condition := range status.Conditions {
 		e.metrics.ConditionsTotal.WithLabelValues(
@@ -327,6 +333,17 @@ func (e *PrometheusExporter) ExportStatus(ctx context.Context, status *types.Sta
 func statusHasError(status *types.Status) bool {
 	for _, cond := range status.Conditions {
 		if cond.Status == types.ConditionFalse {
+			return true
+		}
+	}
+	return false
+}
+
+// monitorCheckFailed reports whether the status is the BaseMonitor error status
+// emitted when a check returns an error, panics, or exceeds its timeout.
+func monitorCheckFailed(status *types.Status) bool {
+	for _, cond := range status.Conditions {
+		if cond.Type == "MonitorHealthy" && cond.Status == types.ConditionFalse {
 			return true
 		}
 	}

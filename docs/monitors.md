@@ -560,6 +560,7 @@ so a resolved DNS issue no longer leaves a stale `True` condition latched on the
 | `NodeDoctorDNSResolutionIntermittent` | Consistency check: some queries failed |
 | `NodeDoctorDNSResolutionInconsistent` | Consistency check: varying IP addresses (expected for CDN/load-balanced domains) |
 | `NodeDoctorDNSResolutionDown` | Consistency check: all queries failed |
+| `NodeDoctorDNSLatencyHigh` | p95 latency of this cycle's successful queries exceeds `latencyThreshold` |
 
 **Querying DNS Conditions:**
 

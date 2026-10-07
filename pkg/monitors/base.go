@@ -6,6 +6,8 @@ package monitors
 import (
 	"context"
 	"fmt"
+	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -487,4 +489,41 @@ func (b *BaseMonitor) logErrorf(format string, args ...interface{}) {
 	if logger != nil {
 		logger.Errorf(format, args...)
 	}
+}
+
+// WarnUnknownKeys logs config keys that no parser reads so typos are visible instead of silently ignored.
+func WarnUnknownKeys(monitorName string, cfg map[string]interface{}, known ...string) {
+	if unknown := UnknownKeys(cfg, known...); len(unknown) > 0 {
+		log.Printf("[WARN] monitor %s: unknown config keys %v (ignored)", monitorName, unknown)
+	}
+}
+
+// WarnUnknownNestedKeys applies WarnUnknownKeys to cfg[section] when it is a map or a list of maps.
+func WarnUnknownNestedKeys(monitorName string, cfg map[string]interface{}, section string, known ...string) {
+	switch v := cfg[section].(type) {
+	case map[string]interface{}:
+		WarnUnknownKeys(monitorName+"."+section, v, known...)
+	case []interface{}:
+		for i, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				WarnUnknownKeys(fmt.Sprintf("%s.%s[%d]", monitorName, section, i), m, known...)
+			}
+		}
+	}
+}
+
+// UnknownKeys returns the sorted keys of cfg that are not in known.
+func UnknownKeys(cfg map[string]interface{}, known ...string) []string {
+	knownSet := make(map[string]struct{}, len(known))
+	for _, k := range known {
+		knownSet[k] = struct{}{}
+	}
+	var unknown []string
+	for k := range cfg {
+		if _, ok := knownSet[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
 }

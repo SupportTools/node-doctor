@@ -273,8 +273,11 @@ func parseDuration(v interface{}) (time.Duration, error) {
 	}
 }
 
+var knownGatewayConfigKeys = []string{"pingCount", "pingTimeout", "latencyThreshold", "autoDetectGateway", "manualGateway", "failureCountThreshold", "addressFamily"}
+
 // ValidateGatewayConfig validates the gateway monitor configuration.
 func ValidateGatewayConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownGatewayConfigKeys...)
 	_, err := parseGatewayConfig(config.Config)
 	return err
 }

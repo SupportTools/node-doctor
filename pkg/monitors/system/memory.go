@@ -231,10 +231,13 @@ func NewMemoryMonitor(ctx context.Context, config types.MonitorConfig) (types.Mo
 	return memoryMonitor, nil
 }
 
+var knownMemoryConfigKeys = []string{"warningThreshold", "criticalThreshold", "swapWarningThreshold", "swapCriticalThreshold", "sustainedHighMemoryChecks", "checkOOMKills", "checkMemoryUsage", "checkSwapUsage", "memInfoPath", "kmsgPath"}
+
 // ValidateMemoryConfig validates the Memory monitor configuration.
 // This function performs early validation of configuration parameters to provide
 // fail-fast behavior during configuration parsing.
 func ValidateMemoryConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownMemoryConfigKeys...)
 	// Basic validation
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
@@ -612,7 +615,7 @@ func parseMemoryConfig(configMap map[string]interface{}) (*MemoryMonitorConfig, 
 
 	// Parse warning threshold
 	if val, exists := configMap["warningThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := asFloat64(val); ok {
 			config.WarningThreshold = f
 		} else {
 			return nil, fmt.Errorf("warningThreshold must be a number, got %T", val)
@@ -621,7 +624,7 @@ func parseMemoryConfig(configMap map[string]interface{}) (*MemoryMonitorConfig, 
 
 	// Parse critical threshold
 	if val, exists := configMap["criticalThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := asFloat64(val); ok {
 			config.CriticalThreshold = f
 		} else {
 			return nil, fmt.Errorf("criticalThreshold must be a number, got %T", val)
@@ -630,7 +633,7 @@ func parseMemoryConfig(configMap map[string]interface{}) (*MemoryMonitorConfig, 
 
 	// Parse swap warning threshold
 	if val, exists := configMap["swapWarningThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := asFloat64(val); ok {
 			config.SwapWarningThreshold = f
 		} else {
 			return nil, fmt.Errorf("swapWarningThreshold must be a number, got %T", val)
@@ -639,7 +642,7 @@ func parseMemoryConfig(configMap map[string]interface{}) (*MemoryMonitorConfig, 
 
 	// Parse swap critical threshold
 	if val, exists := configMap["swapCriticalThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := asFloat64(val); ok {
 			config.SwapCriticalThreshold = f
 		} else {
 			return nil, fmt.Errorf("swapCriticalThreshold must be a number, got %T", val)

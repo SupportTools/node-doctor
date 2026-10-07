@@ -227,7 +227,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"KubeletServiceRunning\", status=\"False\", node=~\"$node\"}) or vector(0)",
+          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"KubeletDown\", status=\"True\", node=~\"$node\"}) or vector(0)",
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -486,7 +486,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"KubeletHealthy|KubeletServiceRunning|KubeletReady\", node=~\"$node\"}",
+          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"KubeletHealthy|KubeletDown|KubeletUnhealthy\", node=~\"$node\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -974,7 +974,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"APIServerReachable|APIServerLatencyHigh|APIServerAuthenticated\", node=~\"$node\"}",
+          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"APIServerReachable|APIServerLatencyHigh|APIServerUnreachable\", node=~\"$node\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",

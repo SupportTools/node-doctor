@@ -1598,7 +1598,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"DNSHealthy\", status=\"True\", node=~\"$node\"})",
+          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"DNSResolutionDown\", status=\"False\", node=~\"$node\"})",
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -1984,7 +1984,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"DNSHealthy|DNSResolutionFailed|DNSLatencyHigh\", node=~\"$node\"}",
+          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"DNSResolutionDown|DNSResolutionFailed|DNSLatencyHigh\", node=~\"$node\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",

@@ -75,11 +75,13 @@ kubectl apply -f deployment/
 ### deployment/servicemonitor.yaml
 - **ServiceMonitor** - Prometheus Operator resource for automatic metrics scraping
 - Deploy to your Prometheus namespace (typically `monitoring`)
+- Generated from the Helm chart by `make manifests-generate`; edit `helm/node-doctor/templates/servicemonitor.yaml` instead
 
 ### deployment/prometheusrule.yaml
 - **PrometheusRule** - Alert definitions for critical node conditions
 - Includes Critical, Warning, and Informational alerts
 - Deploy to your Prometheus namespace (typically `monitoring`)
+- Generated from the Helm chart by `make manifests-generate`; edit `helm/node-doctor/templates/prometheusrule.yaml` instead
 
 ### deployment/smoke-test.sh
 - **Smoke Test Script** - Post-deployment verification

@@ -45,15 +45,10 @@ monitors:
     interval: 15s       # Short interval for development
     timeout: 5s
     config:
-      loadAverageThresholds:
-        warning: 80
-        critical: 95
-      thermalThresholds:
-        warning: 85
-        critical: 95
-      cpuUsageThresholds:
-        warning: 85
-        critical: 95
+      warningLoadFactor: 0.8
+      criticalLoadFactor: 1.5
+      checkThermalThrottle: true
+      checkLoadAverage: true
 
   # System Memory Monitor
   - name: memory-health
@@ -62,13 +57,11 @@ monitors:
     interval: 15s
     timeout: 5s
     config:
-      memoryThresholds:
-        warning: 85
-        critical: 95
-      swapThresholds:
-        warning: 50
-        critical: 80
-      oomDetection: true
+      warningThreshold: 85
+      criticalThreshold: 95
+      swapWarningThreshold: 50
+      swapCriticalThreshold: 80
+      checkOOMKills: true
       kmsgPath: /dev/kmsg
 
   # System Disk Monitor
@@ -78,24 +71,29 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
         - path: "/var/lib/kubelet"
           warningThreshold: 85
           criticalThreshold: 95
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
         - path: "/var/lib/docker"
           warningThreshold: 80
           criticalThreshold: 90
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
         - path: "/var/lib/containerd"
           warningThreshold: 80
           criticalThreshold: 90
-      inodeThresholds:
-        warning: 85
-        critical: 95
-      readOnlyDetection: true
-      ioHealthCheck: true
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
+      checkReadonly: true
+      checkIOHealth: true
 
   # Kubelet Health Monitor
   - name: kubelet-health
@@ -116,8 +114,7 @@ monitors:
     timeout: 5s
     config:
       # Will use in-cluster config
-      warningLatency: 500
-      criticalLatency: 2000
+      latencyThreshold: 500ms
 
   # Container Runtime Monitor
   - name: runtime-health
@@ -127,7 +124,7 @@ monitors:
     timeout: 10s
     config:
       # Auto-detect runtime socket
-      checkPods: true
+      checkRuntimeInfo: true
 
   # Pod Capacity Monitor
   - name: capacity-health
@@ -147,10 +144,11 @@ monitors:
     interval: 30s
     timeout: 5s
     config:
-      domains:
+      clusterDomains:
         - kubernetes.default.svc.cluster.local
+      externalDomains:
         - google.com
-      timeout: 2s
+      latencyThreshold: 2s
 
   # Gateway Check
   - name: gateway-health
@@ -160,9 +158,8 @@ monitors:
     timeout: 5s
     config:
       # Auto-detect default gateway
-      count: 3
-      warningLatency: 50
-      criticalLatency: 100
+      pingCount: 3
+      latencyThreshold: 100ms
 
   # Connectivity Check
   - name: connectivity-health
@@ -174,9 +171,10 @@ monitors:
       endpoints:
         - url: https://kubernetes.default.svc.cluster.local
           timeout: 5s
+          followRedirects: true
         - url: https://www.google.com
           timeout: 5s
-      followRedirects: true
+          followRedirects: true
 
 # Exporters - enable all for development testing
 exporters:

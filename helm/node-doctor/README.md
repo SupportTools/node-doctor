@@ -47,7 +47,6 @@ The following table lists the configurable parameters of the Node Doctor chart a
 | `settings.updateInterval` | Monitor update interval | `30s` |
 | `settings.resyncInterval` | Resync interval | `5m` |
 | `settings.heartbeatInterval` | Heartbeat interval | `1m` |
-| `settings.enableRemediation` | Enable remediation actions | `true` |
 | `settings.dryRunMode` | Dry run mode (log without executing) | `false` |
 
 ### Image Settings
@@ -97,6 +96,12 @@ ready.
 | `monitors.cpu.enabled` | Enable CPU monitor | `true` |
 | `monitors.memory.enabled` | Enable memory monitor | `true` |
 | `monitors.disk.enabled` | Enable disk monitor | `true` |
+| `monitors.kubelet.enabled` | Probe kubelet `/healthz` on the node loopback | `true` |
+| `monitors.apiserver.enabled` | Check API server reachability and latency | `true` |
+| `monitors.runtime.enabled` | Check the container runtime socket (docker/containerd/cri-o) | `true` |
+| `monitors.capacity.enabled` | Track pod count against node capacity | `true` |
+| `monitors.gateway.enabled` | Ping the default gateway | `true` |
+| `monitors.connectivity.enabled` | HTTP-check external endpoints from the host network | `true` |
 
 ### Exporter Configuration
 
@@ -127,7 +132,6 @@ settings) and binds its HTTP/metrics endpoints dual-stack by default.
 | `monitors.ipv6Firewall.enabled` | Sanity-check ip6tables/nftables for an IPv6 black-hole (detection only) | `true` |
 | `monitors.ipv6Sysctl.expectIPv6Enabled` | Treat IPv6-disabled as a problem (shared key across the IPv6 monitors) | `true` |
 | `monitors.ipv6Firewall.backend` | Firewall backend to read: `auto`, `ip6tables`, or `nft` | `auto` |
-| `exporters.http.bindAddress` | Listen address; `::` = dual-stack (IPv4+IPv6), falls back to `0.0.0.0` if the kernel has IPv6 disabled | `"::"` |
 
 These monitors **degrade gracefully on IPv4-only nodes**: a missing IPv6 stack is
 reported as a warning, not an error, and the conditions stay healthy when IPv6

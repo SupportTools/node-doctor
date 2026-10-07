@@ -213,6 +213,20 @@ func init() {
 		Factory:     NewRuntimeMonitor,
 		Validator:   ValidateRuntimeConfig,
 		Description: "Monitors container runtime health (Docker, containerd, CRI-O)",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "runtime-health",
+			Type:           "kubernetes-runtime-check",
+			Enabled:        true,
+			IntervalString: "1m",
+			TimeoutString:  "30s",
+			Config: map[string]interface{}{
+				"runtimeType":             "auto",
+				"checkSocketConnectivity": true,
+				"checkSystemdStatus":      false,
+				"checkRuntimeInfo":        false,
+				"failureThreshold":        defaultRuntimeFailureThreshold,
+			},
+		},
 	})
 }
 
@@ -356,8 +370,11 @@ func NewRuntimeMonitorForTesting(config types.MonitorConfig, client RuntimeClien
 	return monitor, nil
 }
 
+var knownRuntimeConfigKeys = []string{"runtimeType", "dockerSocket", "containerdSocket", "crioSocket", "checkSocketConnectivity", "checkSystemdStatus", "checkRuntimeInfo", "failureThreshold", "timeout"}
+
 // ValidateRuntimeConfig validates the runtime monitor configuration.
 func ValidateRuntimeConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownRuntimeConfigKeys...)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}

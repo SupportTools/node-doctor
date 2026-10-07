@@ -60,15 +60,10 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      loadAverageThresholds:
-        warning: 80
-        critical: 95
-      thermalThresholds:
-        warning: 85
-        critical: 95
-      cpuUsageThresholds:
-        warning: 85
-        critical: 95
+      warningLoadFactor: 0.8
+      criticalLoadFactor: 1.5
+      checkThermalThrottle: true
+      checkLoadAverage: true
 
   # Memory Health Monitor
   - name: memory-health
@@ -77,13 +72,11 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      memoryThresholds:
-        warning: 85
-        critical: 95
-      swapThresholds:
-        warning: 50
-        critical: 80
-      oomDetection: true
+      warningThreshold: 85
+      criticalThreshold: 95
+      swapWarningThreshold: 50
+      swapCriticalThreshold: 80
+      checkOOMKills: true
       kmsgPath: /dev/kmsg
 
   # Disk Health Monitor
@@ -93,24 +86,29 @@ monitors:
     interval: 1m
     timeout: 30s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
         - path: "/var/lib/kubelet"
           warningThreshold: 85
           criticalThreshold: 95
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
         - path: "/var/lib/docker"
           warningThreshold: 80
           criticalThreshold: 90
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
         - path: "/var/lib/containerd"
           warningThreshold: 80
           criticalThreshold: 90
-      inodeThresholds:
-        warning: 85
-        critical: 95
-      readOnlyDetection: true
-      ioHealthCheck: true
+          inodeWarningThreshold: 85
+          inodeCriticalThreshold: 95
+      checkReadonly: true
+      checkIOHealth: true
     remediation:
       enabled: true
       strategy: custom-script
@@ -149,7 +147,7 @@ monitors:
     timeout: 15s
     config:
       # Auto-detects runtime socket (Docker, containerd, CRI-O)
-      checkPods: true
+      checkRuntimeInfo: true
       timeout: 10s
     remediation:
       enabled: true
@@ -180,10 +178,11 @@ monitors:
     interval: 1m
     timeout: 10s
     config:
-      domains:
+      clusterDomains:
         - kubernetes.default.svc.cluster.local
+      externalDomains:
         - google.com
-      timeout: 3s
+      latencyThreshold: 3s
       healthScoring:
         enabled: true
         degradedThreshold: 70
@@ -204,9 +203,8 @@ monitors:
     timeout: 10s
     config:
       # Auto-detects default gateway
-      count: 3
-      warningLatency: 50
-      criticalLatency: 100
+      pingCount: 3
+      latencyThreshold: 100ms
 
   # ---------------------------------------------------------------------------
   # IPv6 / dual-stack monitors (detection-only — never modify host settings).

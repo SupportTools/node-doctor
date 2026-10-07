@@ -439,8 +439,23 @@ func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error)
 	return config, nil
 }
 
+var (
+	knownCNIConfigKeys       = []string{"discovery", "connectivity", "cniHealth"}
+	knownCNIDiscoveryKeys    = []string{"method", "namespace", "labelSelector", "refreshInterval", "staticPeers", "overlayTestEnabled", "overlayTestLabelSelector"}
+	knownCNIConnectivityKeys = []string{"pingCount", "pingTimeout", "warningLatency", "criticalLatency", "crossZoneWarningLatency", "crossZoneCriticalLatency", "failureThreshold", "minReachablePeers", "probeMethod", "probePort", "probePath"}
+	knownCNIHealthKeys       = []string{"enabled", "configPath", "checkInterfaces", "expectedInterfaces"}
+)
+
+func warnUnknownCNIKeys(name string, cfg map[string]interface{}) {
+	monitors.WarnUnknownKeys(name, cfg, knownCNIConfigKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "discovery", knownCNIDiscoveryKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "connectivity", knownCNIConnectivityKeys...)
+	monitors.WarnUnknownNestedKeys(name, cfg, "cniHealth", knownCNIHealthKeys...)
+}
+
 // ValidateCNIConfig validates the CNI monitor configuration.
 func ValidateCNIConfig(config types.MonitorConfig) error {
+	warnUnknownCNIKeys(config.Name, config.Config)
 	_, err := parseCNIConfig(config.Config)
 	return err
 }

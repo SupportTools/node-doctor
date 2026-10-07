@@ -29,8 +29,11 @@ type Server struct {
 	socketPath         string
 	mu                 sync.RWMutex
 	started            bool
+	stopCh             chan struct{}
 	healthy            bool
 	ready              bool
+	readyHeld          bool
+	version            string
 	lastStatus         *types.Status
 	lastUpdate         time.Time
 	startTime          time.Time
@@ -185,6 +188,7 @@ func NewServer(config *Config) (*Server, error) {
 		started:            false,
 		healthy:            true,
 		ready:              false,
+		version:            "dev",
 		startTime:          time.Now(),
 		healthChecks:       make([]HealthCheck, 0),
 		readinessChecks:    make([]HealthCheck, 0),
@@ -216,10 +220,15 @@ func listenUnix(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// Start starts the health server.
+// Start starts the health server. It stops itself when ctx is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if !s.config.Enabled {
+		log.Printf("[INFO] Health server disabled by configuration")
+		return nil
+	}
 
 	if s.started {
 		return fmt.Errorf("health server already started")
@@ -290,6 +299,14 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.started = true
+	s.stopCh = make(chan struct{})
+	go func(stopCh <-chan struct{}) {
+		select {
+		case <-ctx.Done():
+			_ = s.Stop()
+		case <-stopCh:
+		}
+	}(s.stopCh)
 	log.Printf("[INFO] Health server started successfully (tcp=%v unix=%v)", s.tcpListener != nil, s.unixListener != nil)
 
 	return nil
@@ -308,6 +325,7 @@ func (s *Server) Stop() error {
 		return nil
 	}
 	s.started = false
+	close(s.stopCh)
 	httpServer := s.httpServer
 	s.mu.Unlock() // release before Shutdown to avoid deadlock with in-flight handlers
 
@@ -340,9 +358,9 @@ func (s *Server) UpdateStatus(status *types.Status) {
 	s.lastStatus = status
 	s.lastUpdate = time.Now()
 
-	// Determine readiness based on monitor status
-	// Ready = at least one monitor has run successfully
-	s.ready = status != nil
+	if !s.readyHeld {
+		s.ready = status != nil
+	}
 }
 
 // SetHealthy sets the overall health status.
@@ -352,11 +370,20 @@ func (s *Server) SetHealthy(healthy bool) {
 	s.healthy = healthy
 }
 
-// SetReady sets the readiness status.
+// SetReady sets the readiness status. An explicit false holds until the next
+// SetReady(true) so statuses still draining at shutdown cannot flip the pod back to Ready.
 func (s *Server) SetReady(ready bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ready = ready
+	s.readyHeld = !ready
+}
+
+// SetVersion sets the version reported by /status.
+func (s *Server) SetVersion(version string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.version = version
 }
 
 // AddHealthCheck adds a custom LIVENESS check.
@@ -503,14 +530,13 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		Checks:    checks,
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	if !allHealthy {
 		response.Status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
 
@@ -537,6 +563,8 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case s.readyHeld:
+		response.Message = "Not ready: readiness withdrawn"
 	case !s.ready:
 		response.Message = "Not ready: monitors not yet initialized"
 	default:
@@ -561,13 +589,12 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		response.Message = "Ready"
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	if !response.Ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
 
@@ -586,7 +613,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastUpdate:    s.lastUpdate,
 		MonitorStatus: s.lastStatus,
 		Metadata: map[string]string{
-			"version":    "v0.1.0",
+			"version":    s.version,
 			"started_at": s.startTime.Format(time.RFC3339),
 		},
 	}

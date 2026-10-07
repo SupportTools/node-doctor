@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -89,6 +90,21 @@ var (
 	MinCooldownPeriod    = 10 * time.Second // Minimum cooldown between remediation attempts
 )
 
+// IsValidRemediationStrategy reports whether strategy names a known remediation strategy.
+func IsValidRemediationStrategy(strategy string) bool {
+	return validRemediationStrategies[strategy]
+}
+
+// ValidRemediationStrategies returns the known remediation strategy names, sorted.
+func ValidRemediationStrategies() []string {
+	names := make([]string, 0, len(validRemediationStrategies))
+	for name := range validRemediationStrategies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // MonitorRegistryValidator provides an interface for validating monitor types
 // without creating an import cycle between config and monitors packages.
 // This interface is implemented by monitors.Registry.
@@ -98,6 +114,9 @@ type MonitorRegistryValidator interface {
 
 	// GetRegisteredTypes returns a sorted list of all registered monitor types
 	GetRegisteredTypes() []string
+
+	// ValidateConfig runs the type-specific validator for a monitor configuration
+	ValidateConfig(config MonitorConfig) error
 }
 
 // NodeDoctorConfig is the top-level configuration structure.
@@ -180,7 +199,7 @@ type MonitorConfig struct {
 	// Name is the unique identifier for this monitor
 	Name string `json:"name" yaml:"name"`
 
-	// Type is the monitor type (e.g., "system-disk-check")
+	// Type is the monitor type (e.g., "system-disk")
 	Type string `json:"type" yaml:"type"`
 
 	// Enabled indicates whether this monitor is active
@@ -488,11 +507,20 @@ type RemediationCoordinationConfig struct {
 
 // CircuitBreakerConfig configures circuit breaker behavior.
 type CircuitBreakerConfig struct {
-	Enabled          bool          `json:"enabled" yaml:"enabled"`
+	// Enabled is a *bool so an absent key defaults to true while an explicit false disables
+	Enabled          *bool         `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Threshold        int           `json:"threshold,omitempty" yaml:"threshold,omitempty"`
 	TimeoutString    string        `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Timeout          time.Duration `json:"-" yaml:"-"`
 	SuccessThreshold int           `json:"successThreshold,omitempty" yaml:"successThreshold,omitempty"`
+}
+
+// IsEnabled reports whether the circuit breaker is on; unset means enabled.
+func (c *CircuitBreakerConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // RemediationOverride allows problem-specific remediation overrides.
@@ -1032,21 +1060,23 @@ func (r *RemediationConfig) ApplyDefaults() error {
 		return fmt.Errorf("invalid cooldownPeriod %q: %w", r.CooldownPeriodString, err)
 	}
 
-	// Circuit breaker defaults
-	if r.CircuitBreaker.Enabled {
-		if r.CircuitBreaker.Threshold == 0 {
-			r.CircuitBreaker.Threshold = DefaultCircuitBreakerThreshold
-		}
-		if r.CircuitBreaker.TimeoutString == "" {
-			r.CircuitBreaker.TimeoutString = DefaultCircuitBreakerTimeout
-		}
-		r.CircuitBreaker.Timeout, err = time.ParseDuration(r.CircuitBreaker.TimeoutString)
-		if err != nil {
-			return fmt.Errorf("invalid circuit breaker timeout %q: %w", r.CircuitBreaker.TimeoutString, err)
-		}
-		if r.CircuitBreaker.SuccessThreshold == 0 {
-			r.CircuitBreaker.SuccessThreshold = 2
-		}
+	if r.CircuitBreaker.Enabled == nil {
+		enabled := true
+		r.CircuitBreaker.Enabled = &enabled
+	}
+	// Threshold defaults apply even when disabled so a later enable or reload has usable values
+	if r.CircuitBreaker.Threshold == 0 {
+		r.CircuitBreaker.Threshold = DefaultCircuitBreakerThreshold
+	}
+	if r.CircuitBreaker.TimeoutString == "" {
+		r.CircuitBreaker.TimeoutString = DefaultCircuitBreakerTimeout
+	}
+	r.CircuitBreaker.Timeout, err = time.ParseDuration(r.CircuitBreaker.TimeoutString)
+	if err != nil {
+		return fmt.Errorf("invalid circuit breaker timeout %q: %w", r.CircuitBreaker.TimeoutString, err)
+	}
+	if r.CircuitBreaker.SuccessThreshold == 0 {
+		r.CircuitBreaker.SuccessThreshold = 2
 	}
 
 	// Apply defaults to overrides
@@ -1301,8 +1331,8 @@ func (r *MonitorRemediationConfig) Validate() error {
 	if r.Strategy == "" {
 		return fmt.Errorf("strategy is required when remediation is enabled")
 	}
-	if !validRemediationStrategies[r.Strategy] {
-		return fmt.Errorf("invalid strategy %q, must be one of: systemd-restart, custom-script, node-reboot, pod-delete, flush-dns, restart-interface, reset-routing, flush-ipv6-route", r.Strategy)
+	if !IsValidRemediationStrategy(r.Strategy) {
+		return fmt.Errorf("invalid strategy %q, must be one of: %s", r.Strategy, strings.Join(ValidRemediationStrategies(), ", "))
 	}
 
 	// Strategy-specific validation
@@ -1635,8 +1665,8 @@ func (r *RemediationConfig) Validate() error {
 		return fmt.Errorf("historySize must be positive, got %d", r.HistorySize)
 	}
 
-	// Validate circuit breaker
-	if r.CircuitBreaker.Enabled {
+	// Validate circuit breaker only when explicitly enabled; a nil Enabled means defaults have not run yet
+	if r.CircuitBreaker.Enabled != nil && *r.CircuitBreaker.Enabled {
 		if r.CircuitBreaker.Threshold <= 0 {
 			return fmt.Errorf("circuitBreaker.threshold must be positive, got %d", r.CircuitBreaker.Threshold)
 		}
@@ -2016,12 +2046,17 @@ func (c *NodeDoctorConfig) ValidateWithRegistry(registry MonitorRegistryValidato
 		return err
 	}
 
-	// Validate monitor types are registered
 	if registry != nil {
 		for _, monitor := range c.Monitors {
 			if !registry.IsRegistered(monitor.Type) {
 				return fmt.Errorf("unknown monitor type %q for monitor %q, available types: %v",
 					monitor.Type, monitor.Name, registry.GetRegisteredTypes())
+			}
+			if !monitor.Enabled {
+				continue
+			}
+			if err := registry.ValidateConfig(monitor); err != nil {
+				return fmt.Errorf("monitor %q: %w", monitor.Name, err)
 			}
 		}
 	}

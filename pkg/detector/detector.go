@@ -16,6 +16,8 @@ import (
 	"github.com/supporttools/node-doctor/pkg/types"
 )
 
+var monitorStopTimeout = 5 * time.Second
+
 // MonitorHandle represents a running monitor with its context and controls
 type MonitorHandle struct {
 	monitor    types.Monitor
@@ -43,15 +45,11 @@ func (mh *MonitorHandle) Stop() error {
 	// Now do the actual stop work without holding the lock
 	log.Printf("[INFO] Stopping monitor %s", mh.config.Name)
 
-	// Cancel the context first to signal stop
 	mh.cancelFunc()
 
-	// Then stop the monitor
-	mh.monitor.Stop()
-
-	// Wait for goroutines to finish with timeout
 	done := make(chan struct{})
 	go func() {
+		mh.monitor.Stop()
 		mh.wg.Wait()
 		close(done)
 	}()
@@ -60,8 +58,8 @@ func (mh *MonitorHandle) Stop() error {
 	case <-done:
 		log.Printf("[INFO] Monitor %s stopped cleanly", mh.config.Name)
 		return nil
-	case <-time.After(5 * time.Second):
-		log.Printf("[WARN] Monitor %s stop timeout after 5s", mh.config.Name)
+	case <-time.After(monitorStopTimeout):
+		log.Printf("[WARN] Monitor %s stop timeout after %v", mh.config.Name, monitorStopTimeout)
 		return fmt.Errorf("monitor stop timeout")
 	}
 }
@@ -242,6 +240,12 @@ func (pd *ProblemDetector) AddExporter(exporter types.Exporter) {
 
 	pd.exporters = append(pd.exporters, exporter)
 	log.Printf("[INFO] Added exporter to detector")
+}
+
+func (pd *ProblemDetector) exportersSnapshot() []types.Exporter {
+	pd.mu.RLock()
+	defer pd.mu.RUnlock()
+	return append([]types.Exporter(nil), pd.exporters...)
 }
 
 // SetRemediatorRegistry attaches a remediation executor to the detector.
@@ -471,11 +475,7 @@ func (pd *ProblemDetector) Stop() error {
 		}
 	}
 
-	// Cancel context to stop all goroutines
 	pd.cancel()
-
-	// Close status channel
-	close(pd.statusChan)
 
 	// Mark stopped and release the lock BEFORE waiting for goroutines.
 	// evaluateRemediation (called from processStatuses goroutines tracked by pd.wg)
@@ -511,12 +511,7 @@ func (pd *ProblemDetector) processStatuses() {
 		case <-pd.ctx.Done():
 			log.Printf("[DEBUG] Status processor stopping")
 			return
-		case status, ok := <-pd.statusChan:
-			if !ok {
-				log.Printf("[DEBUG] Status channel closed, processor stopping")
-				return
-			}
-
+		case status := <-pd.statusChan:
 			if status == nil {
 				continue
 			}
@@ -556,7 +551,7 @@ func (pd *ProblemDetector) processStatus(status *types.Status) {
 	depReporter := pd.dependencyReporter
 	pd.mu.RUnlock()
 
-	for _, exporter := range pd.exporters {
+	for _, exporter := range pd.exportersSnapshot() {
 		err := exporter.ExportStatus(pd.ctx, status)
 		if err != nil {
 			slog.Warn("failed to export status", "monitor", status.Source, "error", err)
@@ -965,7 +960,7 @@ func (pd *ProblemDetector) applyConfigReload(ctx context.Context, newConfig *typ
 	if diff.ExportersChanged {
 		log.Printf("[INFO] Reloading exporters due to configuration changes")
 
-		for _, exporter := range pd.exporters {
+		for _, exporter := range pd.exportersSnapshot() {
 			exporterType := pd.getExporterType(exporter)
 
 			if err := pd.reloadExporter(exporter, newConfig); err != nil {
@@ -1126,18 +1121,14 @@ func (pd *ProblemDetector) getExporterType(exporter types.Exporter) string {
 	return strings.ToLower(typeName)
 }
 
-// stopMonitorByName stops a monitor by its name and removes it from the handles list.
-// The slice mutation is done under handlesMu; handle.Stop() (which can block up to 5 s)
-// is called after releasing the lock so it does not delay concurrent addMonitor callers.
+// stopMonitorByName stops a monitor and removes its handle. A handle whose Stop
+// times out stays registered so the detector's Stop() still owns it.
 func (pd *ProblemDetector) stopMonitorByName(name string) error {
-	// Find and splice out under handlesMu.
 	pd.handlesMu.Lock()
 	var found *MonitorHandle
-	for i, handle := range pd.monitorHandles {
-		if handle.GetName() == name {
+	for _, handle := range pd.monitorHandles {
+		if handle.GetName() == name && (found == nil || handle.IsRunning()) {
 			found = handle
-			pd.monitorHandles = append(pd.monitorHandles[:i], pd.monitorHandles[i+1:]...)
-			break
 		}
 	}
 	pd.handlesMu.Unlock()
@@ -1146,15 +1137,23 @@ func (pd *ProblemDetector) stopMonitorByName(name string) error {
 		return fmt.Errorf("monitor %s not found", name)
 	}
 
-	// Remove from config index (configIndexMu is independent of handlesMu).
 	pd.configIndexMu.Lock()
 	delete(pd.monitorConfigIndex, name)
 	pd.configIndexMu.Unlock()
 
-	// Stop outside handlesMu — can block up to 5 s per MonitorHandle.Stop().
 	if err := found.Stop(); err != nil {
 		return err
 	}
+
+	pd.handlesMu.Lock()
+	for i, handle := range pd.monitorHandles {
+		if handle == found {
+			pd.monitorHandles = append(pd.monitorHandles[:i], pd.monitorHandles[i+1:]...)
+			break
+		}
+	}
+	pd.handlesMu.Unlock()
+
 	log.Printf("[INFO] Stopped and removed monitor: %s", name)
 	return nil
 }
@@ -1402,7 +1401,7 @@ func (pd *ProblemDetector) emitReloadEvent(severity types.EventSeverity, reason,
 
 // getKubernetesExporter returns the Kubernetes exporter if present, nil otherwise.
 func (pd *ProblemDetector) getKubernetesExporter() *kubernetes.KubernetesExporter {
-	for _, exporter := range pd.exporters {
+	for _, exporter := range pd.exportersSnapshot() {
 		if ke, ok := exporter.(*kubernetes.KubernetesExporter); ok {
 			return ke
 		}

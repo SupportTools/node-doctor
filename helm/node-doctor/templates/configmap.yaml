@@ -19,7 +19,6 @@ data:
       updateInterval: {{ .Values.settings.updateInterval }}
       resyncInterval: {{ .Values.settings.resyncInterval }}
       heartbeatInterval: {{ .Values.settings.heartbeatInterval }}
-      enableRemediation: {{ .Values.settings.enableRemediation }}
       dryRunMode: {{ .Values.settings.dryRunMode }}
       qps: {{ .Values.settings.qps }}
       burst: {{ .Values.settings.burst }}
@@ -33,15 +32,9 @@ data:
         interval: {{ .Values.monitors.cpu.interval }}
         timeout: {{ .Values.monitors.cpu.timeout }}
         config:
-          loadAverageThresholds:
-            warning: {{ .Values.monitors.cpu.loadAverageThresholds.warning }}
-            critical: {{ .Values.monitors.cpu.loadAverageThresholds.critical }}
-          thermalThresholds:
-            warning: {{ .Values.monitors.cpu.thermalThresholds.warning }}
-            critical: {{ .Values.monitors.cpu.thermalThresholds.critical }}
-          cpuUsageThresholds:
-            warning: {{ .Values.monitors.cpu.cpuUsageThresholds.warning }}
-            critical: {{ .Values.monitors.cpu.cpuUsageThresholds.critical }}
+          warningLoadFactor: {{ .Values.monitors.cpu.warningLoadFactor }}
+          criticalLoadFactor: {{ .Values.monitors.cpu.criticalLoadFactor }}
+          checkThermalThrottle: {{ .Values.monitors.cpu.checkThermalThrottle }}
       {{- end }}
 
       {{- if .Values.monitors.memory.enabled }}
@@ -52,13 +45,11 @@ data:
         interval: {{ .Values.monitors.memory.interval }}
         timeout: {{ .Values.monitors.memory.timeout }}
         config:
-          memoryThresholds:
-            warning: {{ .Values.monitors.memory.memoryThresholds.warning }}
-            critical: {{ .Values.monitors.memory.memoryThresholds.critical }}
-          swapThresholds:
-            warning: {{ .Values.monitors.memory.swapThresholds.warning }}
-            critical: {{ .Values.monitors.memory.swapThresholds.critical }}
-          oomDetection: {{ .Values.monitors.memory.oomDetection }}
+          warningThreshold: {{ .Values.monitors.memory.warningThreshold }}
+          criticalThreshold: {{ .Values.monitors.memory.criticalThreshold }}
+          swapWarningThreshold: {{ .Values.monitors.memory.swapWarningThreshold }}
+          swapCriticalThreshold: {{ .Values.monitors.memory.swapCriticalThreshold }}
+          checkOOMKills: {{ .Values.monitors.memory.checkOOMKills }}
           kmsgPath: /dev/kmsg
       {{- end }}
 
@@ -70,13 +61,10 @@ data:
         interval: {{ .Values.monitors.disk.interval }}
         timeout: {{ .Values.monitors.disk.timeout }}
         config:
-          paths:
-            {{- toYaml .Values.monitors.disk.paths | nindent 12 }}
-          inodeThresholds:
-            warning: {{ .Values.monitors.disk.inodeThresholds.warning }}
-            critical: {{ .Values.monitors.disk.inodeThresholds.critical }}
-          readOnlyDetection: {{ .Values.monitors.disk.readOnlyDetection }}
-          ioHealthCheck: {{ .Values.monitors.disk.ioHealthCheck }}
+          mountPoints:
+            {{- toYaml .Values.monitors.disk.mountPoints | nindent 12 }}
+          checkReadonly: {{ .Values.monitors.disk.checkReadonly }}
+          checkIOHealth: {{ .Values.monitors.disk.checkIOHealth }}
       {{- end }}
 
       {{- if .Values.monitors.ipForwarding.enabled }}
@@ -197,9 +185,8 @@ data:
             - google.com
             - cloudflare.com
           latencyThreshold: 1s
-          checkNameservers: true
+          nameserverCheckEnabled: true
           failureCountThreshold: 3
-          enableNameserverChecks: true
       {{- if .Values.clusterDnsPodProbe.enabled }}
 
       # Cluster DNS via pod-network (overlay-test pods). node-doctor runs hostNetwork,
@@ -224,6 +211,94 @@ data:
           failureCountThreshold: {{ .Values.clusterDnsPodProbe.failureCountThreshold }}
       {{- end }}
 
+      {{- if .Values.monitors.kubelet.enabled }}
+      # Kubelet Health Monitor
+      - name: kubelet-health
+        type: kubernetes-kubelet-check
+        enabled: true
+        interval: {{ .Values.monitors.kubelet.interval }}
+        timeout: {{ .Values.monitors.kubelet.timeout }}
+        config:
+          healthzURL: {{ .Values.monitors.kubelet.healthzURL | quote }}
+          checkSystemdStatus: {{ .Values.monitors.kubelet.checkSystemdStatus }}
+          checkPLEG: {{ .Values.monitors.kubelet.checkPLEG }}
+          failureThreshold: {{ .Values.monitors.kubelet.failureThreshold }}
+      {{- end }}
+
+      {{- if .Values.monitors.apiserver.enabled }}
+      # API Server Health Monitor
+      - name: apiserver-health
+        type: kubernetes-apiserver-check
+        enabled: true
+        interval: {{ .Values.monitors.apiserver.interval }}
+        timeout: {{ .Values.monitors.apiserver.timeout }}
+        config:
+          latencyThreshold: {{ .Values.monitors.apiserver.latencyThreshold }}
+          httpTimeout: {{ .Values.monitors.apiserver.httpTimeout }}
+          failureThreshold: {{ .Values.monitors.apiserver.failureThreshold }}
+          checkVersion: {{ .Values.monitors.apiserver.checkVersion }}
+          checkAuth: {{ .Values.monitors.apiserver.checkAuth }}
+      {{- end }}
+
+      {{- if .Values.monitors.runtime.enabled }}
+      # Container Runtime Health Monitor
+      - name: runtime-health
+        type: kubernetes-runtime-check
+        enabled: true
+        interval: {{ .Values.monitors.runtime.interval }}
+        timeout: {{ .Values.monitors.runtime.timeout }}
+        config:
+          runtimeType: {{ .Values.monitors.runtime.runtimeType }}
+          checkSocketConnectivity: {{ .Values.monitors.runtime.checkSocketConnectivity }}
+          checkSystemdStatus: {{ .Values.monitors.runtime.checkSystemdStatus }}
+          checkRuntimeInfo: {{ .Values.monitors.runtime.checkRuntimeInfo }}
+          failureThreshold: {{ .Values.monitors.runtime.failureThreshold }}
+      {{- end }}
+
+      {{- if .Values.monitors.capacity.enabled }}
+      # Pod Capacity Monitor
+      - name: capacity-health
+        type: kubernetes-capacity-check
+        enabled: true
+        interval: {{ .Values.monitors.capacity.interval }}
+        timeout: {{ .Values.monitors.capacity.timeout }}
+        config:
+          warningThreshold: {{ .Values.monitors.capacity.warningThreshold }}
+          criticalThreshold: {{ .Values.monitors.capacity.criticalThreshold }}
+          checkAllocatable: {{ .Values.monitors.capacity.checkAllocatable }}
+          apiTimeout: {{ .Values.monitors.capacity.apiTimeout }}
+          failureThreshold: {{ .Values.monitors.capacity.failureThreshold }}
+      {{- end }}
+
+      {{- if .Values.monitors.gateway.enabled }}
+      # Default Gateway Monitor
+      - name: gateway-health
+        type: network-gateway-check
+        enabled: true
+        interval: {{ .Values.monitors.gateway.interval }}
+        timeout: {{ .Values.monitors.gateway.timeout }}
+        config:
+          pingCount: {{ .Values.monitors.gateway.pingCount }}
+          pingTimeout: {{ .Values.monitors.gateway.pingTimeout }}
+          latencyThreshold: {{ .Values.monitors.gateway.latencyThreshold }}
+          autoDetectGateway: {{ .Values.monitors.gateway.autoDetectGateway }}
+          failureCountThreshold: {{ .Values.monitors.gateway.failureCountThreshold }}
+          addressFamily: {{ .Values.monitors.gateway.addressFamily }}
+      {{- end }}
+
+      {{- if .Values.monitors.connectivity.enabled }}
+      # External Connectivity Monitor
+      - name: connectivity-health
+        type: network-connectivity-check
+        enabled: true
+        interval: {{ .Values.monitors.connectivity.interval }}
+        timeout: {{ .Values.monitors.connectivity.timeout }}
+        config:
+          failureThreshold: {{ .Values.monitors.connectivity.failureThreshold }}
+          endpoints:
+            {{- toYaml .Values.monitors.connectivity.endpoints | nindent 12 }}
+      {{- end }}
+
     exporters:
       kubernetes:
         enabled: {{ .Values.exporters.kubernetes.enabled }}
@@ -243,19 +318,6 @@ data:
 
       http:
         enabled: {{ or .Values.exporters.http.enabled .Values.controller.enabled }}
-        bindAddress: {{ .Values.exporters.http.bindAddress | quote }}
-        hostPort: {{ .Values.exporters.http.port }}
-        tlsEnabled: {{ .Values.exporters.http.tlsEnabled }}
-        endpoints:
-          - path: /healthz
-            handler: overall-health
-            description: "Kubernetes-style health endpoint"
-          - path: /ready
-            handler: readiness
-            description: "Readiness check"
-          - path: /status
-            handler: detailed-status
-            description: "Detailed node and monitor status"
         {{- if .Values.controller.enabled }}
         webhooks:
           - name: controller

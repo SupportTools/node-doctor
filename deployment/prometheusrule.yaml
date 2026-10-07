@@ -1,17 +1,21 @@
-# PrometheusRule for Node Doctor alerting
-# Deploy this to enable critical alerts for node health conditions
+---
+# Source: node-doctor/templates/prometheusrule.yaml
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: node-doctor
   namespace: node-doctor
   labels:
+    helm.sh/chart: node-doctor-1.0.0
+    app.kubernetes.io/name: node-doctor
+    app.kubernetes.io/instance: node-doctor
     app: node-doctor
     component: monitoring
     tier: system
-    # This label is often required for Prometheus Operator to discover the PrometheusRule
-    # Adjust based on your Prometheus Operator configuration
-    release: monitoring
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: monitoring
+    tier: system
 spec:
   groups:
     # Critical alerts - require immediate attention
@@ -19,7 +23,7 @@ spec:
       rules:
         - alert: NodeDoctorCNIConfigInvalid
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="CNIConfigValid", status="False"} > 0
+            node_doctor_monitor_condition_status{condition_type="CNIConfigValid"} == 0
           for: 5m
           labels:
             severity: critical
@@ -27,11 +31,10 @@ spec:
           annotations:
             summary: "CNI configuration invalid on {{ $labels.node }}"
             description: "Node {{ $labels.node }} has invalid CNI configuration. CNI health checks are failing."
-            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/cni-config-invalid.md"
 
         - alert: NodeDoctorCNIUnhealthy
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="CNIHealthy", status="False"} > 0
+            node_doctor_monitor_condition_status{condition_type="CNIHealthy"} == 0
           for: 5m
           labels:
             severity: critical
@@ -39,11 +42,10 @@ spec:
           annotations:
             summary: "CNI unhealthy on {{ $labels.node }}"
             description: "Node {{ $labels.node }} CNI is unhealthy. Pod networking may be impaired."
-            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/cni-unhealthy.md"
 
         - alert: NodeDoctorNetworkPartitioned
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="NetworkPartitioned", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="NetworkPartitioned"} == 1
           for: 2m
           labels:
             severity: critical
@@ -51,11 +53,10 @@ spec:
           annotations:
             summary: "Network partition detected on {{ $labels.node }}"
             description: "Node {{ $labels.node }} cannot reach minimum required peers. Node may be network partitioned."
-            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/network-partition.md"
 
         - alert: NodeDoctorKubeletUnhealthy
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="KubeletHealthy", status="False"} > 0
+            node_doctor_monitor_condition_status{condition_type="KubeletHealthy"} == 0
           for: 5m
           labels:
             severity: critical
@@ -63,11 +64,10 @@ spec:
           annotations:
             summary: "Kubelet unhealthy on {{ $labels.node }}"
             description: "Node {{ $labels.node }} kubelet is unhealthy. Node may not be functioning correctly."
-            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/kubelet-unhealthy.md"
 
         - alert: NodeDoctorReadOnlyFilesystem
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="ReadOnlyFilesystem", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="ReadOnlyFilesystem"} == 1
           for: 1m
           labels:
             severity: critical
@@ -75,14 +75,23 @@ spec:
           annotations:
             summary: "Read-only filesystem detected on {{ $labels.node }}"
             description: "Node {{ $labels.node }} has a read-only filesystem. This typically indicates disk failure."
-            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/readonly-filesystem.md"
 
+        - alert: NodeDoctorIPForwardingDisabled
+          expr: |
+            node_doctor_monitor_condition_status{condition_type="IPForwardingDisabled"} == 1
+          for: 2m
+          labels:
+            severity: critical
+            component: network
+          annotations:
+            summary: "IP forwarding disabled on {{ $labels.node }}"
+            description: "Node {{ $labels.node }} has IP forwarding disabled. Kubernetes pod networking will not function."
     # Warning alerts - should be investigated soon
     - name: node-doctor-warning
       rules:
         - alert: NodeDoctorDNSResolutionFailed
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="DNSResolutionFailed", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="DNSResolutionFailed"} == 1
           for: 5m
           labels:
             severity: warning
@@ -90,11 +99,10 @@ spec:
           annotations:
             summary: "DNS resolution failing on {{ $labels.node }}"
             description: "Node {{ $labels.node }} is experiencing DNS resolution failures."
-            runbook_url: "https://github.com/supporttools/node-doctor/docs/runbooks/dns-resolution-failed.md"
 
         - alert: NodeDoctorDNSLatencyHigh
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="DNSLatencyHigh", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="DNSLatencyHigh"} == 1
           for: 10m
           labels:
             severity: warning
@@ -105,7 +113,7 @@ spec:
 
         - alert: NodeDoctorMemoryPressure
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="MemoryPressure", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="MemoryPressure"} == 1
           for: 10m
           labels:
             severity: warning
@@ -116,7 +124,7 @@ spec:
 
         - alert: NodeDoctorDiskPressure
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="DiskPressure", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="DiskPressure"} == 1
           for: 10m
           labels:
             severity: warning
@@ -127,7 +135,7 @@ spec:
 
         - alert: NodeDoctorNetworkDegraded
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="NetworkDegraded", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="NetworkDegraded"} == 1
           for: 10m
           labels:
             severity: warning
@@ -137,7 +145,8 @@ spec:
             description: "Node {{ $labels.node }} is experiencing network degradation (high latency or partial connectivity)."
 
         - alert: NodeDoctorHighPeerLatency
-          # Per-family: grouped by address_family so IPv4 and IPv6 alert independently.
+          # Per-family: max P95-equivalent peer latency grouped by address_family so
+          # IPv4 and IPv6 alert independently and the firing alert carries the family.
           expr: |
             max by (node, address_family) (node_doctor_monitor_peer_latency_seconds) * 1000 > 100
           for: 10m
@@ -163,7 +172,7 @@ spec:
 
         - alert: NodeDoctorAPIServerLatencyHigh
           expr: |
-            node_doctor_monitor_conditions_total{condition_type="APIServerLatencyHigh", status="True"} > 0
+            node_doctor_monitor_condition_status{condition_type="APIServerLatencyHigh"} == 1
           for: 10m
           labels:
             severity: warning
@@ -171,23 +180,6 @@ spec:
           annotations:
             summary: "High API server latency on {{ $labels.node }}"
             description: "Node {{ $labels.node }} is experiencing high latency communicating with the API server."
-
-        - alert: NodeDoctorIPv6Misconfigured
-          # Covers all IPv6-specific conditions (IPv6SysctlMisconfigured,
-          # IPv6DefaultRouteMissing, IPv6LinkLocalMissing, IPv6GlobalAddressMissing,
-          # IPv6RouterAdvertisementDisabled, IPv6FirewallBlackhole). The condition_status
-          # gauge carries only {node,condition_type}, so address_family is fixed to ipv6.
-          expr: |
-            node_doctor_monitor_condition_status{condition_type=~"IPv6.*"} == 1
-          for: 10m
-          labels:
-            severity: warning
-            component: network
-            address_family: ipv6
-          annotations:
-            summary: "IPv6 misconfiguration ({{ $labels.condition_type }}) on {{ $labels.node }}"
-            description: "Node {{ $labels.node }} has an active IPv6 condition {{ $labels.condition_type }}. IPv6 connectivity may be impaired."
-
     # Informational alerts - for awareness
     - name: node-doctor-info
       rules:
@@ -227,3 +219,5 @@ spec:
           annotations:
             summary: "No Node Doctor metrics available"
             description: "No Node Doctor metrics are being received. Check if the DaemonSet is running and ServiceMonitor is configured."
+
+

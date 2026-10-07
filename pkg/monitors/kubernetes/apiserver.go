@@ -544,8 +544,11 @@ func (c *APIServerMonitorConfig) applyDefaults() error {
 	return nil
 }
 
+var knownAPIServerConfigKeys = []string{"endpoint", "latencyThreshold", "checkVersion", "checkAuth", "failureThreshold", "httpTimeout"}
+
 // ValidateAPIServerConfig validates the API server monitor configuration.
 func ValidateAPIServerConfig(config types.MonitorConfig) error {
+	monitors.WarnUnknownKeys(config.Name, config.Config, knownAPIServerConfigKeys...)
 	if config.Name == "" {
 		return fmt.Errorf("monitor name is required")
 	}
@@ -576,5 +579,19 @@ func init() {
 		Factory:     NewAPIServerMonitor,
 		Validator:   ValidateAPIServerConfig,
 		Description: "Monitors Kubernetes API server health including connectivity, latency, authentication, and rate limiting",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "apiserver-health",
+			Type:           "kubernetes-apiserver-check",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"latencyThreshold": "2s",
+				"httpTimeout":      "5s",
+				"failureThreshold": defaultAPIServerFailureThreshold,
+				"checkVersion":     true,
+				"checkAuth":        false,
+			},
+		},
 	})
 }

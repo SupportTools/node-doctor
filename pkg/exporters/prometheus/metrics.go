@@ -215,10 +215,10 @@ func NewMetrics(namespace, subsystem string, constLabels prometheus.Labels) (*Me
 				Namespace:   namespace,
 				Subsystem:   subsystem,
 				Name:        "monitor_up",
-				Help:        "Whether Node Doctor monitors are running (1 = up, 0 = down)",
+				Help:        "Whether the monitor's last check completed (1 = up, 0 = check failed or timed out)",
 				ConstLabels: labels,
 			},
-			[]string{"node", "monitor_name", "monitor_type"},
+			[]string{"node", "monitor_name"},
 		),
 
 		Info: prometheus.NewGaugeVec(
