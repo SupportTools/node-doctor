@@ -504,6 +504,78 @@ monitors:
     # backend: auto selects ip6tables or nftables based on what is present on the node
     backend: auto
 
+  # Kubelet /healthz on the node loopback. systemd and PLEG checks are off by
+  # default: PLEG scrapes the authenticated 10250/metrics endpoint.
+  kubelet:
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    healthzURL: http://127.0.0.1:10248/healthz
+    checkSystemdStatus: false
+    checkPLEG: false
+    failureThreshold: 3
+
+  # API server reachability and latency via the in-cluster ServiceAccount.
+  apiserver:
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    latencyThreshold: 2s
+    httpTimeout: 5s
+    failureThreshold: 3
+    checkVersion: true
+    checkAuth: false
+
+  # Container runtime socket connectivity (docker, containerd, cri-o auto-detected).
+  runtime:
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    runtimeType: auto
+    checkSocketConnectivity: true
+    checkSystemdStatus: false
+    checkRuntimeInfo: false
+    failureThreshold: 3
+
+  # Pod count against node capacity/allocatable (percent thresholds).
+  capacity:
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    warningThreshold: 80
+    criticalThreshold: 95
+    checkAllocatable: true
+    apiTimeout: 10s
+    failureThreshold: 3
+
+  # ICMP ping to the default gateway.
+  gateway:
+    enabled: true
+    interval: 30s
+    timeout: 10s
+    pingCount: 3
+    pingTimeout: 1s
+    latencyThreshold: 100ms
+    autoDetectGateway: true
+    failureCountThreshold: 3
+    addressFamily: ipv4
+
+  # HTTP(S) reachability of external endpoints from the host network.
+  connectivity:
+    enabled: true
+    interval: 1m
+    timeout: 30s
+    failureThreshold: 3
+    endpoints:
+      - name: google
+        url: https://www.google.com
+        method: HEAD
+        timeout: 5s
+      - name: cloudflare
+        url: https://www.cloudflare.com
+        method: HEAD
+        timeout: 5s
+
 # Exporters configuration
 exporters:
   kubernetes:

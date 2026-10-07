@@ -199,7 +199,7 @@ type MonitorConfig struct {
 	// Name is the unique identifier for this monitor
 	Name string `json:"name" yaml:"name"`
 
-	// Type is the monitor type (e.g., "system-disk-check")
+	// Type is the monitor type (e.g., "system-disk")
 	Type string `json:"type" yaml:"type"`
 
 	// Enabled indicates whether this monitor is active

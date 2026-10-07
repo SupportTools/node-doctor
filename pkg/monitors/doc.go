@@ -19,7 +19,7 @@
 //
 //	func init() {
 //		monitors.Register(monitors.MonitorInfo{
-//			Type:        "system-disk-check",
+//			Type:        "system-disk",
 //			Factory:     NewSystemDiskMonitor,
 //			Validator:   ValidateSystemDiskConfig,
 //			Description: "Monitors system disk usage and health",
@@ -40,7 +40,7 @@
 //	// Single monitor
 //	config := types.MonitorConfig{
 //		Name:    "disk-monitor-1",
-//		Type:    "system-disk-check",
+//		Type:    "system-disk",
 //		Enabled: true,
 //		Config: map[string]interface{}{
 //			"path":      "/var/lib/kubelet",
@@ -113,7 +113,7 @@
 //
 //	func init() {
 //		monitors.Register(monitors.MonitorInfo{
-//			Type:        "system-disk-check",
+//			Type:        "system-disk",
 //			Factory:     NewDiskMonitor,
 //			Validator:   ValidateDiskConfig,
 //			Description: "Monitors disk usage and health",

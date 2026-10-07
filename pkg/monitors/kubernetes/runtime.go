@@ -213,6 +213,20 @@ func init() {
 		Factory:     NewRuntimeMonitor,
 		Validator:   ValidateRuntimeConfig,
 		Description: "Monitors container runtime health (Docker, containerd, CRI-O)",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "runtime-health",
+			Type:           "kubernetes-runtime-check",
+			Enabled:        true,
+			IntervalString: "1m",
+			TimeoutString:  "30s",
+			Config: map[string]interface{}{
+				"runtimeType":             "auto",
+				"checkSocketConnectivity": true,
+				"checkSystemdStatus":      false,
+				"checkRuntimeInfo":        false,
+				"failureThreshold":        defaultRuntimeFailureThreshold,
+			},
+		},
 	})
 }
 

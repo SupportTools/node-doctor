@@ -579,5 +579,19 @@ func init() {
 		Factory:     NewAPIServerMonitor,
 		Validator:   ValidateAPIServerConfig,
 		Description: "Monitors Kubernetes API server health including connectivity, latency, authentication, and rate limiting",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "apiserver-health",
+			Type:           "kubernetes-apiserver-check",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"latencyThreshold": "2s",
+				"httpTimeout":      "5s",
+				"failureThreshold": defaultAPIServerFailureThreshold,
+				"checkVersion":     true,
+				"checkAuth":        false,
+			},
+		},
 	})
 }

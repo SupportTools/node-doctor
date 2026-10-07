@@ -19,7 +19,8 @@ this one covers only what lives in this directory.
 
 1. **Lint** — `golangci-lint` (pinned `v1.64.8`), config in `.golangci.yml` at repo root,
    5-minute timeout.
-2. **Helm Chart** — runs `make helm-verify-generated`, then `helm lint ./helm/node-doctor`.
+2. **Helm Chart** — runs `make helm-verify-generated`, `make manifests-verify-generated`, then
+   `helm lint ./helm/node-doctor`.
    This job exists to catch the generated-vs-template trap: `release.yml` re-renders
    `Chart.yaml`/`values.yaml` from `*.template` before packaging, so hand-edits to the committed
    copies never reach the published chart. See
@@ -139,6 +140,7 @@ gh run list --workflow=release.yml --branch v1.9.0
 ```bash
 make lint                   # golangci-lint
 make helm-verify-generated  # the Helm Chart job's hard check
+make manifests-verify-generated  # deployment/{prometheusrule,servicemonitor}.yaml match the chart
 make helm-lint              # helm lint (depends on the above)
 make test-ci                # closest mirror of the Test job (unit -short + integration)
 make build                  # both binaries

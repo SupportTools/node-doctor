@@ -231,7 +231,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"ThermalPressure\", status=\"True\", node=~\"$node\"}) or vector(0)",
+          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"CPUThermalHealthy\", status=\"False\", node=~\"$node\"}) or vector(0)",
           "legendFormat": "__auto",
           "refId": "A"
         }
@@ -490,7 +490,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"CPUHealthy|CPUPressure|ThermalPressure\", node=~\"$node\"}",
+          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"CPUHealthy|CPUPressure|CPUThermalHealthy\", node=~\"$node\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -723,12 +723,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "count(node_doctor_monitor_conditions_total{condition_type=\"SwapPressure\", status=\"True\", node=~\"$node\"}) or vector(0)",
+          "expr": "sum(increase(node_doctor_monitor_events_total{monitor_name=\"memory-health\", severity=\"warning\", node=~\"$node\"}[1h])) or vector(0)",
           "legendFormat": "__auto",
           "refId": "A"
         }
       ],
-      "title": "Swap Pressure",
+      "title": "Memory Warning Events (1h)",
       "type": "stat"
     },
     {
@@ -978,7 +978,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"MemoryHealthy|MemoryPressure|SwapPressure\", node=~\"$node\"}",
+          "expr": "node_doctor_monitor_conditions_total{condition_type=~\"MemoryHealthy|MemoryPressure\", node=~\"$node\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1858,7 +1858,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (condition_type) (node_doctor_monitor_conditions_total{condition_type=~\"CPUHealthy|CPUPressure|ThermalPressure|MemoryHealthy|MemoryPressure|SwapPressure|DiskHealthy|DiskPressure|InodePressure|ReadOnlyFilesystem\", status=\"True\", node=~\"$node\"})",
+          "expr": "sum by (condition_type) (node_doctor_monitor_conditions_total{condition_type=~\"CPUHealthy|CPUPressure|CPUThermalHealthy|MemoryHealthy|MemoryPressure|DiskHealthy|DiskPressure|InodePressure|ReadOnlyFilesystem\", status=\"True\", node=~\"$node\"})",
           "legendFormat": "{{condition_type}}",
           "refId": "A"
         }

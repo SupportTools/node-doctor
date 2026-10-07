@@ -10,7 +10,7 @@
 //	// Monitor registration (typically in monitor package init())
 //	func init() {
 //		monitors.MustRegister(monitors.MonitorInfo{
-//			Type:        "system-disk-check",
+//			Type:        "system-disk",
 //			Factory:     NewSystemDiskMonitor,
 //			Validator:   ValidateSystemDiskConfig,
 //			Description: "Monitors system disk usage and health",

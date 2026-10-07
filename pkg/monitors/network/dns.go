@@ -1546,9 +1546,41 @@ func (m *DNSMonitor) checkDNS(ctx context.Context) (*types.Status, error) {
 	if m.trendDetectionEnabled() {
 		m.computeTrendDetection(status)
 	}
+	m.checkLatencyCondition(status)
 	m.mu.Unlock()
 
 	return status, nil
+}
+
+// checkLatencyCondition sets DNSLatencyHigh from the p95 of this cycle's successful
+// queries. Caller must hold m.mu.
+func (m *DNSMonitor) checkLatencyCondition(status *types.Status) {
+	var latencies []float64
+	for _, l := range m.latencyMetrics {
+		if l.Success {
+			latencies = append(latencies, l.LatencyMs)
+		}
+	}
+	if len(latencies) == 0 {
+		return
+	}
+
+	p95 := time.Duration(percentile95(latencies) * float64(time.Millisecond))
+	if p95 > m.config.LatencyThreshold {
+		status.AddCondition(types.NewCondition(
+			"DNSLatencyHigh",
+			types.ConditionTrue,
+			"LatencyAboveThreshold",
+			fmt.Sprintf("DNS p95 latency %v over %d queries exceeds threshold %v", p95, len(latencies), m.config.LatencyThreshold),
+		))
+		return
+	}
+	status.AddCondition(types.NewCondition(
+		"DNSLatencyHigh",
+		types.ConditionFalse,
+		"LatencyWithinThreshold",
+		fmt.Sprintf("DNS p95 latency %v over %d queries is within threshold %v", p95, len(latencies), m.config.LatencyThreshold),
+	))
 }
 
 // recordDNSLatency records a DNS latency measurement for Prometheus export.

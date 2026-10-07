@@ -75,6 +75,9 @@ jobs:
       - name: Verify Chart.yaml/values.yaml match their templates
         run: make helm-verify-generated
 
+      - name: Verify deployment manifests match the chart
+        run: make manifests-verify-generated
+
       - name: Lint chart
         run: helm lint ./helm/node-doctor
 

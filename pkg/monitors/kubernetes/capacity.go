@@ -510,5 +510,19 @@ func init() {
 		Factory:     NewCapacityMonitor,
 		Validator:   ValidateCapacityConfig,
 		Description: "Monitors pod capacity and alerts when approaching node limits",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "capacity-health",
+			Type:           "kubernetes-capacity-check",
+			Enabled:        true,
+			IntervalString: "1m",
+			TimeoutString:  "30s",
+			Config: map[string]interface{}{
+				"warningThreshold":  80,
+				"criticalThreshold": 95,
+				"checkAllocatable":  true,
+				"apiTimeout":        "10s",
+				"failureThreshold":  3,
+			},
+		},
 	})
 }

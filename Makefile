@@ -11,6 +11,7 @@
 	lint fmt clean install-deps \
 	docker-build docker-push \
 	helm-lint helm-package helm-generate helm-verify-generated \
+	manifests-generate manifests-verify-generated \
 	coverage-check coverage-threshold
 
 # ================================================================================================
@@ -412,7 +413,36 @@ helm-verify-generated:
 		{ $(call print_error,"values.yaml drifted from values.yaml.template - run 'make helm-generate'"); exit 1; }
 	@$(call print_success,"Chart files match their templates")
 
-helm-lint: helm-verify-generated
+# deployment/prometheusrule.yaml and deployment/servicemonitor.yaml are rendered from the
+# chart with default values so the raw manifests cannot drift from the Helm templates.
+MANIFESTS_RELEASE   := node-doctor
+MANIFESTS_NAMESPACE := node-doctor
+
+define manifests_render
+	helm template $(MANIFESTS_RELEASE) ./helm/$(PROJECT_NAME) \
+		--namespace $(MANIFESTS_NAMESPACE) \
+		--set prometheusRule.enabled=true \
+		--set serviceMonitor.enabled=true \
+		--show-only templates/$(1).yaml > $(2)
+endef
+
+manifests-generate:
+	@$(call print_status,"Regenerating deployment manifests from the chart...")
+	@$(call manifests_render,prometheusrule,deployment/prometheusrule.yaml)
+	@$(call manifests_render,servicemonitor,deployment/servicemonitor.yaml)
+	@$(call print_success,"Deployment manifests regenerated - commit them")
+
+manifests-verify-generated:
+	@$(call print_status,"Checking deployment manifests match the chart...")
+	@$(call manifests_render,prometheusrule,/tmp/node-doctor-prometheusrule.rendered.yaml)
+	@$(call manifests_render,servicemonitor,/tmp/node-doctor-servicemonitor.rendered.yaml)
+	@diff -u deployment/prometheusrule.yaml /tmp/node-doctor-prometheusrule.rendered.yaml || \
+		{ $(call print_error,"deployment/prometheusrule.yaml drifted from the chart - run 'make manifests-generate'"); exit 1; }
+	@diff -u deployment/servicemonitor.yaml /tmp/node-doctor-servicemonitor.rendered.yaml || \
+		{ $(call print_error,"deployment/servicemonitor.yaml drifted from the chart - run 'make manifests-generate'"); exit 1; }
+	@$(call print_success,"Deployment manifests match the chart")
+
+helm-lint: helm-verify-generated manifests-verify-generated
 	@$(call print_status,"Linting Helm chart...")
 	@helm lint ./helm/$(PROJECT_NAME)
 	@$(call print_success,"Helm lint passed")

@@ -712,6 +712,19 @@ func init() {
 		Factory:     NewKubeletMonitor,
 		Validator:   ValidateKubeletConfig,
 		Description: "Monitors kubelet health including /healthz endpoint, systemd status, and PLEG performance",
+		DefaultConfig: &types.MonitorConfig{
+			Name:           "kubelet-health",
+			Type:           "kubernetes-kubelet-check",
+			Enabled:        true,
+			IntervalString: "30s",
+			TimeoutString:  "10s",
+			Config: map[string]interface{}{
+				"healthzURL":         defaultKubeletHealthzURL,
+				"checkSystemdStatus": false,
+				"checkPLEG":          false,
+				"failureThreshold":   defaultKubeletFailureThreshold,
+			},
+		},
 	})
 }
 

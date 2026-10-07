@@ -198,7 +198,7 @@ func TestMetricUpdates(t *testing.T) {
 
 	// Test gauge metrics
 	metrics.ProblemsActive.WithLabelValues("test-node", "DiskPressure", "warning").Set(5)
-	metrics.MonitorUp.WithLabelValues("test-node", "disk-monitor", "disk").Set(1)
+	metrics.MonitorUp.WithLabelValues("test-node", "disk-monitor").Set(1)
 	metrics.ConditionStatus.WithLabelValues("test-node", "NetworkPartitioned").Set(1)
 	metrics.ConditionStatus.WithLabelValues("test-node", "CNIHealthy").Set(0)
 	metrics.Info.WithLabelValues("test-node", "1.0.0", "abc123", "go1.21", "2023-01-01").Set(1)
@@ -709,7 +709,7 @@ func TestMetricsReset(t *testing.T) {
 	// Set some gauge values
 	metrics.ProblemsActive.WithLabelValues("test-node", "DiskPressure", "warning").Set(5)
 	metrics.ProblemsActive.WithLabelValues("test-node", "MemoryPressure", "critical").Set(3)
-	metrics.MonitorUp.WithLabelValues("test-node", "disk-monitor", "disk").Set(1)
+	metrics.MonitorUp.WithLabelValues("test-node", "disk-monitor").Set(1)
 
 	// Reset ProblemsActive gauge
 	metrics.ProblemsActive.Reset()

@@ -96,6 +96,12 @@ ready.
 | `monitors.cpu.enabled` | Enable CPU monitor | `true` |
 | `monitors.memory.enabled` | Enable memory monitor | `true` |
 | `monitors.disk.enabled` | Enable disk monitor | `true` |
+| `monitors.kubelet.enabled` | Probe kubelet `/healthz` on the node loopback | `true` |
+| `monitors.apiserver.enabled` | Check API server reachability and latency | `true` |
+| `monitors.runtime.enabled` | Check the container runtime socket (docker/containerd/cri-o) | `true` |
+| `monitors.capacity.enabled` | Track pod count against node capacity | `true` |
+| `monitors.gateway.enabled` | Ping the default gateway | `true` |
+| `monitors.connectivity.enabled` | HTTP-check external endpoints from the host network | `true` |
 
 ### Exporter Configuration
 
