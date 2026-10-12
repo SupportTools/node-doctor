@@ -1,24 +1,9 @@
-# ================================================================================================
-# Nexmonyx Repository Template - Makefile
-# ================================================================================================
-#
-# This makefile provides a complete build, test, and deployment framework for Go/Kubernetes projects.
-#
-# CUSTOMIZATION REQUIRED:
-# 1. Replace {{PROJECT_NAME}} with your project name
-# 2. Replace {{REGISTRY}} with your container registry (e.g., ghcr.io/myorg, harbor.mycompany.com/myproject)
-# 3. Replace {{HELM_REPO}} with your Helm chart repository URL
-# 4. Update COMPONENTS list with your actual components
-# 5. Customize KUBECONFIG paths for your environments
-# 6. Adjust build targets for your project structure
-#
-# ================================================================================================
+# node-doctor Makefile. Run `make help` for targets.
 
 .PHONY: help all test build deploy \
 	build-local test-local validate-local validate-pipeline-local validate-quick \
 	deploy-dev deploy-stg deploy-prd \
 	bump bump-with-monitoring \
-	qa-check devils-advocate workflow-status \
 	gh-status gh-watch gh-logs gh-builds \
 	check-prerequisites check-docker check-kubectl \
 	build test test-integration test-e2e test-all test-ci \
@@ -340,14 +325,9 @@ validate-pipeline-local: check-prerequisites check-go-version
 	@$(call print_success,"Pipeline validation passed")
 
 validate-quick: check-prerequisites check-go-version
-	@$(call print_status,"Running quick validation (format, vet, staticcheck)...")
+	@$(call print_status,"Running quick validation (format, vet, lint)...")
 	@./scripts/validate-pipeline-local.sh --quick
 	@$(call print_success,"Quick validation passed")
-
-validate-component:
-	@$(call print_status,"Validating component: $(COMPONENT)...")
-	@./scripts/validate-pipeline-local.sh --component $(COMPONENT)
-	@$(call print_success,"Component validation passed")
 
 validate-local: validate-pipeline-local
 
@@ -584,29 +564,6 @@ bump-rc: validate-pipeline-local increment-rc-version
 	@echo "  - Monitor health: kubectl --context=$(KUBECTL_CONTEXT_PRD) -n $(NAMESPACE_PRD) get pods -l app=node-doctor -w"
 
 # ================================================================================================
-# Quality Workflow Targets
-# ================================================================================================
-
-workflow-status:
-	@$(call print_status,"Checking workflow status...")
-	@echo "TODO: Check TaskForge or project management system"
-
-qa-check:
-	@$(call print_status,"Running QA validation...")
-	@echo "QA Check: Running validation suite"
-	@$(MAKE) validate-pipeline-local
-	@$(MAKE) test-local
-	@$(call print_success,"QA validation passed")
-
-devils-advocate:
-	@$(call print_status,"Running Devils Advocate validation...")
-	@echo "Devils Advocate: Challenging implementation..."
-	@echo "- Testing edge cases"
-	@echo "- Verifying error handling"
-	@echo "- Checking security implications"
-	@$(call print_success,"Devils Advocate review complete")
-
-# ================================================================================================
 # GitHub Actions Monitoring
 # ================================================================================================
 
@@ -631,7 +588,7 @@ gh-builds:
 # ================================================================================================
 
 help:
-	@echo "$(PROJECT_NAME) Makefile - Repository Template"
+	@echo "$(PROJECT_NAME) Makefile"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "QUICK START"
@@ -672,7 +629,7 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@echo "  make install-deps          Install golangci-lint, goimports, etc."
-	@echo "  make validate-quick        Quick validation (format, vet, staticcheck)"
+	@echo "  make validate-quick        Quick validation (format, vet, lint)"
 	@echo "  make validate-pipeline-local  Full validation (mirrors CI/CD)"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -680,8 +637,7 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@echo "  make validate-pipeline-local  Full validation (mirrors CI/CD exactly)"
-	@echo "  make validate-quick        Quick validation (format, vet, staticcheck)"
-	@echo "  make validate-component COMPONENT=api  Validate specific component"
+	@echo "  make validate-quick        Quick validation (format, vet, lint)"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "DEPLOYMENT COMMANDS"
@@ -694,14 +650,6 @@ help:
 	@echo "  make deploy-stg            Deploy to staging"
 	@echo "  make deploy-prd            Deploy to production (requires approval)"
 	@echo "  make deploy-prd-kubectl    Deploy to a1-ops-prd using kubectl"
-	@echo ""
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "QUALITY WORKFLOW COMMANDS"
-	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo ""
-	@echo "  make qa-check              Run QA validation"
-	@echo "  make devils-advocate       Run adversarial testing"
-	@echo "  make workflow-status       Check workflow status"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "GITHUB ACTIONS MONITORING"
@@ -729,17 +677,7 @@ help:
 	@echo "  make check-kubeconfig-dev  Verify development kubeconfig"
 	@echo "  make help                  Show this help message"
 	@echo ""
-	@echo "For more information, see docs/development/"
-
-workflow-help:
-	@echo "Quality Workflow Commands"
-	@echo ""
-	@echo "  make workflow-status       - Show current workflow status"
-	@echo "  make qa-check              - Run QA validation gate"
-	@echo "  make devils-advocate       - Run adversarial testing gate"
-	@echo "  make workflow-validate     - Full workflow validation"
-	@echo ""
-	@echo "See docs/development/task-execution-workflow.md for complete workflow documentation"
+	@echo "For more information, see docs/README.md"
 
 gh-help:
 	@echo "GitHub Actions Monitoring Commands"
