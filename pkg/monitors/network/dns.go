@@ -604,9 +604,8 @@ func init() {
 				// disable the cluster check entirely, as the Helm chart does.
 				"externalDomains":        []interface{}{"google.com", "cloudflare.com"},
 				"latencyThreshold":       "1s",
-				"checkNameservers":       true,
+				"nameserverCheckEnabled": true,
 				"failureCountThreshold":  3,
-				"enableNameserverChecks": true,
 			},
 		},
 	})

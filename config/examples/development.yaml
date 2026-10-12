@@ -45,15 +45,8 @@ monitors:
     interval: 15s       # Short interval for development
     timeout: 5s
     config:
-      loadAverageThresholds:
-        warning: 80
-        critical: 95
-      thermalThresholds:
-        warning: 85
-        critical: 95
-      cpuUsageThresholds:
-        warning: 85
-        critical: 95
+      warningLoadFactor: 0.8
+      criticalLoadFactor: 0.95
 
   # System Memory Monitor
   - name: memory-health
@@ -62,13 +55,13 @@ monitors:
     interval: 15s
     timeout: 5s
     config:
-      memoryThresholds:
-        warning: 85
-        critical: 95
-      swapThresholds:
-        warning: 50
-        critical: 80
-      oomDetection: true
+      warningThreshold: 85
+      criticalThreshold: 95
+      swapWarningThreshold: 50
+      swapCriticalThreshold: 80
+      checkMemoryUsage: true
+      checkSwapUsage: true
+      checkOOMKills: true
       kmsgPath: /dev/kmsg
 
   # System Disk Monitor
@@ -78,7 +71,7 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95
@@ -91,11 +84,10 @@ monitors:
         - path: "/var/lib/containerd"
           warningThreshold: 80
           criticalThreshold: 90
-      inodeThresholds:
-        warning: 85
-        critical: 95
-      readOnlyDetection: true
-      ioHealthCheck: true
+      checkDiskSpace: true
+      checkInodes: true
+      checkReadonly: true
+      checkIOHealth: true
 
   # Kubelet Health Monitor
   - name: kubelet-health
@@ -147,8 +139,7 @@ monitors:
     interval: 30s
     timeout: 5s
     config:
-      domains:
-        - kubernetes.default.svc.cluster.local
+      externalDomains:
         - google.com
       timeout: 2s
 
@@ -160,7 +151,7 @@ monitors:
     timeout: 5s
     config:
       # Auto-detect default gateway
-      count: 3
+      pingCount: 3
       warningLatency: 50
       criticalLatency: 100
 

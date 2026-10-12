@@ -411,33 +411,25 @@ monitors:
     enabled: true
     interval: 30s
     timeout: 10s
-    loadAverageThresholds:
-      warning: 80
-      critical: 95
-    thermalThresholds:
-      warning: 85
-      critical: 95
-    cpuUsageThresholds:
-      warning: 85
-      critical: 95
+    # Load average divided by CPU count
+    warningLoadFactor: 0.8
+    criticalLoadFactor: 0.95
 
   memory:
     enabled: true
     interval: 30s
     timeout: 10s
-    memoryThresholds:
-      warning: 85
-      critical: 95
-    swapThresholds:
-      warning: 50
-      critical: 80
-    oomDetection: true
+    warningThreshold: 85
+    criticalThreshold: 95
+    swapWarningThreshold: 50
+    swapCriticalThreshold: 80
+    checkOOMKills: true
 
   disk:
     enabled: true
     interval: 1m
     timeout: 30s
-    paths:
+    mountPoints:
       - path: "/"
         warningThreshold: 85
         criticalThreshold: 95
@@ -450,11 +442,10 @@ monitors:
       - path: "/var/lib/containerd"
         warningThreshold: 80
         criticalThreshold: 90
-    inodeThresholds:
-      warning: 85
-      critical: 95
-    readOnlyDetection: true
-    ioHealthCheck: true
+    checkDiskSpace: true
+    checkInodes: true
+    checkReadonly: true
+    checkIOHealth: true
 
   ipForwarding:
     enabled: true

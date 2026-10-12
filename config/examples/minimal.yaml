@@ -31,21 +31,18 @@ monitors:
     timeout: 30s          # Timeout after 30 seconds
     config:
       # Monitor root filesystem and kubelet directory
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95
         - path: "/var/lib/kubelet"
           warningThreshold: 85
           criticalThreshold: 95
-      # Check for inode exhaustion
-      inodeThresholds:
-        warning: 85
-        critical: 95
-      # Detect read-only filesystems
-      readOnlyDetection: true
-      # Check I/O health
-      ioHealthCheck: true
+      # Space, inode, read-only, and I/O checks
+      checkDiskSpace: true
+      checkInodes: true
+      checkReadonly: true
+      checkIOHealth: true
 
 # Exporters - Kubernetes exporter is the minimum for node conditions
 exporters:

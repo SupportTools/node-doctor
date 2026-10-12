@@ -458,15 +458,8 @@ data:
         interval: 30s
         timeout: 10s
         config:
-          loadAverageThresholds:
-            warning: 80
-            critical: 95
-          thermalThresholds:
-            warning: 85
-            critical: 95
-          cpuUsageThresholds:
-            warning: 85
-            critical: 95
+          warningLoadFactor: 0.8
+          criticalLoadFactor: 0.95
 
       # Memory Monitor - Memory and swap usage monitoring
       - name: memory-health
@@ -475,13 +468,13 @@ data:
         interval: 30s
         timeout: 10s
         config:
-          memoryThresholds:
-            warning: 85
-            critical: 95
-          swapThresholds:
-            warning: 50
-            critical: 80
-          oomDetection: true
+          warningThreshold: 85
+          criticalThreshold: 95
+          swapWarningThreshold: 50
+          swapCriticalThreshold: 80
+          checkMemoryUsage: true
+          checkSwapUsage: true
+          checkOOMKills: true
           kmsgPath: /dev/kmsg
 
       # Disk Monitor - Disk space and I/O health
@@ -491,7 +484,7 @@ data:
         interval: 1m
         timeout: 30s
         config:
-          paths:
+          mountPoints:
             - path: "/"
               warningThreshold: 85
               criticalThreshold: 95
@@ -504,11 +497,10 @@ data:
             - path: "/var/lib/containerd"
               warningThreshold: 80
               criticalThreshold: 90
-          inodeThresholds:
-            warning: 85
-            critical: 95
-          readOnlyDetection: true
-          ioHealthCheck: true
+          checkDiskSpace: true
+          checkInodes: true
+          checkReadonly: true
+          checkIOHealth: true
 
       # Kubelet health monitoring - DISABLED (monitor not yet implemented)
       # - name: kubelet-health

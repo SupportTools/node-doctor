@@ -491,7 +491,7 @@ func parseCPUConfig(configMap map[string]interface{}) (*CPUMonitorConfig, error)
 
 	// Parse warning load factor
 	if val, exists := configMap["warningLoadFactor"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := toFloat64(val); ok {
 			config.WarningLoadFactor = f
 		} else {
 			return nil, fmt.Errorf("warningLoadFactor must be a number, got %T", val)
@@ -500,7 +500,7 @@ func parseCPUConfig(configMap map[string]interface{}) (*CPUMonitorConfig, error)
 
 	// Parse critical load factor
 	if val, exists := configMap["criticalLoadFactor"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := toFloat64(val); ok {
 			config.CriticalLoadFactor = f
 		} else {
 			return nil, fmt.Errorf("criticalLoadFactor must be a number, got %T", val)

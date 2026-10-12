@@ -1,17 +1,20 @@
 package examples_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/supporttools/node-doctor/pkg/monitors"
+	"github.com/supporttools/node-doctor/pkg/types"
 	// Import monitor packages to register monitor types
 	_ "github.com/supporttools/node-doctor/pkg/monitors/custom"
 	_ "github.com/supporttools/node-doctor/pkg/monitors/kubernetes"
 	_ "github.com/supporttools/node-doctor/pkg/monitors/network"
 	_ "github.com/supporttools/node-doctor/pkg/monitors/system"
 	"github.com/supporttools/node-doctor/pkg/util"
+	"gopkg.in/yaml.v3"
 )
 
 // TestExampleConfigs validates all example configuration files
@@ -63,6 +66,11 @@ func TestExampleConfigs(t *testing.T) {
 			name:        "CustomPlugins",
 			filename:    "custom-plugins.yaml",
 			description: "Custom plugins and advanced features",
+		},
+		{
+			name:        "Testing",
+			filename:    "testing.yaml",
+			description: "Fast intervals and low thresholds for test clusters",
 		},
 	}
 
@@ -397,6 +405,124 @@ func TestRemediationStrategies(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+// Keys that older docs used but no monitor parser reads; a config using them is silently ignored.
+var ignoredMonitorKeys = map[string][]string{
+	"system-cpu":            {"loadAverageThresholds", "thermalThresholds", "cpuUsageThresholds"},
+	"system-memory":         {"memoryThresholds", "swapThresholds", "oomDetection"},
+	"system-disk":           {"paths", "inodeThresholds", "readOnlyDetection", "ioHealthCheck", "ioThreshold", "checkReadOnly"},
+	"network-dns-check":     {"domains", "checkNameservers", "enableNameserverChecks"},
+	"network-gateway-check": {"count"},
+	"custom-logpattern":     {"useDefaultPatterns", "maxMatchesPerPattern"},
+}
+
+// Factories for these types need a live cluster or container runtime, so only their validators run.
+var factoryNeedsHost = map[string]bool{
+	"kubernetes-apiserver-check": true,
+	"kubernetes-runtime-check":   true,
+	"kubernetes-capacity-check":  true,
+	"network-cni-check":          true,
+}
+
+func checkMonitorConfig(t *testing.T, mc types.MonitorConfig) {
+	t.Helper()
+	for _, key := range ignoredMonitorKeys[mc.Type] {
+		if _, ok := mc.Config[key]; ok {
+			t.Errorf("monitor %q (%s): config key %q is not read by the monitor", mc.Name, mc.Type, key)
+		}
+	}
+	if err := monitors.DefaultRegistry.ValidateConfig(mc); err != nil {
+		t.Errorf("monitor %q: %v", mc.Name, err)
+		return
+	}
+	if factoryNeedsHost[mc.Type] {
+		return
+	}
+	if _, err := monitors.DefaultRegistry.CreateMonitor(context.Background(), mc); err != nil {
+		t.Errorf("monitor %q: %v", mc.Name, err)
+	}
+}
+
+func TestExampleMonitorsBuild(t *testing.T) {
+	for k, v := range map[string]string{
+		"NODE_NAME":           "test-node",
+		"VERSION":             "v0.1.0",
+		"CLUSTER_NAME":        "test-cluster",
+		"PAGERDUTY_TOKEN":     "test-token",
+		"SLACK_WEBHOOK_PATH":  "test/path",
+		"MONITORING_USER":     "test-user",
+		"MONITORING_PASSWORD": "test-password",
+	} {
+		t.Setenv(k, v)
+	}
+
+	files, err := filepath.Glob("*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, filepath.Join("..", "node-doctor.yaml"))
+
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			config, err := util.LoadConfig(file)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			for _, mc := range config.Monitors {
+				if mc.Enabled {
+					checkMonitorConfig(t, mc)
+				}
+			}
+		})
+	}
+}
+
+// The dns-monitoring examples are monitor snippets without settings, so only their monitors are checked.
+func TestDNSExampleMonitorsBuild(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "examples", "dns-monitoring", "*.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no dns-monitoring examples found")
+	}
+	for _, file := range files {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var config types.NodeDoctorConfig
+			if err := yaml.Unmarshal(data, &config); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			for _, mc := range config.Monitors {
+				if err := mc.ApplyDefaults(); err != nil {
+					t.Fatalf("monitor %q: %v", mc.Name, err)
+				}
+				if mc.Enabled {
+					checkMonitorConfig(t, mc)
+				}
+			}
+		})
+	}
+}
+
+func TestRegisteredDefaultMonitorsBuild(t *testing.T) {
+	for _, monitorType := range monitors.DefaultRegistry.GetRegisteredTypes() {
+		info := monitors.DefaultRegistry.GetMonitorInfo(monitorType)
+		if info == nil || info.DefaultConfig == nil {
+			continue
+		}
+		t.Run(monitorType, func(t *testing.T) {
+			mc := *info.DefaultConfig
+			if err := mc.ApplyDefaults(); err != nil {
+				t.Fatalf("apply defaults: %v", err)
+			}
+			checkMonitorConfig(t, mc)
 		})
 	}
 }

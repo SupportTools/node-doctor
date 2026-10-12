@@ -29,26 +29,27 @@ func init() {
 			IntervalString: "1m",
 			TimeoutString:  "30s",
 			Config: map[string]interface{}{
-				"paths": []interface{}{
+				"mountPoints": []interface{}{
 					map[string]interface{}{
 						"path":              "/",
-						"warningThreshold":  85,
-						"criticalThreshold": 95,
+						"warningThreshold":  85.0,
+						"criticalThreshold": 95.0,
 					},
 					map[string]interface{}{
 						"path":              "/var/lib/kubelet",
-						"warningThreshold":  85,
-						"criticalThreshold": 95,
+						"warningThreshold":  85.0,
+						"criticalThreshold": 95.0,
 					},
 					map[string]interface{}{
 						"path":              "/var/lib/containerd",
-						"warningThreshold":  80,
-						"criticalThreshold": 90,
+						"warningThreshold":  80.0,
+						"criticalThreshold": 90.0,
 					},
 				},
-				"inodeWarningThreshold":  85,
-				"inodeCriticalThreshold": 95,
-				"checkReadOnly":          true,
+				"checkDiskSpace": true,
+				"checkInodes":    true,
+				"checkReadonly":  true,
+				"checkIOHealth":  true,
 			},
 		},
 	})
@@ -762,7 +763,7 @@ func parseMountPointConfig(configMap map[string]interface{}) (*MountPointConfig,
 
 	// Parse warning threshold
 	if val, exists := configMap["warningThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := toFloat64(val); ok {
 			config.WarningThreshold = f
 		} else {
 			return nil, fmt.Errorf("warningThreshold must be a number, got %T", val)
@@ -771,7 +772,7 @@ func parseMountPointConfig(configMap map[string]interface{}) (*MountPointConfig,
 
 	// Parse critical threshold
 	if val, exists := configMap["criticalThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := toFloat64(val); ok {
 			config.CriticalThreshold = f
 		} else {
 			return nil, fmt.Errorf("criticalThreshold must be a number, got %T", val)
@@ -780,7 +781,7 @@ func parseMountPointConfig(configMap map[string]interface{}) (*MountPointConfig,
 
 	// Parse inode warning threshold
 	if val, exists := configMap["inodeWarningThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := toFloat64(val); ok {
 			config.InodeWarningThreshold = f
 		} else {
 			return nil, fmt.Errorf("inodeWarningThreshold must be a number, got %T", val)
@@ -789,7 +790,7 @@ func parseMountPointConfig(configMap map[string]interface{}) (*MountPointConfig,
 
 	// Parse inode critical threshold
 	if val, exists := configMap["inodeCriticalThreshold"]; exists {
-		if f, ok := val.(float64); ok {
+		if f, ok := toFloat64(val); ok {
 			config.InodeCriticalThreshold = f
 		} else {
 			return nil, fmt.Errorf("inodeCriticalThreshold must be a number, got %T", val)

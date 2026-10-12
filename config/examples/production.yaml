@@ -56,15 +56,8 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      loadAverageThresholds:
-        warning: 80
-        critical: 95
-      thermalThresholds:
-        warning: 85
-        critical: 95
-      cpuUsageThresholds:
-        warning: 85
-        critical: 95
+      warningLoadFactor: 0.8
+      criticalLoadFactor: 0.95
     # Remediation for high CPU (example - customize for your needs)
     remediation:
       enabled: false  # Disabled by default - enable with caution
@@ -80,13 +73,13 @@ monitors:
     interval: 30s
     timeout: 10s
     config:
-      memoryThresholds:
-        warning: 85
-        critical: 95
-      swapThresholds:
-        warning: 50
-        critical: 80
-      oomDetection: true
+      warningThreshold: 85
+      criticalThreshold: 95
+      swapWarningThreshold: 50
+      swapCriticalThreshold: 80
+      checkMemoryUsage: true
+      checkSwapUsage: true
+      checkOOMKills: true
       kmsgPath: /dev/kmsg
 
   # Disk Health - Disk space and I/O monitoring
@@ -96,7 +89,7 @@ monitors:
     interval: 1m          # Less frequent for disk checks
     timeout: 30s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95
@@ -109,11 +102,10 @@ monitors:
         - path: "/var/lib/containerd"
           warningThreshold: 80
           criticalThreshold: 90
-      inodeThresholds:
-        warning: 85
-        critical: 95
-      readOnlyDetection: true
-      ioHealthCheck: true
+      checkDiskSpace: true
+      checkInodes: true
+      checkReadonly: true
+      checkIOHealth: true
     # Remediation for disk pressure
     remediation:
       enabled: true
@@ -199,9 +191,7 @@ monitors:
     interval: 1m
     timeout: 10s
     config:
-      domains:
-        - kubernetes.default.svc.cluster.local
-        - kube-dns.kube-system.svc.cluster.local
+      externalDomains:
         - google.com  # External DNS check
       timeout: 3s
 
@@ -213,7 +203,7 @@ monitors:
     timeout: 10s
     config:
       # Auto-detects default gateway
-      count: 3
+      pingCount: 3
       warningLatency: 50  # 50ms
       criticalLatency: 100 # 100ms
 
