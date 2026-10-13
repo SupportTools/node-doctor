@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/supporttools/node-doctor/pkg/monitors"
 	"github.com/supporttools/node-doctor/pkg/types"
@@ -119,6 +120,19 @@ type DiskMonitorConfig struct {
 	// DiskStatsPath is the path to the disk statistics file.
 	// Default: "/proc/diskstats"
 	DiskStatsPath string `json:"diskStatsPath,omitempty"`
+
+	// WriteProbePaths are directories on host filesystems that get a create+write+fsync+
+	// unlink probe on every check. This catches a filesystem that has stopped taking writes
+	// while still mounted rw: since Linux 6.7, ext4 with errors=remount-ro marks itself shut
+	// down instead of setting SB_RDONLY, so the statfs ST_RDONLY check never sees it, and a
+	// device that dropped off the bus hangs or EIOs every write. Each path must be a
+	// WRITABLE mount of a host directory on the filesystem to test (the host root is mounted
+	// read-only into the pod). Default: none (disabled).
+	WriteProbePaths []string `json:"writeProbePaths,omitempty"`
+
+	// WriteProbeTimeout bounds one probe. A write that does not complete in time counts as a
+	// failure (a dead device usually hangs rather than erroring). Default: 10s.
+	WriteProbeTimeout time.Duration `json:"writeProbeTimeout,omitempty"`
 }
 
 // MountPointConfig contains configuration for a specific mount point.
@@ -159,6 +173,12 @@ type DiskMonitor struct {
 	// System interfaces (for testing)
 	statfsProvider StatfsProvider
 	fileReader     FileReader
+
+	// Write probe state: one in-flight probe per path at most, so a write that hangs
+	// forever on a dead device cannot pile up goroutines across checks.
+	probeMu       sync.Mutex
+	probeInFlight map[string]bool
+	writeProber   func(dir string) error
 }
 
 // DiskInfo represents disk information for a mount point.
@@ -222,6 +242,8 @@ func NewDiskMonitor(ctx context.Context, config types.MonitorConfig) (types.Moni
 		lastIOStats:    make(map[string]*IOStats),
 		statfsProvider: &defaultStatfsProvider{},
 		fileReader:     &defaultFileReader{},
+		probeInFlight:  make(map[string]bool),
+		writeProber:    defaultWriteProbe,
 	}
 
 	// Set the check function
@@ -287,6 +309,10 @@ func (d *DiskMonitor) checkDisk(ctx context.Context) (*types.Status, error) {
 			}
 		}
 	}
+
+	// Write probes: the only check that sees a filesystem which is still mounted rw but no
+	// longer completes writes.
+	d.runWriteProbes(ctx, status)
 
 	// Check I/O health if enabled
 	if d.config.CheckIOHealth {
@@ -734,6 +760,34 @@ func parseDiskConfig(configMap map[string]interface{}) (*DiskMonitorConfig, erro
 		}
 	}
 
+	// Parse write probe paths
+	if val, exists := configMap["writeProbePaths"]; exists {
+		paths, ok := val.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("writeProbePaths must be an array of strings, got %T", val)
+		}
+		for i, p := range paths {
+			ps, ok := p.(string)
+			if !ok || ps == "" {
+				return nil, fmt.Errorf("writeProbePaths[%d] must be a non-empty string, got %v", i, p)
+			}
+			config.WriteProbePaths = append(config.WriteProbePaths, ps)
+		}
+	}
+
+	// Parse write probe timeout
+	if val, exists := configMap["writeProbeTimeout"]; exists {
+		s, ok := val.(string)
+		if !ok {
+			return nil, fmt.Errorf("writeProbeTimeout must be a duration string, got %T", val)
+		}
+		dur, err := time.ParseDuration(s)
+		if err != nil || dur <= 0 {
+			return nil, fmt.Errorf("writeProbeTimeout must be a positive duration, got %q", s)
+		}
+		config.WriteProbeTimeout = dur
+	}
+
 	// Parse disk stats path
 	if val, exists := configMap["diskStatsPath"]; exists {
 		if s, ok := val.(string); ok {
@@ -851,6 +905,10 @@ func (c *DiskMonitorConfig) applyDefaults() error {
 		if mp.InodeCriticalThreshold == 0 {
 			mp.InodeCriticalThreshold = 95.0
 		}
+	}
+
+	if c.WriteProbeTimeout == 0 {
+		c.WriteProbeTimeout = 10 * time.Second
 	}
 
 	// Default to checking all if not explicitly configured

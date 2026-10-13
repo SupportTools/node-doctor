@@ -190,6 +190,12 @@ spec:
           readOnly: true
           mountPropagation: HostToContainer
 
+        {{- if and .Values.monitors.disk.enabled .Values.monitors.disk.writeProbe .Values.monitors.disk.writeProbe.enabled }}
+        # Read-write, for the disk monitor's write probe only
+        - name: host-write-probe
+          mountPath: {{ .Values.monitors.disk.writeProbe.mountPath }}
+        {{- end }}
+
         - name: host-var-log
           mountPath: /var/log
           readOnly: true
@@ -258,6 +264,13 @@ spec:
         hostPath:
           path: /
           type: Directory
+
+      {{- if and .Values.monitors.disk.enabled .Values.monitors.disk.writeProbe .Values.monitors.disk.writeProbe.enabled }}
+      - name: host-write-probe
+        hostPath:
+          path: {{ .Values.monitors.disk.writeProbe.hostPath }}
+          type: DirectoryOrCreate
+      {{- end }}
 
       - name: host-var-log
         hostPath:
