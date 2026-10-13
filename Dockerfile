@@ -52,8 +52,8 @@ COPY --from=builder /build/node-doctor /usr/local/bin/node-doctor
 
 # Expose ports
 # 8080: HTTP health/status endpoint
-# 9100: Prometheus metrics endpoint
-EXPOSE 8080 9100
+# 9101: Prometheus metrics endpoint (9100 is left to node-exporter)
+EXPOSE 8080 9101
 
 # Set working directory
 WORKDIR /

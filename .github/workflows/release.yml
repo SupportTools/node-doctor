@@ -182,6 +182,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The committed daemonset.yaml pin goes stale between releases; the attached asset must not.
+      - name: Pin release image in daemonset.yaml
+        env:
+          IMAGE_TAG: ${{ needs.docker.outputs.version }}
+        run: |
+          set -euo pipefail
+          sed -i -E "s|image: supporttools/node-doctor:[^[:space:]]+|image: supporttools/node-doctor:${IMAGE_TAG}|" deployment/daemonset.yaml
+          grep -F "image: supporttools/node-doctor:${IMAGE_TAG}" deployment/daemonset.yaml
+
       - name: Generate release notes
         id: release-notes
         run: |
@@ -194,7 +203,7 @@ jobs:
 
           **Docker (Recommended):**
           ```bash
-          docker pull supporttools/node-doctor:${{ github.ref_name }}
+          docker pull supporttools/node-doctor:${{ needs.docker.outputs.version }}
           ```
 
           **Helm Chart:**
@@ -208,13 +217,13 @@ jobs:
 
           **Kubernetes Manifests:**
           ```bash
-          kubectl apply -f https://raw.githubusercontent.com/supporttools/node-doctor/${{ github.ref_name }}/deployment/rbac.yaml
-          kubectl apply -f https://raw.githubusercontent.com/supporttools/node-doctor/${{ github.ref_name }}/deployment/daemonset.yaml
+          kubectl apply -f https://github.com/supporttools/node-doctor/releases/download/${{ github.ref_name }}/rbac.yaml
+          kubectl apply -f https://github.com/supporttools/node-doctor/releases/download/${{ github.ref_name }}/daemonset.yaml
           ```
 
           ### 📦 Available Artifacts
 
-          - **Docker Images:** `supporttools/node-doctor:${{ github.ref_name }}` (linux/amd64, linux/arm64)
+          - **Docker Images:** `supporttools/node-doctor:${{ needs.docker.outputs.version }}` (linux/amd64, linux/arm64)
           - **Helm Chart:** Available at https://charts.support.tools
 
           ### 📚 Documentation

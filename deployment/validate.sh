@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+NAMESPACE="${NAMESPACE:-node-doctor}"
+
 # Node Doctor DaemonSet Validation Script
 echo "🏥 Node Doctor DaemonSet Validation"
 echo "=================================="
@@ -65,18 +67,18 @@ print_status 0 "Connected to Kubernetes cluster"
 # Check if DaemonSet exists
 echo
 print_info "Checking DaemonSet deployment..."
-if kubectl get daemonset -n kube-system node-doctor &> /dev/null; then
-    print_status 0 "DaemonSet node-doctor exists in kube-system namespace"
+if kubectl get daemonset -n "$NAMESPACE" node-doctor &> /dev/null; then
+    print_status 0 "DaemonSet node-doctor exists in $NAMESPACE namespace"
 else
-    print_status 1 "DaemonSet node-doctor not found in kube-system namespace"
+    print_status 1 "DaemonSet node-doctor not found in $NAMESPACE namespace"
     echo "Run: kubectl apply -f deployment/daemonset.yaml"
     exit 1
 fi
 
 # Check DaemonSet status
-DESIRED=$(kubectl get daemonset -n kube-system node-doctor -o jsonpath='{.status.desiredNumberScheduled}')
-READY=$(kubectl get daemonset -n kube-system node-doctor -o jsonpath='{.status.numberReady}')
-AVAILABLE=$(kubectl get daemonset -n kube-system node-doctor -o jsonpath='{.status.numberAvailable}')
+DESIRED=$(kubectl get daemonset -n "$NAMESPACE" node-doctor -o jsonpath='{.status.desiredNumberScheduled}')
+READY=$(kubectl get daemonset -n "$NAMESPACE" node-doctor -o jsonpath='{.status.numberReady}')
+AVAILABLE=$(kubectl get daemonset -n "$NAMESPACE" node-doctor -o jsonpath='{.status.numberAvailable}')
 
 echo "DaemonSet Status:"
 echo "  Desired: $DESIRED"
@@ -92,8 +94,8 @@ fi
 # Check individual pods
 echo
 print_info "Checking pod status..."
-PODS=$(kubectl get pods -n kube-system -l app=node-doctor --no-headers | wc -l)
-RUNNING_PODS=$(kubectl get pods -n kube-system -l app=node-doctor --no-headers | grep Running | wc -l)
+PODS=$(kubectl get pods -n "$NAMESPACE" -l app=node-doctor --no-headers | wc -l)
+RUNNING_PODS=$(kubectl get pods -n "$NAMESPACE" -l app=node-doctor --no-headers | grep Running | wc -l)
 
 echo "Pod Status:"
 echo "  Total pods: $PODS"
@@ -104,13 +106,13 @@ if [ "$PODS" = "$RUNNING_PODS" ] && [ "$PODS" -gt 0 ]; then
 else
     print_warning "Some Node Doctor pods are not running"
     echo "Pod details:"
-    kubectl get pods -n kube-system -l app=node-doctor
+    kubectl get pods -n "$NAMESPACE" -l app=node-doctor
 fi
 
 # Check ServiceAccount
 echo
 print_info "Checking RBAC configuration..."
-if kubectl get serviceaccount -n kube-system node-doctor &> /dev/null; then
+if kubectl get serviceaccount -n "$NAMESPACE" node-doctor &> /dev/null; then
     print_status 0 "ServiceAccount node-doctor exists"
 else
     print_status 1 "ServiceAccount node-doctor not found"
@@ -129,14 +131,14 @@ else
 fi
 
 # Check ConfigMap
-if kubectl get configmap -n kube-system node-doctor-config &> /dev/null; then
+if kubectl get configmap -n "$NAMESPACE" node-doctor-config &> /dev/null; then
     print_status 0 "ConfigMap node-doctor-config exists"
 else
     print_status 1 "ConfigMap node-doctor-config not found"
 fi
 
 # Check Service
-if kubectl get service -n kube-system node-doctor-metrics &> /dev/null; then
+if kubectl get service -n "$NAMESPACE" node-doctor-metrics &> /dev/null; then
     print_status 0 "Service node-doctor-metrics exists"
 else
     print_status 1 "Service node-doctor-metrics not found"
@@ -145,26 +147,26 @@ fi
 # Test health endpoint
 echo
 print_info "Testing health endpoints..."
-POD_NAME=$(kubectl get pods -n kube-system -l app=node-doctor -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+POD_NAME=$(kubectl get pods -n "$NAMESPACE" -l app=node-doctor -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [ -n "$POD_NAME" ]; then
     print_info "Testing pod: $POD_NAME"
 
     # Test health endpoint
-    if kubectl exec -n kube-system $POD_NAME -- curl -s -f localhost:8080/healthz > /dev/null 2>&1; then
+    if kubectl get --raw "/api/v1/namespaces/$NAMESPACE/pods/$POD_NAME:8080/proxy/healthz" > /dev/null 2>&1; then
         print_status 0 "Health endpoint (/healthz) is responding"
     else
         print_status 1 "Health endpoint (/healthz) is not responding"
     fi
 
     # Test readiness endpoint
-    if kubectl exec -n kube-system $POD_NAME -- curl -s -f localhost:8080/ready > /dev/null 2>&1; then
+    if kubectl get --raw "/api/v1/namespaces/$NAMESPACE/pods/$POD_NAME:8080/proxy/ready" > /dev/null 2>&1; then
         print_status 0 "Readiness endpoint (/ready) is responding"
     else
         print_status 1 "Readiness endpoint (/ready) is not responding"
     fi
 
     # Test metrics endpoint
-    if kubectl exec -n kube-system $POD_NAME -- curl -s localhost:9100/metrics | grep -q "node_doctor" 2>/dev/null; then
+    if kubectl get --raw "/api/v1/namespaces/$NAMESPACE/pods/$POD_NAME:9101/proxy/metrics" | grep -q "node_doctor" 2>/dev/null; then
         print_status 0 "Metrics endpoint (/metrics) is responding with Node Doctor metrics"
     else
         print_status 1 "Metrics endpoint (/metrics) is not responding or no Node Doctor metrics found"
@@ -199,7 +201,7 @@ fi
 # Check for recent events
 echo
 print_info "Checking recent events..."
-RECENT_EVENTS=$(kubectl get events -n kube-system --field-selector involvedObject.name=node-doctor --sort-by='.lastTimestamp' 2>/dev/null | tail -5)
+RECENT_EVENTS=$(kubectl get events -n "$NAMESPACE" --field-selector involvedObject.name=node-doctor --sort-by='.lastTimestamp' 2>/dev/null | tail -5)
 if [ -n "$RECENT_EVENTS" ]; then
     echo "Recent Node Doctor events:"
     echo "$RECENT_EVENTS"
@@ -211,7 +213,7 @@ fi
 echo
 print_info "Checking resource usage..."
 echo "Node Doctor pod resource usage:"
-kubectl top pods -n kube-system -l app=node-doctor 2>/dev/null || print_warning "Metrics server not available for resource usage"
+kubectl top pods -n "$NAMESPACE" -l app=node-doctor 2>/dev/null || print_warning "Metrics server not available for resource usage"
 
 # Final summary
 echo
@@ -224,8 +226,8 @@ else
     print_status 1 "Node Doctor deployment has issues"
     echo
     echo "💡 Troubleshooting tips:"
-    echo "1. Check pod logs: kubectl logs -n kube-system -l app=node-doctor"
-    echo "2. Describe pods: kubectl describe pods -n kube-system -l app=node-doctor"
+    echo "1. Check pod logs: kubectl logs -n "$NAMESPACE" -l app=node-doctor"
+    echo "2. Describe pods: kubectl describe pods -n "$NAMESPACE" -l app=node-doctor"
     echo "3. Check node taints: kubectl describe nodes | grep Taints"
     echo "4. Verify privileged containers are allowed in your cluster"
     exit 1
@@ -233,9 +235,9 @@ fi
 
 echo
 print_info "For more detailed monitoring:"
-echo "  - Logs: kubectl logs -n kube-system -l app=node-doctor -f"
-echo "  - Metrics: kubectl exec -n kube-system $POD_NAME -- curl -s localhost:9100/metrics"
-echo "  - Status: kubectl exec -n kube-system $POD_NAME -- curl -s localhost:8080/status"
+echo "  - Logs: kubectl logs -n "$NAMESPACE" -l app=node-doctor -f"
+echo "  - Metrics: kubectl get --raw \"/api/v1/namespaces/$NAMESPACE/pods/$POD_NAME:9101/proxy/metrics\""
+echo "  - Status: kubectl get --raw \"/api/v1/namespaces/$NAMESPACE/pods/$POD_NAME:8080/proxy/status\""
 
 echo
 echo -e "${GREEN}🎉 Node Doctor validation completed successfully!${NC}"

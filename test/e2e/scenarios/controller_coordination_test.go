@@ -3,8 +3,10 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-//go:build e2e
-// +build e2e
+//go:build e2e && e2e_controller
+// +build e2e,e2e_controller
+
+// Needs a node-doctor-controller:e2e-test image and SetupOptions.Workers; neither exists yet.
 
 package scenarios
 
