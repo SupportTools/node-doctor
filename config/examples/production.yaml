@@ -36,7 +36,6 @@ settings:
   heartbeatInterval: 5m # Heartbeat every 5 minutes
 
   # Enable remediation in production
-  enableRemediation: true
   dryRunMode: false     # Actually execute remediation (not dry-run)
 
   # Kubernetes client rate limiting
@@ -70,8 +69,6 @@ monitors:
       enabled: false  # Disabled by default - enable with caution
       strategy: custom-script
       scriptPath: /usr/local/bin/remediate-high-cpu.sh
-      cooldown: 10m
-      maxAttempts: 2
 
   # Memory Health - Memory and swap usage monitoring
   - name: memory-health
@@ -119,8 +116,6 @@ monitors:
       enabled: true
       strategy: custom-script
       scriptPath: /usr/local/bin/cleanup-disk.sh
-      cooldown: 30m     # Don't run cleanup too often
-      maxAttempts: 2
 
   # ==========================================
   # KUBERNETES COMPONENT MONITORS
@@ -141,10 +136,6 @@ monitors:
       enabled: true
       strategy: systemd-restart
       service: kubelet
-      gracefulStop: true
-      waitTimeout: 30s
-      cooldown: 10m     # Critical: Don't restart kubelet too often!
-      maxAttempts: 2
 
   # API Server Health
   - name: apiserver-health
@@ -172,10 +163,6 @@ monitors:
       enabled: true
       strategy: systemd-restart
       service: containerd  # Or docker, crio depending on your runtime
-      gracefulStop: true
-      waitTimeout: 1m
-      cooldown: 15m       # Be conservative with runtime restarts
-      maxAttempts: 1      # Only try once per cooldown period
 
   # Pod Capacity Monitoring
   - name: capacity-health
@@ -334,10 +321,6 @@ remediation:
   # Safety limits - conservative settings
   maxRemediationsPerHour: 5    # Max 5 remediations per hour globally
   maxRemediationsPerMinute: 1  # Max 1 remediation per minute
-  cooldownPeriod: 10m          # 10 minute global cooldown
-
-  # Global maximum attempts
-  maxAttemptsGlobal: 2
 
   # Circuit breaker - stops remediation if too many failures
   circuitBreaker:
@@ -349,30 +332,9 @@ remediation:
   # History for audit trail
   historySize: 200
 
-  # Problem-specific overrides
-  overrides:
-    # Be more conservative with kubelet restarts
-    - problem: "kubelet-unhealthy"
-      cooldown: 15m
-      maxAttempts: 1
-      circuitBreakerThreshold: 3
-
-    # Disk cleanup can be more frequent
-    - problem: "disk-space-critical"
-      cooldown: 20m
-      maxAttempts: 3
-
-    # Container runtime restarts should be very conservative
-    - problem: "container-runtime-unhealthy"
-      cooldown: 30m
-      maxAttempts: 1
-      circuitBreakerThreshold: 2
-
 # Features - production settings
 features:
-  enableMetrics: true
   enableProfiling: false  # Disable profiling in production for security
-  enableTracing: false    # Enable if you have tracing infrastructure
 
 # Hot reload configuration
 reload:

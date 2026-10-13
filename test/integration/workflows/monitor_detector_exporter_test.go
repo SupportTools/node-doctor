@@ -42,10 +42,8 @@ func TestMonitorToDetectorToExporterFlow(t *testing.T) {
 			Burst:             10,
 		},
 		Remediation: types.RemediationConfig{
-			Enabled:           false,
-			CooldownPeriod:    5 * time.Minute,
-			MaxAttemptsGlobal: 3,
-			HistorySize:       100,
+			Enabled:     false,
+			HistorySize: 100,
 		},
 	}
 
@@ -203,10 +201,8 @@ func TestMultipleMonitorsWorkflow(t *testing.T) {
 			Burst:             10,
 		},
 		Remediation: types.RemediationConfig{
-			Enabled:           false,
-			CooldownPeriod:    5 * time.Minute,
-			MaxAttemptsGlobal: 3,
-			HistorySize:       100,
+			Enabled:     false,
+			HistorySize: 100,
 		},
 	}
 
@@ -321,10 +317,8 @@ func TestStatusExportFlow(t *testing.T) {
 			Burst:             10,
 		},
 		Remediation: types.RemediationConfig{
-			Enabled:           false,
-			CooldownPeriod:    5 * time.Minute,
-			MaxAttemptsGlobal: 3,
-			HistorySize:       100,
+			Enabled:     false,
+			HistorySize: 100,
 		},
 	}
 

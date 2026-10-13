@@ -34,7 +34,6 @@ settings:
   heartbeatInterval: 30s # Heartbeat every 30 seconds
 
   # Remediation settings for testing
-  enableRemediation: false  # Disable remediation during testing
   dryRunMode: true          # Extra safety: dry-run if accidentally enabled
 
   # Kubernetes client configuration
@@ -259,10 +258,8 @@ remediation:
 
 # Features - enable all for comprehensive testing
 features:
-  enableMetrics: true
   enableProfiling: true
   profilingPort: 6060
-  enableTracing: false
 
 # Hot reload configuration
 reload:

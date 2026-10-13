@@ -204,7 +204,8 @@ func remediationEqual(a, b *types.RemediationConfig) bool {
 
 // circuitBreakerEqual checks if circuit breaker configurations are equal.
 func circuitBreakerEqual(a, b *types.CircuitBreakerConfig) bool {
-	return a.Threshold == b.Threshold &&
+	return a.IsDisabled() == b.IsDisabled() &&
+		a.Threshold == b.Threshold &&
 		a.Timeout == b.Timeout &&
 		a.SuccessThreshold == b.SuccessThreshold
 }

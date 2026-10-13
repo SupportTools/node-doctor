@@ -29,7 +29,6 @@ settings:
   heartbeatInterval: 1m # Heartbeat every minute
 
   # Development remediation settings
-  enableRemediation: true
   dryRunMode: true      # NEVER actually execute remediation in dev
 
   # Kubernetes client configuration
@@ -235,10 +234,8 @@ remediation:
   # Relaxed limits for testing
   maxRemediationsPerHour: 20
   maxRemediationsPerMinute: 5
-  cooldownPeriod: 1m    # Short cooldown for testing
 
   # Global settings
-  maxAttemptsGlobal: 2
   historySize: 50
 
   # Circuit breaker disabled for development
@@ -247,10 +244,8 @@ remediation:
 
 # Features - enable all for development
 features:
-  enableMetrics: true
   enableProfiling: true   # Enable profiling on port 6060
   profilingPort: 6060
-  enableTracing: false    # Tracing can be added later
 
 # Hot reload configuration
 reload:

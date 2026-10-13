@@ -445,7 +445,6 @@ data:
       updateInterval: 30s
       resyncInterval: 5m
       heartbeatInterval: 1m
-      enableRemediation: true
       dryRunMode: false
       qps: 50
       burst: 100
@@ -539,7 +538,6 @@ data:
 
       http:
         enabled: false
-        bindAddress: "0.0.0.0"
         hostPort: 8080
         tlsEnabled: false
         endpoints:
@@ -567,13 +565,9 @@ data:
       dryRun: false
       maxRemediationsPerHour: 5
       maxRemediationsPerMinute: 1
-      cooldownPeriod: 10m
-      maxAttemptsGlobal: 2
 
     features:
-      enableMetrics: true
       enableProfiling: false
-      enableTracing: false
 
 ---
 # Service for Node Doctor metrics

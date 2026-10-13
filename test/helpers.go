@@ -496,8 +496,6 @@ settings:
   burst: 10
 remediation:
   enabled: false
-  cooldownPeriod: 5m
-  maxAttemptsGlobal: 3
   historySize: 100
 `, name)
 	dir := TempDir(t)

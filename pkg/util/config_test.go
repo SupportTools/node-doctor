@@ -651,8 +651,6 @@ monitors:
       enabled: true
       strategy: "custom-script"
       scriptPath: "` + scriptPath + `"
-      maxAttempts: 3
-      cooldown: "300s"
 
 exporters:
   prometheus:

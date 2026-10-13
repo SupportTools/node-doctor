@@ -136,11 +136,7 @@ func TestMonitorConfigApplyDefaults(t *testing.T) {
 				TimeoutString:  DefaultMonitorTimeout,
 				Interval:       30 * time.Second,
 				Timeout:        10 * time.Second,
-				Remediation: &MonitorRemediationConfig{
-					CooldownString: DefaultCooldownPeriod,
-					Cooldown:       5 * time.Minute,
-					MaxAttempts:    DefaultMaxAttemptsGlobal,
-				},
+				Remediation:    &MonitorRemediationConfig{},
 			},
 			wantErr: false,
 		},
@@ -174,11 +170,6 @@ func TestMonitorConfigApplyDefaults(t *testing.T) {
 				if tt.input.Timeout != tt.expected.Timeout {
 					t.Errorf("Timeout = %v, want %v", tt.input.Timeout, tt.expected.Timeout)
 				}
-				if tt.input.Remediation != nil && tt.expected.Remediation != nil {
-					if tt.input.Remediation.Cooldown != tt.expected.Remediation.Cooldown {
-						t.Errorf("Remediation.Cooldown = %v, want %v", tt.input.Remediation.Cooldown, tt.expected.Remediation.Cooldown)
-					}
-				}
 			}
 		})
 	}
@@ -198,9 +189,6 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 			expected: RemediationConfig{
 				MaxRemediationsPerHour:   DefaultMaxRemediationsPerHour,
 				MaxRemediationsPerMinute: DefaultMaxRemediationsPerMinute,
-				CooldownPeriodString:     DefaultCooldownPeriod,
-				CooldownPeriod:           5 * time.Minute,
-				MaxAttemptsGlobal:        DefaultMaxAttemptsGlobal,
 				HistorySize:              DefaultHistorySize,
 			},
 			wantErr: false,
@@ -209,18 +197,15 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 			name: "circuit breaker enabled gets defaults",
 			input: RemediationConfig{
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled: true,
+					Enabled: boolPtr(true),
 				},
 			},
 			expected: RemediationConfig{
 				MaxRemediationsPerHour:   DefaultMaxRemediationsPerHour,
 				MaxRemediationsPerMinute: DefaultMaxRemediationsPerMinute,
-				CooldownPeriodString:     DefaultCooldownPeriod,
-				CooldownPeriod:           5 * time.Minute,
-				MaxAttemptsGlobal:        DefaultMaxAttemptsGlobal,
 				HistorySize:              DefaultHistorySize,
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled:          true,
+					Enabled:          boolPtr(true),
 					Threshold:        DefaultCircuitBreakerThreshold,
 					TimeoutString:    DefaultCircuitBreakerTimeout,
 					Timeout:          30 * time.Minute,
@@ -230,17 +215,45 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid cooldown duration",
+			name: "circuit breaker parameters without enabled get defaults",
 			input: RemediationConfig{
-				CooldownPeriodString: "invalid",
+				CircuitBreaker: CircuitBreakerConfig{
+					Threshold: 7,
+				},
 			},
-			wantErr: true,
+			expected: RemediationConfig{
+				MaxRemediationsPerHour:   DefaultMaxRemediationsPerHour,
+				MaxRemediationsPerMinute: DefaultMaxRemediationsPerMinute,
+				HistorySize:              DefaultHistorySize,
+				CircuitBreaker: CircuitBreakerConfig{
+					Threshold:        7,
+					TimeoutString:    DefaultCircuitBreakerTimeout,
+					Timeout:          30 * time.Minute,
+					SuccessThreshold: 2,
+				},
+			},
+		},
+		{
+			name: "disabled circuit breaker gets no defaults",
+			input: RemediationConfig{
+				CircuitBreaker: CircuitBreakerConfig{
+					Enabled: boolPtr(false),
+				},
+			},
+			expected: RemediationConfig{
+				MaxRemediationsPerHour:   DefaultMaxRemediationsPerHour,
+				MaxRemediationsPerMinute: DefaultMaxRemediationsPerMinute,
+				HistorySize:              DefaultHistorySize,
+				CircuitBreaker: CircuitBreakerConfig{
+					Enabled: boolPtr(false),
+				},
+			},
 		},
 		{
 			name: "invalid circuit breaker timeout",
 			input: RemediationConfig{
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled:       true,
+					Enabled:       boolPtr(true),
 					TimeoutString: "invalid",
 				},
 			},
@@ -259,8 +272,8 @@ func TestRemediationConfigApplyDefaults(t *testing.T) {
 				if tt.input.MaxRemediationsPerHour != tt.expected.MaxRemediationsPerHour {
 					t.Errorf("MaxRemediationsPerHour = %v, want %v", tt.input.MaxRemediationsPerHour, tt.expected.MaxRemediationsPerHour)
 				}
-				if tt.input.CooldownPeriod != tt.expected.CooldownPeriod {
-					t.Errorf("CooldownPeriod = %v, want %v", tt.input.CooldownPeriod, tt.expected.CooldownPeriod)
+				if !reflect.DeepEqual(tt.input.CircuitBreaker, tt.expected.CircuitBreaker) {
+					t.Errorf("CircuitBreaker = %+v, want %+v", tt.input.CircuitBreaker, tt.expected.CircuitBreaker)
 				}
 			}
 		})
@@ -526,20 +539,16 @@ func TestMonitorRemediationConfigValidation(t *testing.T) {
 		{
 			name: "valid systemd-restart remediation",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "systemd-restart",
+				Service:  "kubelet",
 			},
 			wantErr: false,
 		},
 		{
 			name: "missing strategy when enabled",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled: true,
 			},
 			wantErr: true,
 			errMsg:  "strategy is required when remediation is enabled",
@@ -547,10 +556,8 @@ func TestMonitorRemediationConfigValidation(t *testing.T) {
 		{
 			name: "invalid strategy",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "invalid-strategy",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "invalid-strategy",
 			},
 			wantErr: true,
 			errMsg:  "invalid strategy",
@@ -558,10 +565,8 @@ func TestMonitorRemediationConfigValidation(t *testing.T) {
 		{
 			name: "systemd-restart without service",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "systemd-restart",
 			},
 			wantErr: true,
 			errMsg:  "service is required for systemd-restart strategy",
@@ -569,86 +574,50 @@ func TestMonitorRemediationConfigValidation(t *testing.T) {
 		{
 			name: "custom-script without script path",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "custom-script",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "custom-script",
 			},
 			wantErr: true,
 			errMsg:  "scriptPath is required for custom-script strategy",
 		},
 		{
-			name: "negative cooldown",
-			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    -1 * time.Minute,
-				MaxAttempts: 3,
-			},
-			wantErr: true,
-			errMsg:  "cooldown must be positive",
-		},
-		{
-			name: "zero max attempts",
-			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 0,
-			},
-			wantErr: true,
-			errMsg:  "maxAttempts must be positive",
-		},
-		{
 			name: "valid flush-dns network strategy",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "flush-dns",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "flush-dns",
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid reset-routing network strategy",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "reset-routing",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "reset-routing",
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid flush-ipv6-route network strategy",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "flush-ipv6-route",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "flush-ipv6-route",
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid restart-interface network strategy with interface",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "restart-interface",
-				Interface:   "eth0",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:   true,
+				Strategy:  "restart-interface",
+				Interface: "eth0",
 			},
 			wantErr: false,
 		},
 		{
 			name: "restart-interface without interface",
 			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "restart-interface",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
+				Enabled:  true,
+				Strategy: "restart-interface",
 			},
 			wantErr: true,
 			errMsg:  "interface is required for restart-interface strategy",
@@ -980,8 +949,6 @@ func TestNodeDoctorConfigValidation(t *testing.T) {
 		Remediation: RemediationConfig{
 			MaxRemediationsPerHour:   10,
 			MaxRemediationsPerMinute: 2,
-			CooldownPeriod:           5 * time.Minute,
-			MaxAttemptsGlobal:        3,
 			HistorySize:              100,
 		},
 	}
@@ -1191,44 +1158,6 @@ func TestEnvironmentVariableSubstitution(t *testing.T) {
 	}
 }
 
-// TestFeatureFlagsApplyDefaults tests feature flags defaults
-func TestFeatureFlagsApplyDefaults(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    FeatureFlags
-		expected FeatureFlags
-	}{
-		{
-			name:  "empty feature flags get defaults",
-			input: FeatureFlags{},
-			expected: FeatureFlags{
-				EnableMetrics: true,
-			},
-		},
-		{
-			name: "existing values are preserved",
-			input: FeatureFlags{
-				EnableProfiling: true,
-				ProfilingPort:   6060,
-			},
-			expected: FeatureFlags{
-				EnableMetrics:   true,
-				EnableProfiling: true,
-				ProfilingPort:   6060,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.input.ApplyDefaults()
-			if !reflect.DeepEqual(tt.input, tt.expected) {
-				t.Errorf("ApplyDefaults() = %+v, want %+v", tt.input, tt.expected)
-			}
-		})
-	}
-}
-
 // TestExporterConfigApplyDefaults tests exporter config defaults
 func TestExporterConfigApplyDefaults(t *testing.T) {
 	t.Run("HTTPExporterConfig", func(t *testing.T) {
@@ -1426,8 +1355,6 @@ func TestRemediationConfigValidation(t *testing.T) {
 			input: RemediationConfig{
 				MaxRemediationsPerHour:   10,
 				MaxRemediationsPerMinute: 2,
-				CooldownPeriod:           5 * time.Minute,
-				MaxAttemptsGlobal:        3,
 				HistorySize:              100,
 			},
 			wantErr: false,
@@ -1436,69 +1363,25 @@ func TestRemediationConfigValidation(t *testing.T) {
 			name: "negative max remediations per hour",
 			input: RemediationConfig{
 				MaxRemediationsPerHour: -1,
-				CooldownPeriod:         5 * time.Minute,
-				MaxAttemptsGlobal:      3,
 				HistorySize:            100,
 			},
 			wantErr: true,
 			errMsg:  "maxRemediationsPerHour must be non-negative",
 		},
 		{
-			name: "zero cooldown period",
-			input: RemediationConfig{
-				MaxRemediationsPerHour:   10,
-				MaxRemediationsPerMinute: 2,
-				CooldownPeriod:           0,
-				MaxAttemptsGlobal:        3,
-				HistorySize:              100,
-			},
-			wantErr: true,
-			errMsg:  "cooldownPeriod must be positive",
-		},
-		{
-			name: "zero max attempts global",
-			input: RemediationConfig{
-				MaxRemediationsPerHour:   10,
-				MaxRemediationsPerMinute: 2,
-				CooldownPeriod:           5 * time.Minute,
-				MaxAttemptsGlobal:        0,
-				HistorySize:              100,
-			},
-			wantErr: true,
-			errMsg:  "maxAttemptsGlobal must be positive",
-		},
-		{
 			name: "circuit breaker with invalid threshold",
 			input: RemediationConfig{
 				MaxRemediationsPerHour:   10,
 				MaxRemediationsPerMinute: 2,
-				CooldownPeriod:           5 * time.Minute,
-				MaxAttemptsGlobal:        3,
 				HistorySize:              100,
 				CircuitBreaker: CircuitBreakerConfig{
-					Enabled:   true,
+					Enabled:   boolPtr(true),
 					Threshold: 0,
 					Timeout:   30 * time.Minute,
 				},
 			},
 			wantErr: true,
 			errMsg:  "circuitBreaker.threshold must be positive",
-		},
-		{
-			name: "duplicate override problem",
-			input: RemediationConfig{
-				MaxRemediationsPerHour:   10,
-				MaxRemediationsPerMinute: 2,
-				CooldownPeriod:           5 * time.Minute,
-				MaxAttemptsGlobal:        3,
-				HistorySize:              100,
-				Overrides: []RemediationOverride{
-					{Problem: "test-problem"},
-					{Problem: "test-problem"},
-				},
-			},
-			wantErr: true,
-			errMsg:  "duplicate override for problem",
 		},
 	}
 
@@ -1557,37 +1440,6 @@ func TestNodeDoctorConfigApplyDefaults(t *testing.T) {
 	if config.Remediation.MaxRemediationsPerHour != DefaultMaxRemediationsPerHour {
 		t.Errorf("Remediation.MaxRemediationsPerHour = %v, want %v", config.Remediation.MaxRemediationsPerHour, DefaultMaxRemediationsPerHour)
 	}
-
-	// Check that feature flags were applied
-	if !config.Features.EnableMetrics {
-		t.Error("Features.EnableMetrics should be true by default")
-	}
-}
-
-// TestMonitorRemediationConfigApplyDefaults tests monitor remediation defaults
-func TestMonitorRemediationConfigApplyDefaults(t *testing.T) {
-	config := &MonitorRemediationConfig{
-		Strategies: []MonitorRemediationConfig{
-			{}, // nested strategy should also get defaults
-		},
-	}
-
-	err := config.ApplyDefaults()
-	if err != nil {
-		t.Errorf("ApplyDefaults() error = %v", err)
-	}
-
-	if config.Cooldown != 5*time.Minute {
-		t.Errorf("Cooldown = %v, want 5m", config.Cooldown)
-	}
-	if config.MaxAttempts != DefaultMaxAttemptsGlobal {
-		t.Errorf("MaxAttempts = %v, want %v", config.MaxAttempts, DefaultMaxAttemptsGlobal)
-	}
-
-	// Check nested strategy got defaults too
-	if config.Strategies[0].Cooldown != 5*time.Minute {
-		t.Errorf("Strategies[0].Cooldown = %v, want 5m", config.Strategies[0].Cooldown)
-	}
 }
 
 // TestEnvironmentSubstitutionMissingVars tests handling of missing env vars
@@ -1604,40 +1456,6 @@ func TestEnvironmentSubstitutionMissingVars(t *testing.T) {
 	// This is the actual behavior of os.ExpandEnv
 	if config.Settings.NodeName != "" {
 		t.Errorf("Settings.NodeName = %q, want empty string", config.Settings.NodeName)
-	}
-}
-
-// TestRemediationOverrideValidation tests override validation
-func TestRemediationOverrideValidation(t *testing.T) {
-	config := &RemediationConfig{
-		MaxRemediationsPerHour:   10,
-		MaxRemediationsPerMinute: 2,
-		CooldownPeriod:           5 * time.Minute,
-		MaxAttemptsGlobal:        3,
-		HistorySize:              100,
-		Overrides: []RemediationOverride{
-			{
-				Problem:        "test-problem",
-				CooldownString: "10m",
-				Cooldown:       10 * time.Minute,
-				MaxAttempts:    5,
-			},
-		},
-	}
-
-	err := config.Validate()
-	if err != nil {
-		t.Errorf("Validate() error = %v", err)
-	}
-
-	// Test missing problem name
-	config.Overrides[0].Problem = ""
-	err = config.Validate()
-	if err == nil {
-		t.Error("Validate() should fail with missing problem name")
-	}
-	if !strings.Contains(err.Error(), "problem is required") {
-		t.Errorf("Validate() error = %v, want error containing 'problem is required'", err)
 	}
 }
 
@@ -1696,23 +1514,6 @@ func TestEdgeCasesInValidation(t *testing.T) {
 		err := config.Validate()
 		if err == nil {
 			t.Error("Validate() should fail with negative EventTTL")
-		}
-	})
-
-	t.Run("MonitorRemediationConfig with WaitTimeout", func(t *testing.T) {
-		config := &MonitorRemediationConfig{
-			Enabled:           true,
-			Strategy:          "systemd-restart",
-			Service:           "kubelet",
-			Cooldown:          5 * time.Minute,
-			MaxAttempts:       3,
-			WaitTimeoutString: "30s",
-			WaitTimeout:       -30 * time.Second, // negative timeout
-		}
-
-		err := config.Validate()
-		if err == nil {
-			t.Error("Validate() should fail with negative WaitTimeout")
 		}
 	})
 }
@@ -1797,17 +1598,13 @@ func TestComplexConfigurationValidation(t *testing.T) {
 				Interval: 30 * time.Second,
 				Timeout:  10 * time.Second,
 				Remediation: &MonitorRemediationConfig{
-					Enabled:     true,
-					Strategy:    "systemd-restart",
-					Service:     "kubelet",
-					Cooldown:    5 * time.Minute,
-					MaxAttempts: 3,
+					Enabled:  true,
+					Strategy: "systemd-restart",
+					Service:  "kubelet",
 					Strategies: []MonitorRemediationConfig{
 						{
-							Strategy:       "custom-script",
-							ScriptPath:     "/bin/true", // exists on most systems
-							CooldownString: "10m",
-							MaxAttempts:    1,
+							Strategy:   "custom-script",
+							ScriptPath: "/bin/true",
 						},
 					},
 				},
@@ -1859,22 +1656,12 @@ func TestComplexConfigurationValidation(t *testing.T) {
 			Enabled:                  true,
 			MaxRemediationsPerHour:   20,
 			MaxRemediationsPerMinute: 5,
-			CooldownPeriod:           3 * time.Minute,
-			MaxAttemptsGlobal:        5,
 			HistorySize:              200,
 			CircuitBreaker: CircuitBreakerConfig{
-				Enabled:          true,
+				Enabled:          boolPtr(true),
 				Threshold:        10,
-				Timeout:          45 * time.Minute,
+				TimeoutString:    "45m",
 				SuccessThreshold: 3,
-			},
-			Overrides: []RemediationOverride{
-				{
-					Problem:                 "kubelet-unhealthy",
-					Cooldown:                2 * time.Minute,
-					MaxAttempts:             10,
-					CircuitBreakerThreshold: 15,
-				},
 			},
 		},
 	}
@@ -1889,15 +1676,6 @@ func TestComplexConfigurationValidation(t *testing.T) {
 	err = config.Validate()
 	if err != nil {
 		t.Errorf("Validate() error = %v", err)
-	}
-
-	// Verify nested remediation got defaults
-	nestedRemediation := config.Monitors[0].Remediation.Strategies[0]
-	if nestedRemediation.Cooldown != 10*time.Minute {
-		t.Errorf("Nested remediation cooldown = %v, want 10m", nestedRemediation.Cooldown)
-	}
-	if nestedRemediation.MaxAttempts != 1 {
-		t.Errorf("Nested remediation max attempts = %v, want 1", nestedRemediation.MaxAttempts)
 	}
 }
 
@@ -2292,78 +2070,6 @@ func TestGlobalSettingsValidation_HeartbeatMinimum(t *testing.T) {
 	}
 }
 
-// TestMonitorRemediationConfigValidation_CooldownMinimum tests cooldown minimum
-func TestMonitorRemediationConfigValidation_CooldownMinimum(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   MonitorRemediationConfig
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name: "cooldown meets minimum (10s)",
-			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    10 * time.Second,
-				MaxAttempts: 3,
-			},
-			wantErr: false,
-		},
-		{
-			name: "cooldown exceeds minimum",
-			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    5 * time.Minute,
-				MaxAttempts: 3,
-			},
-			wantErr: false,
-		},
-		{
-			name: "cooldown below minimum (5s)",
-			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    5 * time.Second,
-				MaxAttempts: 3,
-			},
-			wantErr: true,
-			errMsg:  "below minimum threshold",
-		},
-		{
-			name: "cooldown below minimum (1s)",
-			input: MonitorRemediationConfig{
-				Enabled:     true,
-				Strategy:    "systemd-restart",
-				Service:     "kubelet",
-				Cooldown:    1 * time.Second,
-				MaxAttempts: 3,
-			},
-			wantErr: true,
-			errMsg:  "below minimum threshold",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.input.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if tt.wantErr && tt.errMsg != "" {
-				if !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
-				}
-			}
-		})
-	}
-}
-
 // mockMonitorRegistry is a mock implementation of MonitorRegistryValidator for testing
 type mockMonitorRegistry struct {
 	registeredTypes map[string]bool
@@ -2425,8 +2131,6 @@ func TestValidateWithRegistry(t *testing.T) {
 					},
 				},
 				Remediation: RemediationConfig{
-					CooldownPeriod:           5 * time.Minute,
-					MaxAttemptsGlobal:        3,
 					MaxRemediationsPerHour:   10,
 					MaxRemediationsPerMinute: 2,
 					HistorySize:              100,
@@ -2461,8 +2165,6 @@ func TestValidateWithRegistry(t *testing.T) {
 					},
 				},
 				Remediation: RemediationConfig{
-					CooldownPeriod:           5 * time.Minute,
-					MaxAttemptsGlobal:        3,
 					MaxRemediationsPerHour:   10,
 					MaxRemediationsPerMinute: 2,
 					HistorySize:              100,
@@ -2506,8 +2208,6 @@ func TestValidateWithRegistry(t *testing.T) {
 					},
 				},
 				Remediation: RemediationConfig{
-					CooldownPeriod:           5 * time.Minute,
-					MaxAttemptsGlobal:        3,
 					MaxRemediationsPerHour:   10,
 					MaxRemediationsPerMinute: 2,
 					HistorySize:              100,
@@ -2543,8 +2243,6 @@ func TestValidateWithRegistry(t *testing.T) {
 					},
 				},
 				Remediation: RemediationConfig{
-					CooldownPeriod:           5 * time.Minute,
-					MaxAttemptsGlobal:        3,
 					MaxRemediationsPerHour:   10,
 					MaxRemediationsPerMinute: 2,
 					HistorySize:              100,
@@ -3137,8 +2835,6 @@ func TestValidateWithRegistry_DependsOnCrossValidation(t *testing.T) {
 				},
 			},
 			Remediation: RemediationConfig{
-				CooldownPeriod:         5 * time.Minute,
-				MaxAttemptsGlobal:      3,
 				MaxRemediationsPerHour: 10,
 				HistorySize:            100,
 			},
@@ -3175,8 +2871,6 @@ func TestValidateWithRegistry_DependsOnCrossValidation(t *testing.T) {
 				},
 			},
 			Remediation: RemediationConfig{
-				CooldownPeriod:         5 * time.Minute,
-				MaxAttemptsGlobal:      3,
 				MaxRemediationsPerHour: 10,
 				HistorySize:            100,
 			},
@@ -3219,4 +2913,8 @@ func TestPrometheusExporterConfigApplyDefaults(t *testing.T) {
 			t.Errorf("BindAddress = %q, want 127.0.0.1 (should not be overridden)", p.BindAddress)
 		}
 	})
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
