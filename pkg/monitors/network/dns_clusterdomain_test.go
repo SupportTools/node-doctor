@@ -230,3 +230,17 @@ func TestRegistryDefaultConfigDoesNotPinClusterDomain(t *testing.T) {
 		t.Errorf("auto-defaulted ClusterDomains = %v, want [%q]", parsed.ClusterDomains, want)
 	}
 }
+
+func TestRegistryDefaultConfigEnablesNameserverCheck(t *testing.T) {
+	info := monitors.GetMonitorInfo("network-dns-check")
+	if info == nil || info.DefaultConfig == nil {
+		t.Fatal("network-dns-check has no registered DefaultConfig")
+	}
+	parsed, err := parseDNSConfig(info.DefaultConfig.Config)
+	if err != nil {
+		t.Fatalf("parseDNSConfig(DefaultConfig): %v", err)
+	}
+	if !parsed.NameserverCheckEnabled {
+		t.Error("registry DefaultConfig does not enable the nameserver check")
+	}
+}

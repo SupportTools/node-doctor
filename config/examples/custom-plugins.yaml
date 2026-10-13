@@ -117,16 +117,19 @@ monitors:
       # Patterns to match in logs (regex)
       patterns:
         # OOM killer patterns
-        - pattern: "Out of memory: Kill process"
-          severity: critical
+        - name: oom-kill
+          regex: "Out of memory: Kill process"
+          severity: error
           description: "OOM killer invoked"
 
-        - pattern: "oom_reaper: reaped process"
-          severity: critical
+        - name: oom-reaper
+          regex: "oom_reaper: reaped process"
+          severity: error
           description: "Process killed by OOM"
 
         # Memory pressure warnings
-        - pattern: "page allocation failure"
+        - name: page-allocation-failure
+          regex: "page allocation failure"
           severity: warning
           description: "Memory allocation failure"
 
@@ -150,16 +153,19 @@ monitors:
     config:
       patterns:
         # Containerd errors
-        - pattern: 'containerd.*error.*creating container'
-          severity: critical
+        - name: containerd-create-error
+          regex: 'containerd.*error.*creating container'
+          severity: error
           description: "Container creation failure"
 
-        - pattern: 'containerd.*failed to start container'
-          severity: critical
+        - name: containerd-start-error
+          regex: 'containerd.*failed to start container'
+          severity: error
           description: "Container start failure"
 
         # Docker errors (if using Docker)
-        - pattern: 'docker.*Error response from daemon'
+        - name: docker-daemon-error
+          regex: 'docker.*Error response from daemon'
           severity: warning
           description: "Docker daemon error"
 
@@ -177,17 +183,20 @@ monitors:
     config:
       patterns:
         # CNI plugin errors
-        - pattern: 'CNI plugin.*failed'
-          severity: critical
+        - name: cni-plugin-failed
+          regex: 'CNI plugin.*failed'
+          severity: error
           description: "CNI plugin failure"
 
         # Network unreachable
-        - pattern: 'Network is unreachable'
-          severity: critical
+        - name: network-unreachable
+          regex: 'Network is unreachable'
+          severity: error
           description: "Network unreachable"
 
         # Interface down
-        - pattern: 'link is not ready'
+        - name: link-not-ready
+          regex: 'link is not ready'
           severity: warning
           description: "Network interface not ready"
 
@@ -277,7 +286,7 @@ monitors:
     interval: 1m
     timeout: 30s
     config:
-      paths:
+      mountPoints:
         - path: "/"
           warningThreshold: 85
           criticalThreshold: 95
