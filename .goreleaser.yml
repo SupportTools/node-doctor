@@ -168,7 +168,7 @@ release:
 
     ### 📚 Documentation
 
-    - [Deployment Guide](https://github.com/supporttools/node-doctor/blob/main/docs/deployment.md)
+    - [Quick Start](https://github.com/supporttools/node-doctor/blob/main/docs/quick-start.md)
     - [Configuration Reference](https://github.com/supporttools/node-doctor/blob/main/docs/configuration.md)
     - [Monitor Specifications](https://github.com/supporttools/node-doctor/blob/main/docs/monitors.md)
     - [Troubleshooting](https://github.com/supporttools/node-doctor/blob/main/docs/troubleshooting.md)

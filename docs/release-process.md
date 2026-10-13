@@ -460,9 +460,7 @@ step, no `crazy-max/ghaction-import-gpg`, and no `.asc` output. If you previousl
 `GPG_PRIVATE_KEY` repository secret, nothing consumes it — it should be removed and the key
 material revoked, because an unused secret is pure attack surface.
 
-`scripts/setup-gpg-signing-subkey.sh` and `scripts/verify-gpg-setup.sh` are left over from a
-signing scheme that was never wired into the workflow. Running them configures nothing.
-Likewise `.goreleaser.yml` exists in the repo root but **is never invoked** — no workflow runs
+`.goreleaser.yml` exists in the repo root but **is never invoked** — no workflow runs
 GoReleaser, so it produces no binaries, no archives, and no `checksums.txt`.
 
 ### Verifying an image
@@ -754,4 +752,4 @@ Listed explicitly because previous versions of this document claimed otherwise:
 - [Helm rollback](https://helm.sh/docs/helm/helm_rollback/)
 - [GitHub Actions Workflows](../.github/workflows/)
 - [Node Doctor Architecture](./architecture.md)
-- [Deployment Guide](./deployment.md)
+- [Quick Start](./quick-start.md)
