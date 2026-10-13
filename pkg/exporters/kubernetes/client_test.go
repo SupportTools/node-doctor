@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -653,77 +652,44 @@ func TestConvertConditionsToNodeConditionsStatusMapping(t *testing.T) {
 	}
 }
 
-// TestConvertConditionsToNodeConditionsTypePrefixing tests that non-standard conditions get prefixed
+// TestConvertConditionsToNodeConditionsTypePrefixing pins that EVERY condition node-doctor
+// writes is NodeDoctor-prefixed, including monitor types whose bare name collides with a
+// kubelet-owned built-in (DiskPressure, MemoryPressure, ...). Writing those bare made
+// node-doctor a second writer of kubelet's conditions (cluster-services-24760).
 func TestConvertConditionsToNodeConditionsTypePrefixing(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name             string
-		inputType        string
-		shouldBePrefixed bool
+		inputType string
+		wantType  string
 	}{
-		{
-			name:             "Ready is not prefixed (standard)",
-			inputType:        "Ready",
-			shouldBePrefixed: false,
-		},
-		{
-			name:             "MemoryPressure is not prefixed (standard)",
-			inputType:        "MemoryPressure",
-			shouldBePrefixed: false,
-		},
-		{
-			name:             "DiskPressure is not prefixed (standard)",
-			inputType:        "DiskPressure",
-			shouldBePrefixed: false,
-		},
-		{
-			name:             "PIDPressure is not prefixed (standard)",
-			inputType:        "PIDPressure",
-			shouldBePrefixed: false,
-		},
-		{
-			name:             "NetworkUnavailable is not prefixed (standard)",
-			inputType:        "NetworkUnavailable",
-			shouldBePrefixed: false,
-		},
-		{
-			name:             "CustomCondition is prefixed",
-			inputType:        "CustomCondition",
-			shouldBePrefixed: true,
-		},
-		{
-			name:             "ServiceFailed is prefixed",
-			inputType:        "ServiceFailed",
-			shouldBePrefixed: true,
-		},
+		{"Ready", "NodeDoctorReady"},
+		{"MemoryPressure", "NodeDoctorMemoryPressure"},
+		{"DiskPressure", "NodeDoctorDiskPressure"},
+		{"PIDPressure", "NodeDoctorPIDPressure"},
+		{"NetworkUnavailable", "NodeDoctorNetworkUnavailable"},
+		{"CustomCondition", "NodeDoctorCustomCondition"},
+		{"ServiceFailed", "NodeDoctorServiceFailed"},
+		{"NodeDoctorHealthy", "NodeDoctorHealthy"}, // idempotent: never double-prefixed
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			conditions := []types.Condition{
-				{
-					Type:       tt.inputType,
-					Status:     types.ConditionTrue,
-					Transition: now,
-					Reason:     "TestReason",
-					Message:    "Test message",
-				},
-			}
-
-			result := ConvertConditionsToNodeConditions(conditions)
+		t.Run(tt.inputType, func(t *testing.T) {
+			result := ConvertConditionsToNodeConditions([]types.Condition{{
+				Type:       tt.inputType,
+				Status:     types.ConditionTrue,
+				Transition: now,
+				Reason:     "TestReason",
+				Message:    "Test message",
+			}})
 			if len(result) != 1 {
 				t.Fatalf("Expected 1 condition, got %d", len(result))
 			}
-
-			condType := string(result[0].Type)
-			hasPrefix := strings.HasPrefix(condType, "NodeDoctor")
-
-			if tt.shouldBePrefixed && !hasPrefix {
-				t.Errorf("Expected condition type %q to be prefixed with NodeDoctor, got %q", tt.inputType, condType)
+			if got := string(result[0].Type); got != tt.wantType {
+				t.Errorf("condition type for %q = %q, want %q", tt.inputType, got, tt.wantType)
 			}
-			if !tt.shouldBePrefixed && hasPrefix {
-				t.Errorf("Expected condition type %q to NOT be prefixed, got %q", tt.inputType, condType)
+			if result[0].LastHeartbeatTime.IsZero() {
+				t.Errorf("LastHeartbeatTime for %q is zero; node-doctor must stamp it on write", tt.inputType)
 			}
 		})
 	}

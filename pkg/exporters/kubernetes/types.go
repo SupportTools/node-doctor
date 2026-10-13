@@ -5,6 +5,7 @@ package kubernetes
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -189,15 +190,10 @@ func convertConditionToNodeCondition(condition types.Condition) corev1.NodeCondi
 		status = corev1.ConditionUnknown
 	}
 
-	// Ensure condition type is prefixed with NodeDoctor
-	conditionType := condition.Type
-	if !isStandardNodeCondition(conditionType) {
-		conditionType = fmt.Sprintf("NodeDoctor%s", sanitizeConditionType(conditionType))
-	}
-
 	return corev1.NodeCondition{
-		Type:               corev1.NodeConditionType(conditionType),
+		Type:               corev1.NodeConditionType(nodeDoctorConditionType(condition.Type)),
 		Status:             status,
+		LastHeartbeatTime:  metav1.Now(),
 		LastTransitionTime: metav1.NewTime(condition.Transition),
 		Reason:             sanitizeConditionReason(condition.Reason),
 		Message:            condition.Message,
@@ -250,16 +246,19 @@ func sanitizeConditionReason(reason string) string {
 	return sanitizeEventReason(reason)
 }
 
-// isStandardNodeCondition checks if the condition type is a standard Kubernetes node condition
-func isStandardNodeCondition(conditionType string) bool {
-	standardConditions := map[string]bool{
-		"Ready":              true,
-		"MemoryPressure":     true,
-		"DiskPressure":       true,
-		"PIDPressure":        true,
-		"NetworkUnavailable": true,
+// nodeDoctorConditionType returns the node condition type node-doctor writes for a
+// monitor-level condition type. It is ALWAYS NodeDoctor-prefixed, including for names that
+// collide with kubelet-owned built-ins (MemoryPressure, DiskPressure, PIDPressure, Ready,
+// NetworkUnavailable): the system-disk and system-memory monitors emit "DiskPressure" and
+// "MemoryPressure", and writing those bare made node-doctor a second writer of kubelet's
+// conditions. TaintNodesByCondition then turned node-doctor's own thresholds into
+// node.kubernetes.io/{disk,memory}-pressure NoSchedule taints. Already-prefixed input is
+// returned unchanged so the mapping is idempotent.
+func nodeDoctorConditionType(conditionType string) string {
+	if strings.HasPrefix(conditionType, nodeDoctorConditionPrefix) {
+		return conditionType
 	}
-	return standardConditions[conditionType]
+	return nodeDoctorConditionPrefix + sanitizeConditionType(conditionType)
 }
 
 // generateEventName generates a unique event name for a problem
