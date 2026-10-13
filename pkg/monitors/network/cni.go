@@ -14,11 +14,17 @@ import (
 
 const (
 	// Default configuration values for CNI monitor
-	defaultCNIPingCount             = 3
-	defaultCNIPingTimeout           = 5 * time.Second
-	defaultCNIWarningLatency        = 200 * time.Millisecond
-	defaultCNICriticalLatency       = 500 * time.Millisecond
-	defaultCNIFailureThreshold      = 3
+	defaultCNIPingCount        = 3
+	defaultCNIPingTimeout      = 5 * time.Second
+	defaultCNIWarningLatency   = 200 * time.Millisecond
+	defaultCNICriticalLatency  = 500 * time.Millisecond
+	defaultCNIFailureThreshold = 3
+	// defaultCNIHighLatencyThreshold is how many consecutive checks a peer must exceed
+	// its warning latency before it counts toward NetworkDegraded. Probes open a fresh
+	// TCP connection each time, so one dropped SYN costs a full 1s retransmit and pushes
+	// the 3-probe average over 200ms on its own. A single slow check is therefore noise,
+	// not degradation; three in a row (90s at the default 30s interval) is not.
+	defaultCNIHighLatencyThreshold  = 3
 	defaultCNIMinReachablePeers     = 80 // percentage
 	defaultCNIRefreshInterval       = 5 * time.Minute
 	defaultCNINamespace             = "node-doctor"
@@ -80,6 +86,10 @@ type ConnectivityConfig struct {
 	CrossZoneCriticalLatency time.Duration
 	// FailureThreshold is consecutive failures before marking peer unreachable.
 	FailureThreshold int
+	// HighLatencyThreshold is consecutive checks over the warning latency before a
+	// peer counts as high latency (and so toward NetworkDegraded). 1 disables the
+	// debounce and restores the old single-check behaviour.
+	HighLatencyThreshold int
 	// MinReachablePeers is the percentage of peers that must be reachable.
 	MinReachablePeers int
 	// ProbeMethod is the connectivity probe method: "http" or "icmp".
@@ -113,6 +123,10 @@ type PeerStatus struct {
 	LastCheck        time.Time
 	LastSuccess      time.Time
 	ConsecutiveFails int
+	// ConsecutiveHighLatency counts consecutive reachable checks whose average latency
+	// exceeded the peer's warning threshold. It resets on any check under the threshold
+	// or any unreachable check.
+	ConsecutiveHighLatency int
 	// Family is the address family observed on the most recent probe that
 	// resolved a target ("ipv4" or "ipv6"). It is captured from PingResult.Family.
 	// The most recent check that resolves a family always wins, so a peer re-IP
@@ -136,8 +150,12 @@ type CNIMonitor struct {
 	started        bool
 
 	// State tracking for delta-based event emission (issue #8)
-	lastHighLatencyPeers        []string // Previous high latency peer list
-	lastPersistentlyUnreachable []string // Previous persistently unreachable peer list
+	// Previous high-latency / persistently-unreachable peer NAMES. These hold bare node
+	// names, never the display strings: the display strings embed the measured latency
+	// and failure count, which change every check, so comparing them re-emitted the
+	// summary event on every cycle for as long as any peer stayed slow.
+	lastHighLatencyPeers        []string
+	lastPersistentlyUnreachable []string
 
 	*monitors.BaseMonitor
 }
@@ -289,12 +307,13 @@ func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error)
 			OverlayTestLabelSelector: defaultOverlayTestLabelSelector,
 		},
 		Connectivity: ConnectivityConfig{
-			PingCount:         defaultCNIPingCount,
-			PingTimeout:       defaultCNIPingTimeout,
-			WarningLatency:    defaultCNIWarningLatency,
-			CriticalLatency:   defaultCNICriticalLatency,
-			FailureThreshold:  defaultCNIFailureThreshold,
-			MinReachablePeers: defaultCNIMinReachablePeers,
+			PingCount:            defaultCNIPingCount,
+			PingTimeout:          defaultCNIPingTimeout,
+			WarningLatency:       defaultCNIWarningLatency,
+			CriticalLatency:      defaultCNICriticalLatency,
+			FailureThreshold:     defaultCNIFailureThreshold,
+			HighLatencyThreshold: defaultCNIHighLatencyThreshold,
+			MinReachablePeers:    defaultCNIMinReachablePeers,
 		},
 		CNIHealth: CNIHealthConfig{
 			Enabled:    true,
@@ -392,6 +411,19 @@ func parseCNIConfig(configMap map[string]interface{}) (*CNIMonitorConfig, error)
 				config.Connectivity.FailureThreshold = int(v)
 			}
 		}
+		if v, ok := connMap["highLatencyThreshold"]; ok {
+			switch n := v.(type) {
+			case int:
+				config.Connectivity.HighLatencyThreshold = n
+			case float64:
+				config.Connectivity.HighLatencyThreshold = int(n)
+			default:
+				return nil, fmt.Errorf("invalid connectivity.highLatencyThreshold: want a number, got %T", v)
+			}
+			if config.Connectivity.HighLatencyThreshold < 1 {
+				return nil, fmt.Errorf("invalid connectivity.highLatencyThreshold: must be >= 1, got %d", config.Connectivity.HighLatencyThreshold)
+			}
+		}
 		if minReachable, ok := connMap["minReachablePeers"]; ok {
 			switch v := minReachable.(type) {
 			case int:
@@ -450,6 +482,16 @@ func ValidateCNIConfig(config types.MonitorConfig) error {
 // in a different topology zone uses CrossZoneWarningLatency when it is configured
 // (non-zero); otherwise the same-zone WarningLatency is used. This keeps topology
 // awareness inert until both zone labels exist AND a cross-zone threshold is set.
+// highLatencyThreshold returns the configured consecutive-check debounce, treating an
+// unset (zero) value as 1 so a monitor built without parseCNIConfig keeps the
+// single-check behaviour.
+func (m *CNIMonitor) highLatencyThreshold() int {
+	if m.config.Connectivity.HighLatencyThreshold < 1 {
+		return 1
+	}
+	return m.config.Connectivity.HighLatencyThreshold
+}
+
 func (m *CNIMonitor) warningLatencyFor(peer Peer) time.Duration {
 	if !peer.SameZone && m.config.Connectivity.CrossZoneWarningLatency > 0 {
 		return m.config.Connectivity.CrossZoneWarningLatency
@@ -508,7 +550,9 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	reachableCount := 0
 	unreachablePeers := make([]string, 0)
 	highLatencyPeers := make([]string, 0)
+	highLatencyNames := make([]string, 0)
 	persistentlyUnreachablePeers := make([]string, 0) // Peers exceeding failure threshold
+	persistentlyUnreachableNames := make([]string, 0)
 	var totalLatency time.Duration
 
 	// The discovered peer set is AUTHORITATIVE for this cycle. Statuses are collected
@@ -538,16 +582,27 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 			// Check for high latency (collect but don't emit individual events).
 			// Cross-zone peers use the looser cross-zone warning threshold when configured,
 			// so normal inter-site WAN latency does not raise a false NetworkDegraded.
+			// A peer only counts once it has been slow for HighLatencyThreshold
+			// consecutive checks, so a single outlier (one lost SYN = +1s) cannot
+			// flip NetworkDegraded on its own.
 			if peerStatus.AvgLatency > m.warningLatencyFor(result.peer) {
+				peerStatus.ConsecutiveHighLatency++
+			} else {
+				peerStatus.ConsecutiveHighLatency = 0
+			}
+			if peerStatus.ConsecutiveHighLatency >= m.highLatencyThreshold() {
 				highLatencyPeers = append(highLatencyPeers, fmt.Sprintf("%s (%.2fms)", result.peer.NodeName, float64(peerStatus.AvgLatency)/float64(time.Millisecond)))
+				highLatencyNames = append(highLatencyNames, result.peer.NodeName)
 			}
 		} else {
+			peerStatus.ConsecutiveHighLatency = 0
 			unreachablePeers = append(unreachablePeers, result.peer.NodeName)
 
 			// Track peers that have exceeded the failure threshold
 			if peerStatus.ConsecutiveFails >= m.config.Connectivity.FailureThreshold {
 				persistentlyUnreachablePeers = append(persistentlyUnreachablePeers,
 					fmt.Sprintf("%s (%d consecutive failures)", result.peer.NodeName, peerStatus.ConsecutiveFails))
+				persistentlyUnreachableNames = append(persistentlyUnreachableNames, result.peer.NodeName)
 			}
 		}
 	}
@@ -566,7 +621,7 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	m.mu.Unlock()
 
 	// Aggregate event for high latency peers (only on change)
-	if len(highLatencyPeers) > 0 && peerListChanged(highLatencyPeers, previousHighLatency) {
+	if len(highLatencyPeers) > 0 && peerListChanged(highLatencyNames, previousHighLatency) {
 		status.AddEvent(types.NewEvent(
 			types.EventWarning,
 			"HighPeerLatencySummary",
@@ -582,7 +637,7 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 	}
 
 	// Aggregate event for persistently unreachable peers (only on change)
-	if len(persistentlyUnreachablePeers) > 0 && peerListChanged(persistentlyUnreachablePeers, previousUnreachable) {
+	if len(persistentlyUnreachablePeers) > 0 && peerListChanged(persistentlyUnreachableNames, previousUnreachable) {
 		status.AddEvent(types.NewEvent(
 			types.EventError,
 			"PeersUnreachableSummary",
@@ -599,8 +654,8 @@ func (m *CNIMonitor) checkCNI(ctx context.Context) (*types.Status, error) {
 
 	// Update state tracking for next check
 	m.mu.Lock()
-	m.lastHighLatencyPeers = highLatencyPeers
-	m.lastPersistentlyUnreachable = persistentlyUnreachablePeers
+	m.lastHighLatencyPeers = highLatencyNames
+	m.lastPersistentlyUnreachable = persistentlyUnreachableNames
 	m.mu.Unlock()
 
 	// Calculate reachability percentage
@@ -695,6 +750,7 @@ func (m *CNIMonitor) checkPeerConnectivity(ctx context.Context, peer Peer) *Peer
 	if exists {
 		peerStatus.ConsecutiveFails = existingStatus.ConsecutiveFails
 		peerStatus.FailureCount = existingStatus.FailureCount
+		peerStatus.ConsecutiveHighLatency = existingStatus.ConsecutiveHighLatency
 	}
 
 	// Determine which IP to ping based on overlay test mode

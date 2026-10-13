@@ -1137,6 +1137,7 @@ monitors:
         warningLatency: 50ms          # Latency warning threshold
         criticalLatency: 200ms        # Latency critical threshold
         failureThreshold: 3           # Consecutive failures before alert
+        highLatencyThreshold: 3       # Consecutive slow checks before NetworkDegraded
         minReachablePeers: 80         # Minimum % of peers that must be reachable
       cniHealth:
         enabled: true                 # Enable CNI config/interface checks
@@ -1159,6 +1160,10 @@ monitors:
 - `warningLatency`: 50ms
 - `criticalLatency`: 200ms
 - `failureThreshold`: 3
+- `highLatencyThreshold`: 3 (consecutive checks a peer must exceed `warningLatency` before it
+  counts toward `NetworkDegraded`; `1` restores single-check behaviour. Probes open a new TCP
+  connection each time, so one dropped SYN adds a 1s retransmit and can push a single check's
+  average over the threshold with no real degradation.)
 - `minReachablePeers`: 80%
 
 **CNI Health:**
