@@ -393,16 +393,6 @@ func TestRemediationStrategies(t *testing.T) {
 								monitor.Name)
 						}
 					}
-
-					// Verify cooldown is set
-					if monitor.Remediation.Cooldown == 0 {
-						t.Errorf("Monitor %q remediation has zero cooldown", monitor.Name)
-					}
-
-					// Verify max attempts is set
-					if monitor.Remediation.MaxAttempts == 0 {
-						t.Errorf("Monitor %q remediation has zero maxAttempts", monitor.Name)
-					}
 				}
 			}
 		})

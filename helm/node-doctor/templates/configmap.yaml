@@ -19,7 +19,6 @@ data:
       updateInterval: {{ .Values.settings.updateInterval }}
       resyncInterval: {{ .Values.settings.resyncInterval }}
       heartbeatInterval: {{ .Values.settings.heartbeatInterval }}
-      enableRemediation: {{ .Values.settings.enableRemediation }}
       dryRunMode: {{ .Values.settings.dryRunMode }}
       qps: {{ .Values.settings.qps }}
       burst: {{ .Values.settings.burst }}
@@ -234,7 +233,6 @@ data:
 
       http:
         enabled: {{ or .Values.exporters.http.enabled .Values.controller.enabled }}
-        bindAddress: {{ .Values.exporters.http.bindAddress | quote }}
         hostPort: {{ .Values.exporters.http.port }}
         tlsEnabled: {{ .Values.exporters.http.tlsEnabled }}
         endpoints:
@@ -269,8 +267,6 @@ data:
       dryRun: {{ .Values.remediation.dryRun }}
       maxRemediationsPerHour: {{ .Values.remediation.maxRemediationsPerHour }}
       maxRemediationsPerMinute: {{ .Values.remediation.maxRemediationsPerMinute }}
-      cooldownPeriod: {{ .Values.remediation.cooldownPeriod }}
-      maxAttemptsGlobal: {{ .Values.remediation.maxAttemptsGlobal }}
       {{- if .Values.controller.enabled }}
       coordination:
         enabled: true
@@ -280,9 +276,7 @@ data:
       {{- end }}
 
     features:
-      enableMetrics: {{ .Values.features.enableMetrics }}
       enableProfiling: {{ .Values.features.enableProfiling }}
-      enableTracing: {{ .Values.features.enableTracing }}
 
     # Configuration hot reload. When enabled, edits to this ConfigMap are picked
     # up by the running agent and affected monitors are re-initialized in place;

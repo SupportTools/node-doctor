@@ -312,11 +312,8 @@ func TestValidate_InvalidRemediatorConfig(t *testing.T) {
 
 	// Add invalid remediation config
 	config.Monitors[0].Remediation = &types.MonitorRemediationConfig{
-		Enabled:        true,
-		Strategy:       "invalid-strategy",
-		MaxAttempts:    0,
-		CooldownString: "5s",
-		Cooldown:       5 * time.Second,
+		Enabled:  true,
+		Strategy: "invalid-strategy",
 	}
 
 	validator := NewConfigValidator()
@@ -812,12 +809,8 @@ func createValidConfig() *types.NodeDoctorConfig {
 			Enabled:                  true,
 			MaxRemediationsPerHour:   10,
 			MaxRemediationsPerMinute: 2,
-			CooldownPeriodString:     "5m",
-			CooldownPeriod:           5 * time.Minute,
-			MaxAttemptsGlobal:        3,
 			HistorySize:              100,
 			CircuitBreaker: types.CircuitBreakerConfig{
-				Enabled:          true,
 				Threshold:        5,
 				TimeoutString:    "30m",
 				Timeout:          30 * time.Minute,
@@ -1452,69 +1445,6 @@ func TestValidate_KubernetesExporter(t *testing.T) {
 			// Disable other exporters
 			cfg.Exporters.HTTP.Enabled = false
 			cfg.Exporters.Prometheus.Enabled = false
-
-			validator := NewConfigValidator()
-			result := validator.Validate(cfg)
-
-			if tt.expectedField == "" {
-				if !result.Valid {
-					t.Errorf("Expected valid config, got errors: %v", result.Errors)
-				}
-			} else {
-				if result.Valid {
-					t.Error("Expected validation to fail")
-				}
-				hasExpectedError := false
-				for _, err := range result.Errors {
-					if err.Field == tt.expectedField && strings.Contains(err.Message, tt.expectedMsg) {
-						hasExpectedError = true
-						break
-					}
-				}
-				if !hasExpectedError {
-					t.Errorf("Expected error field=%s containing %q, got: %v", tt.expectedField, tt.expectedMsg, result.Errors)
-				}
-			}
-		})
-	}
-}
-
-// TestValidate_Remediation tests remediation config validation
-func TestValidate_Remediation(t *testing.T) {
-	tests := []struct {
-		name          string
-		modifyFunc    func(*types.RemediationConfig)
-		expectedField string
-		expectedMsg   string
-	}{
-		{
-			name:          "valid remediation",
-			modifyFunc:    func(r *types.RemediationConfig) {},
-			expectedField: "",
-			expectedMsg:   "",
-		},
-		{
-			name: "negative cooldown",
-			modifyFunc: func(r *types.RemediationConfig) {
-				r.CooldownPeriod = -5 * time.Minute
-			},
-			expectedField: "remediation.cooldownPeriod",
-			expectedMsg:   "cooldown period cannot be negative",
-		},
-		{
-			name: "negative max attempts",
-			modifyFunc: func(r *types.RemediationConfig) {
-				r.MaxAttemptsGlobal = -1
-			},
-			expectedField: "remediation.maxAttemptsGlobal",
-			expectedMsg:   "max attempts cannot be negative",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := createValidConfig()
-			tt.modifyFunc(&cfg.Remediation)
 
 			validator := NewConfigValidator()
 			result := validator.Validate(cfg)

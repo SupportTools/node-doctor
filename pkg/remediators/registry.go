@@ -203,6 +203,9 @@ type CircuitBreakerConfig struct {
 	// SuccessThreshold is the number of consecutive successes in half-open state
 	// before closing the circuit
 	SuccessThreshold int
+
+	// Disabled keeps the circuit closed no matter how many remediations fail
+	Disabled bool
 }
 
 // RemediatorRegistry manages the registration and execution of remediators.
@@ -410,9 +413,9 @@ func (r *RemediatorRegistry) SetMaxRemediationsPerHour(n int) {
 	r.logInfof("Per-hour remediation rate limit configured (max: %d/hour)", n)
 }
 
-// ApplyConfig adopts a new remediation configuration in place, without
-// restarting the process. It is the counterpart to the wiring main.go performs
-// at startup and is invoked by the detector on config hot reload.
+// ApplyConfig adopts a remediation configuration in place, without restarting
+// the process. main.go calls it at startup and the detector calls it on config
+// hot reload, so both paths configure the registry the same way.
 //
 // Rationale (TaskForge #node-doctor-243): before this existed, the reload path
 // computed diff.RemediationChanged and then did nothing with it. An operator who
@@ -443,23 +446,31 @@ func (r *RemediatorRegistry) ApplyConfig(cfg *types.RemediationConfig, dryRunMod
 	r.SetMaxRemediationsPerHour(cfg.MaxRemediationsPerHour)
 	r.SetMaxRemediationsPerMinute(cfg.MaxRemediationsPerMinute)
 
-	// Only push a circuit-breaker update when the new values are actually
-	// usable. A zero/absent circuitBreaker block must not clobber the running
-	// configuration with invalid values, so treat it as "leave as-is".
-	cb := CircuitBreakerConfig{
-		Threshold:        cfg.CircuitBreaker.Threshold,
-		Timeout:          cfg.CircuitBreaker.Timeout,
-		SuccessThreshold: cfg.CircuitBreaker.SuccessThreshold,
-	}
-	if cb.Threshold > 0 && cb.Timeout > 0 && cb.SuccessThreshold > 0 {
-		if err := r.SetCircuitBreakerConfig(cb); err != nil {
-			return fmt.Errorf("apply circuit breaker config: %w", err)
-		}
+	if err := r.SetCircuitBreakerConfig(circuitBreakerFromConfig(cfg.CircuitBreaker)); err != nil {
+		return fmt.Errorf("apply circuit breaker config: %w", err)
 	}
 
-	r.logInfof("Remediation config reloaded in place (dryRun=%v maxPerHour=%d maxPerMinute=%d)",
+	r.logInfof("Remediation config applied (dryRun=%v maxPerHour=%d maxPerMinute=%d)",
 		r.IsDryRun(), cfg.MaxRemediationsPerHour, cfg.MaxRemediationsPerMinute)
 	return nil
+}
+
+// circuitBreakerFromConfig falls back to DefaultCircuitBreakerConfig when the
+// block is absent or incomplete.
+func circuitBreakerFromConfig(c types.CircuitBreakerConfig) CircuitBreakerConfig {
+	if c.IsDisabled() {
+		cb := DefaultCircuitBreakerConfig
+		cb.Disabled = true
+		return cb
+	}
+	if c.Threshold > 0 && c.Timeout > 0 && c.SuccessThreshold > 0 {
+		return CircuitBreakerConfig{
+			Threshold:        c.Threshold,
+			Timeout:          c.Timeout,
+			SuccessThreshold: c.SuccessThreshold,
+		}
+	}
+	return DefaultCircuitBreakerConfig
 }
 
 // SetCircuitStateObserver registers an observer that is notified of circuit
@@ -537,6 +548,13 @@ func (r *RemediatorRegistry) SetCircuitBreakerConfig(config CircuitBreakerConfig
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.circuitConfig = config
+	if config.Disabled && r.circuitState != CircuitClosed {
+		r.circuitState = CircuitClosed
+		r.circuitLastStateChange = time.Now()
+		r.consecutiveFailures = 0
+		r.consecutiveSuccesses = 0
+		r.notifyCircuitStateObserver(r.circuitState)
+	}
 	r.logInfof("Circuit breaker config updated: %+v", config)
 	return nil
 }
@@ -962,6 +980,10 @@ func (r *RemediatorRegistry) recordCircuitBreakerFailure() {
 
 	r.consecutiveSuccesses = 0
 	r.consecutiveFailures++
+
+	if r.circuitConfig.Disabled {
+		return
+	}
 
 	// If we're in HalfOpen and got a failure, open the circuit again
 	if r.circuitState == CircuitHalfOpen {

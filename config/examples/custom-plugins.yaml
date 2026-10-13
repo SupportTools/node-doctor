@@ -67,8 +67,6 @@ monitors:
       args:
         - "hardware-issue"
         - "${NODE_NAME}"
-      cooldown: 1h
-      maxAttempts: 1
 
   # Example 2: Custom application health check
   - name: custom-app-health
@@ -256,28 +254,17 @@ monitors:
       # Primary strategy: Restart kubelet service
       strategy: systemd-restart
       service: kubelet
-      gracefulStop: true
-      waitTimeout: 30s
-      cooldown: 10m
-      maxAttempts: 2
-      priority: 1  # Try this first
 
       # Backup strategies (nested)
       strategies:
         # If kubelet restart fails, try clearing CNI cache
         - strategy: custom-script
           scriptPath: /usr/local/bin/clear-cni-cache.sh
-          cooldown: 15m
-          maxAttempts: 1
-          priority: 2
 
           # If that fails too, try full network reset
           strategies:
             - strategy: custom-script
               scriptPath: /usr/local/bin/reset-network.sh
-              cooldown: 30m
-              maxAttempts: 1
-              priority: 3
 
   # Example: Disk cleanup with progressive strategies
   - name: disk-with-cleanup
@@ -297,25 +284,16 @@ monitors:
       # Step 1: Clean temp files
       strategy: custom-script
       scriptPath: /usr/local/bin/clean-temp-files.sh
-      cooldown: 30m
-      maxAttempts: 1
-      priority: 1
 
       strategies:
         # Step 2: Clean old logs
         - strategy: custom-script
           scriptPath: /usr/local/bin/clean-old-logs.sh
-          cooldown: 1h
-          maxAttempts: 1
-          priority: 2
 
           strategies:
             # Step 3: Clean container images
             - strategy: custom-script
               scriptPath: /usr/local/bin/clean-container-images.sh
-              cooldown: 2h
-              maxAttempts: 1
-              priority: 3
 
 # Exporters
 exporters:
@@ -348,8 +326,6 @@ remediation:
   # Allow more remediations for custom scripts
   maxRemediationsPerHour: 10
   maxRemediationsPerMinute: 2
-  cooldownPeriod: 5m
-  maxAttemptsGlobal: 3
 
   # Circuit breaker
   circuitBreaker:
@@ -360,9 +336,7 @@ remediation:
 
 # Features
 features:
-  enableMetrics: true
   enableProfiling: false
-  enableTracing: false
 
 # Hot reload
 reload:

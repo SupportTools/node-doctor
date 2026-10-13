@@ -40,7 +40,6 @@ settings:
   heartbeatInterval: 5m     # How often to send heartbeat
 
   # Remediation master switches
-  enableRemediation: true   # Global remediation enable/disable
   dryRunMode: false         # Set to true to log actions without executing
 
   # Kubernetes client configuration
@@ -107,8 +106,6 @@ monitors:
       enabled: true
       strategy: custom-script
       scriptPath: /usr/local/bin/cleanup-docker-logs.sh
-      cooldown: 1h
-      maxAttempts: 1
 
   # ==========================================
   # KUBERNETES COMPONENT MONITORS
@@ -128,10 +125,6 @@ monitors:
       enabled: true
       strategy: systemd-restart
       service: kubelet
-      cooldown: 10m
-      maxAttempts: 2
-      gracefulStop: true
-      waitTimeout: 30s
 
   # Container Runtime Health Monitor
   - name: runtime-health
@@ -147,8 +140,6 @@ monitors:
       enabled: true
       strategy: systemd-restart
       service: containerd  # Change to 'docker' or 'crio' if using different runtime
-      cooldown: 15m
-      maxAttempts: 1
 
   # Pod Capacity Monitor
   - name: capacity-health
@@ -325,8 +316,6 @@ remediation:
   # Safety limits
   maxRemediationsPerHour: 10
   maxRemediationsPerMinute: 2
-  cooldownPeriod: 5m
-  maxAttemptsGlobal: 3
 
   # Circuit breaker - stops remediation if too many failures
   circuitBreaker:
@@ -338,30 +327,10 @@ remediation:
   # History for audit trail
   historySize: 100
 
-  # Problem-specific overrides
-  overrides:
-    - problem: kubelet-unhealthy
-      cooldown: 10m
-      maxAttempts: 2
-      circuitBreakerThreshold: 3
-
-    - problem: disk-pressure
-      cooldown: 30m
-      maxAttempts: 2
-      circuitBreakerThreshold: 3
-
-    - problem: container-runtime-unhealthy
-      cooldown: 15m
-      maxAttempts: 1
-      circuitBreakerThreshold: 2
-
 # Features - optional feature flags
 features:
-  enableMetrics: true
   enableProfiling: false  # Enable for debugging (port 6060)
   profilingPort: 6060
-  enableTracing: false
-  tracingEndpoint: ""
 
 # Hot reload configuration - allows config updates without restart
 reload:

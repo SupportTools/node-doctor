@@ -75,9 +75,6 @@ func (v *ConfigValidator) Validate(config *types.NodeDoctorConfig) *ValidationRe
 	// Validate exporters
 	v.validateExporters(config.Exporters, result)
 
-	// Validate remediation settings
-	v.validateRemediation(&config.Remediation, "remediation", result)
-
 	// Validate resource limits
 	v.validateLimits(config, result)
 
@@ -425,18 +422,6 @@ func (v *ConfigValidator) validatePrometheusExporter(exporter *types.PrometheusE
 		v.addError(result, prefix+".path", "metrics path is required")
 	} else if !strings.HasPrefix(exporter.Path, "/") {
 		v.addError(result, prefix+".path", "metrics path must start with '/'")
-	}
-}
-
-// validateRemediation validates global remediation configuration
-func (v *ConfigValidator) validateRemediation(remediation *types.RemediationConfig, prefix string, result *ValidationResult) {
-	if remediation.CooldownPeriod < 0 {
-		v.addError(result, prefix+".cooldownPeriod", "cooldown period cannot be negative")
-	}
-
-	// Note: MaxAttempts field doesn't exist in RemediationConfig, it's MaxAttemptsGlobal
-	if remediation.MaxAttemptsGlobal < 0 {
-		v.addError(result, prefix+".maxAttemptsGlobal", "max attempts cannot be negative")
 	}
 }
 

@@ -14,8 +14,6 @@ settings:
   resyncInterval: 5m
   # Heartbeat interval
   heartbeatInterval: 1m
-  # Enable remediation actions
-  enableRemediation: true
   # Dry run mode (log actions without executing)
   dryRunMode: false
   # Kubernetes API QPS
@@ -517,9 +515,6 @@ exporters:
 
   http:
     enabled: false
-    # "::" = dual-stack (listens on IPv4 and IPv6); the server falls back to
-    # "0.0.0.0" automatically if the host kernel has IPv6 disabled.
-    bindAddress: "::"
     port: 8080
     tlsEnabled: false
 
@@ -529,14 +524,10 @@ remediation:
   dryRun: false
   maxRemediationsPerHour: 5
   maxRemediationsPerMinute: 1
-  cooldownPeriod: 10m
-  maxAttemptsGlobal: 2
 
 # Features configuration
 features:
-  enableMetrics: true
   enableProfiling: false
-  enableTracing: false
 
 # Overlay test configuration for CNI connectivity testing
 # Uses Go HTTP health server for accurate probing (fixes Cilium ICMP issue)

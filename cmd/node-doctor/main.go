@@ -281,21 +281,12 @@ func main() {
 	// /remediation/history immediately on start (no race window).
 	var remediatorRegistry *remediators.RemediatorRegistry
 	if config.Remediation.Enabled {
-		maxPerHour := config.Remediation.MaxRemediationsPerHour
-		if maxPerHour == 0 {
-			maxPerHour = 10 // sensible default
+		remediatorRegistry, err = newRemediatorRegistry(config)
+		if err != nil {
+			log.Fatalf("Failed to apply remediation config: %v", err)
 		}
-		historySize := config.Remediation.HistorySize
-		if historySize == 0 {
-			historySize = 100
-		}
-		remediatorRegistry = remediators.NewRegistry(maxPerHour, historySize)
-		remediatorRegistry.SetDryRun(config.Remediation.DryRun || config.Settings.DryRunMode)
-		// Wire the per-minute token-bucket burst limit. A value of 0 leaves the
-		// per-minute check disabled (only the per-hour window applies).
-		remediatorRegistry.SetMaxRemediationsPerMinute(config.Remediation.MaxRemediationsPerMinute)
 		log.Printf("[INFO] Remediator registry initialized (dry-run=%v, maxPerHour=%d, maxPerMinute=%d)",
-			remediatorRegistry.IsDryRun(), maxPerHour, config.Remediation.MaxRemediationsPerMinute)
+			remediatorRegistry.IsDryRun(), config.Remediation.MaxRemediationsPerHour, config.Remediation.MaxRemediationsPerMinute)
 
 		// Register the built-in remediator strategies so the detector's dispatch
 		// (which addresses a remediator by its strategy type) can find one.
@@ -499,6 +490,22 @@ func (a *remediationHistoryAdapter) GetHistory(limit int) interface{} {
 //
 // Production code never reassigns this; only tests do.
 var startNetworkedExportersFn = startNetworkedExporters
+
+func newRemediatorRegistry(config *types.NodeDoctorConfig) (*remediators.RemediatorRegistry, error) {
+	maxPerHour := config.Remediation.MaxRemediationsPerHour
+	if maxPerHour == 0 {
+		maxPerHour = 10
+	}
+	historySize := config.Remediation.HistorySize
+	if historySize == 0 {
+		historySize = 100
+	}
+	registry := remediators.NewRegistry(maxPerHour, historySize)
+	if err := registry.ApplyConfig(&config.Remediation, config.Settings.DryRunMode); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
 
 // startHealthServer creates and starts the health server. This is PHASE 1 of
 // createExporters and MUST stay ahead of any networked exporter init.

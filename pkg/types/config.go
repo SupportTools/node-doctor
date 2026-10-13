@@ -29,8 +29,6 @@ const (
 	DefaultPrometheusPath           = "/metrics"
 	DefaultMonitorInterval          = "30s"
 	DefaultMonitorTimeout           = "10s"
-	DefaultCooldownPeriod           = "5m"
-	DefaultMaxAttemptsGlobal        = 3
 	DefaultMaxRemediationsPerHour   = 10
 	DefaultMaxRemediationsPerMinute = 2
 	DefaultCircuitBreakerThreshold  = 5
@@ -84,9 +82,8 @@ var (
 	}
 
 	// Minimum interval thresholds (conservative settings to prevent system overload)
-	MinMonitorInterval   = 1 * time.Second  // Minimum time between monitor polls
-	MinHeartbeatInterval = 5 * time.Second  // Minimum heartbeat check interval
-	MinCooldownPeriod    = 10 * time.Second // Minimum cooldown between remediation attempts
+	MinMonitorInterval   = 1 * time.Second // Minimum time between monitor polls
+	MinHeartbeatInterval = 5 * time.Second // Minimum heartbeat check interval
 )
 
 // MonitorRegistryValidator provides an interface for validating monitor types
@@ -163,11 +160,7 @@ type GlobalSettings struct {
 	ResyncInterval    time.Duration `json:"-" yaml:"-"`
 	HeartbeatInterval time.Duration `json:"-" yaml:"-"`
 
-	// Remediation master switches.
-	// EnableRemediation is parsed but not read at runtime; the effective gate is
-	// config.Remediation.Enabled in main.go. Reserved to unify these two flags.
-	EnableRemediation bool `json:"enableRemediation,omitempty" yaml:"enableRemediation,omitempty"`
-	DryRunMode        bool `json:"dryRunMode,omitempty" yaml:"dryRunMode,omitempty"`
+	DryRunMode bool `json:"dryRunMode,omitempty" yaml:"dryRunMode,omitempty"`
 
 	// Kubernetes client configuration
 	Kubeconfig string  `json:"kubeconfig,omitempty" yaml:"kubeconfig,omitempty"`
@@ -231,23 +224,6 @@ type MonitorRemediationConfig struct {
 
 	// Args are arguments to pass to the script
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
-
-	// Cooldown period (stored as string)
-	CooldownString string        `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
-	Cooldown       time.Duration `json:"-" yaml:"-"`
-
-	// MaxAttempts is the maximum remediation attempts
-	MaxAttempts int `json:"maxAttempts,omitempty" yaml:"maxAttempts,omitempty"`
-
-	// Priority for multiple remediation strategies
-	Priority int `json:"priority,omitempty" yaml:"priority,omitempty"`
-
-	// GracefulStop indicates whether to stop gracefully
-	GracefulStop bool `json:"gracefulStop,omitempty" yaml:"gracefulStop,omitempty"`
-
-	// WaitTimeout for graceful stop (stored as string)
-	WaitTimeoutString string        `json:"waitTimeout,omitempty" yaml:"waitTimeout,omitempty"`
-	WaitTimeout       time.Duration `json:"-" yaml:"-"`
 
 	// Additional strategies for multi-step remediation
 	Strategies []MonitorRemediationConfig `json:"strategies,omitempty" yaml:"strategies,omitempty"`
@@ -428,21 +404,11 @@ type RemediationConfig struct {
 	// per-minute check is skipped).
 	MaxRemediationsPerMinute int `json:"maxRemediationsPerMinute,omitempty" yaml:"maxRemediationsPerMinute,omitempty"`
 
-	// Cooldown configuration
-	CooldownPeriodString string        `json:"cooldownPeriod,omitempty" yaml:"cooldownPeriod,omitempty"`
-	CooldownPeriod       time.Duration `json:"-" yaml:"-"`
-
-	// Global max attempts
-	MaxAttemptsGlobal int `json:"maxAttemptsGlobal,omitempty" yaml:"maxAttemptsGlobal,omitempty"`
-
 	// Circuit breaker settings
 	CircuitBreaker CircuitBreakerConfig `json:"circuitBreaker,omitempty" yaml:"circuitBreaker,omitempty"`
 
 	// History configuration
 	HistorySize int `json:"historySize,omitempty" yaml:"historySize,omitempty"`
-
-	// Problem-specific overrides
-	Overrides []RemediationOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
 
 	// Coordination with controller for cluster-wide remediation safety
 	Coordination *RemediationCoordinationConfig `json:"coordination,omitempty" yaml:"coordination,omitempty"`
@@ -488,29 +454,30 @@ type RemediationCoordinationConfig struct {
 
 // CircuitBreakerConfig configures circuit breaker behavior.
 type CircuitBreakerConfig struct {
-	Enabled          bool          `json:"enabled" yaml:"enabled"`
+	// Enabled is a *bool so an absent block keeps the breaker on with built-in defaults.
+	Enabled          *bool         `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Threshold        int           `json:"threshold,omitempty" yaml:"threshold,omitempty"`
 	TimeoutString    string        `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Timeout          time.Duration `json:"-" yaml:"-"`
 	SuccessThreshold int           `json:"successThreshold,omitempty" yaml:"successThreshold,omitempty"`
 }
 
-// RemediationOverride allows problem-specific remediation overrides.
-type RemediationOverride struct {
-	Problem                 string        `json:"problem" yaml:"problem"`
-	CooldownString          string        `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
-	Cooldown                time.Duration `json:"-" yaml:"-"`
-	MaxAttempts             int           `json:"maxAttempts,omitempty" yaml:"maxAttempts,omitempty"`
-	CircuitBreakerThreshold int           `json:"circuitBreakerThreshold,omitempty" yaml:"circuitBreakerThreshold,omitempty"`
+// IsDisabled reports whether the config explicitly turns the circuit breaker off.
+func (c CircuitBreakerConfig) IsDisabled() bool {
+	return c.Enabled != nil && !*c.Enabled
+}
+
+func (c CircuitBreakerConfig) isSet() bool {
+	if c.IsDisabled() {
+		return false
+	}
+	return c.Enabled != nil || c.Threshold != 0 || c.TimeoutString != "" || c.SuccessThreshold != 0
 }
 
 // FeatureFlags contains experimental feature flags.
 type FeatureFlags struct {
-	EnableMetrics   bool   `json:"enableMetrics,omitempty" yaml:"enableMetrics,omitempty"`
-	EnableProfiling bool   `json:"enableProfiling,omitempty" yaml:"enableProfiling,omitempty"`
-	ProfilingPort   int    `json:"profilingPort,omitempty" yaml:"profilingPort,omitempty"`
-	EnableTracing   bool   `json:"enableTracing,omitempty" yaml:"enableTracing,omitempty"`
-	TracingEndpoint string `json:"tracingEndpoint,omitempty" yaml:"tracingEndpoint,omitempty"`
+	EnableProfiling bool `json:"enableProfiling,omitempty" yaml:"enableProfiling,omitempty"`
+	ProfilingPort   int  `json:"profilingPort,omitempty" yaml:"profilingPort,omitempty"`
 }
 
 // ReloadConfig contains configuration hot reload settings.
@@ -602,9 +569,6 @@ func (c *NodeDoctorConfig) ApplyDefaults() error {
 		return fmt.Errorf("failed to apply defaults to remediation: %w", err)
 	}
 
-	// Apply defaults to features
-	c.Features.ApplyDefaults()
-
 	// Apply defaults to reload configuration
 	if err := c.Reload.ApplyDefaults(); err != nil {
 		return fmt.Errorf("failed to apply defaults to reload: %w", err)
@@ -692,33 +656,7 @@ func (m *MonitorConfig) ApplyDefaults() error {
 
 // ApplyDefaults applies default values to MonitorRemediationConfig.
 func (r *MonitorRemediationConfig) ApplyDefaults() error {
-	if r.CooldownString == "" {
-		r.CooldownString = DefaultCooldownPeriod
-	}
-	if r.MaxAttempts == 0 {
-		r.MaxAttempts = DefaultMaxAttemptsGlobal
-	}
-
-	// Parse durations
-	var err error
-	r.Cooldown, err = time.ParseDuration(r.CooldownString)
-	if err != nil {
-		return fmt.Errorf("invalid cooldown %q: %w", r.CooldownString, err)
-	}
-
-	if r.WaitTimeoutString != "" {
-		r.WaitTimeout, err = time.ParseDuration(r.WaitTimeoutString)
-		if err != nil {
-			return fmt.Errorf("invalid waitTimeout %q: %w", r.WaitTimeoutString, err)
-		}
-	}
-
-	// Apply defaults to nested strategies with recursion protection
-	if err := r.applyDefaultsWithDepth(0); err != nil {
-		return err
-	}
-
-	return nil
+	return r.applyDefaultsWithDepth(0)
 }
 
 // applyDefaultsWithDepth applies defaults to nested strategies with recursion depth protection.
@@ -1015,47 +953,24 @@ func (r *RemediationConfig) ApplyDefaults() error {
 	if r.MaxRemediationsPerMinute == 0 {
 		r.MaxRemediationsPerMinute = DefaultMaxRemediationsPerMinute
 	}
-	if r.CooldownPeriodString == "" {
-		r.CooldownPeriodString = DefaultCooldownPeriod
-	}
-	if r.MaxAttemptsGlobal == 0 {
-		r.MaxAttemptsGlobal = DefaultMaxAttemptsGlobal
-	}
 	if r.HistorySize == 0 {
 		r.HistorySize = DefaultHistorySize
 	}
 
-	// Parse duration
-	var err error
-	r.CooldownPeriod, err = time.ParseDuration(r.CooldownPeriodString)
-	if err != nil {
-		return fmt.Errorf("invalid cooldownPeriod %q: %w", r.CooldownPeriodString, err)
-	}
-
-	// Circuit breaker defaults
-	if r.CircuitBreaker.Enabled {
+	if r.CircuitBreaker.isSet() {
 		if r.CircuitBreaker.Threshold == 0 {
 			r.CircuitBreaker.Threshold = DefaultCircuitBreakerThreshold
 		}
 		if r.CircuitBreaker.TimeoutString == "" {
 			r.CircuitBreaker.TimeoutString = DefaultCircuitBreakerTimeout
 		}
+		var err error
 		r.CircuitBreaker.Timeout, err = time.ParseDuration(r.CircuitBreaker.TimeoutString)
 		if err != nil {
 			return fmt.Errorf("invalid circuit breaker timeout %q: %w", r.CircuitBreaker.TimeoutString, err)
 		}
 		if r.CircuitBreaker.SuccessThreshold == 0 {
 			r.CircuitBreaker.SuccessThreshold = 2
-		}
-	}
-
-	// Apply defaults to overrides
-	for i := range r.Overrides {
-		if r.Overrides[i].CooldownString != "" {
-			r.Overrides[i].Cooldown, err = time.ParseDuration(r.Overrides[i].CooldownString)
-			if err != nil {
-				return fmt.Errorf("invalid cooldown in override for %s: %w", r.Overrides[i].Problem, err)
-			}
 		}
 	}
 
@@ -1105,14 +1020,6 @@ func (c *RemediationCoordinationConfig) ApplyDefaults() error {
 	}
 
 	return nil
-}
-
-// ApplyDefaults applies default values to FeatureFlags.
-func (f *FeatureFlags) ApplyDefaults() {
-	// EnableMetrics defaults to true
-	if !f.EnableMetrics {
-		f.EnableMetrics = true
-	}
 }
 
 // ===============================================
@@ -1331,26 +1238,6 @@ func (r *MonitorRemediationConfig) Validate() error {
 		if r.Interface == "" {
 			return fmt.Errorf("interface is required for restart-interface strategy")
 		}
-	}
-
-	// Validate cooldown is positive
-	if r.Cooldown <= 0 {
-		return fmt.Errorf("cooldown must be positive, got %v", r.Cooldown)
-	}
-
-	// Validate minimum cooldown threshold (conservative setting to prevent remediation storms)
-	if r.Cooldown < MinCooldownPeriod {
-		return fmt.Errorf("cooldown %v is below minimum threshold of %v", r.Cooldown, MinCooldownPeriod)
-	}
-
-	// Validate max attempts
-	if r.MaxAttempts <= 0 {
-		return fmt.Errorf("maxAttempts must be positive, got %d", r.MaxAttempts)
-	}
-
-	// Validate wait timeout if specified
-	if r.WaitTimeoutString != "" && r.WaitTimeout <= 0 {
-		return fmt.Errorf("waitTimeout must be positive when specified, got %v", r.WaitTimeout)
 	}
 
 	// Validate nested strategies with recursion protection
@@ -1620,23 +1507,12 @@ func (r *RemediationConfig) Validate() error {
 		return fmt.Errorf("maxRemediationsPerMinute must be non-negative, got %d", r.MaxRemediationsPerMinute)
 	}
 
-	// Validate cooldown period
-	if r.CooldownPeriod <= 0 {
-		return fmt.Errorf("cooldownPeriod must be positive, got %v", r.CooldownPeriod)
-	}
-
-	// Validate max attempts
-	if r.MaxAttemptsGlobal <= 0 {
-		return fmt.Errorf("maxAttemptsGlobal must be positive, got %d", r.MaxAttemptsGlobal)
-	}
-
 	// Validate history size
 	if r.HistorySize <= 0 {
 		return fmt.Errorf("historySize must be positive, got %d", r.HistorySize)
 	}
 
-	// Validate circuit breaker
-	if r.CircuitBreaker.Enabled {
+	if r.CircuitBreaker.isSet() {
 		if r.CircuitBreaker.Threshold <= 0 {
 			return fmt.Errorf("circuitBreaker.threshold must be positive, got %d", r.CircuitBreaker.Threshold)
 		}
@@ -1645,28 +1521,6 @@ func (r *RemediationConfig) Validate() error {
 		}
 		if r.CircuitBreaker.SuccessThreshold <= 0 {
 			return fmt.Errorf("circuitBreaker.successThreshold must be positive, got %d", r.CircuitBreaker.SuccessThreshold)
-		}
-	}
-
-	// Validate overrides
-	problemNames := make(map[string]bool)
-	for i, override := range r.Overrides {
-		if override.Problem == "" {
-			return fmt.Errorf("override %d: problem is required", i)
-		}
-		if problemNames[override.Problem] {
-			return fmt.Errorf("duplicate override for problem %q found", override.Problem)
-		}
-		problemNames[override.Problem] = true
-
-		if override.CooldownString != "" && override.Cooldown <= 0 {
-			return fmt.Errorf("override %q: cooldown must be positive when specified, got %v", override.Problem, override.Cooldown)
-		}
-		if override.MaxAttempts < 0 {
-			return fmt.Errorf("override %q: maxAttempts must be non-negative, got %d", override.Problem, override.MaxAttempts)
-		}
-		if override.CircuitBreakerThreshold < 0 {
-			return fmt.Errorf("override %q: circuitBreakerThreshold must be non-negative, got %d", override.Problem, override.CircuitBreakerThreshold)
 		}
 	}
 
