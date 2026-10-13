@@ -357,28 +357,15 @@ jobs:
           rm -rf /tmp/chart-verify && mkdir -p /tmp/chart-verify
           tar -xzf "$TGZ" -C /tmp/chart-verify
 
-          # Emit "<repository>:<tag>" for each image the packaged defaults reference.
-          python3 - <<'PY' > /tmp/chart-image-refs.txt
-          import sys, yaml
-          with open('/tmp/chart-verify/node-doctor/values.yaml') as fh:
-              v = yaml.safe_load(fh)
-          refs = []
-          for path in (('image',), ('overlayTest', 'image')):
-              node = v
-              for key in path:
-                  node = (node or {}).get(key)
-              if not node:
-                  continue
-              repo, tag = node.get('repository'), node.get('tag')
-              if not repo or not tag:
-                  print(f"missing repository/tag under {'.'.join(path)}", file=sys.stderr)
-                  sys.exit(1)
-              refs.append(f"{repo}:{tag}")
-          if not refs:
-              print("no image references found in packaged values.yaml", file=sys.stderr)
-              sys.exit(1)
-          print('\n'.join(refs))
-          PY
+          # Render the packaged chart with its defaults and collect every image it would run.
+          # helm is baked into the runner; PyYAML is not.
+          helm template node-doctor /tmp/chart-verify/node-doctor \
+            | sed -nE 's/^[[:space:]]+image:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' \
+            | sort -u > /tmp/chart-image-refs.txt
+          if [ ! -s /tmp/chart-image-refs.txt ]; then
+            echo "::error::No image references found in the rendered chart"
+            exit 1
+          fi
 
           echo "Packaged chart references:"
           cat /tmp/chart-image-refs.txt
