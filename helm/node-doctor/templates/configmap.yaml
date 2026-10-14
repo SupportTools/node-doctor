@@ -68,6 +68,11 @@ data:
           checkInodes: {{ .Values.monitors.disk.checkInodes }}
           checkReadonly: {{ .Values.monitors.disk.checkReadonly }}
           checkIOHealth: {{ .Values.monitors.disk.checkIOHealth }}
+          {{- if and .Values.monitors.disk.writeProbe .Values.monitors.disk.writeProbe.enabled }}
+          writeProbePaths:
+            - {{ .Values.monitors.disk.writeProbe.mountPath | quote }}
+          writeProbeTimeout: {{ .Values.monitors.disk.writeProbe.timeout | quote }}
+          {{- end }}
       {{- end }}
 
       {{- if .Values.monitors.ipForwarding.enabled }}

@@ -444,6 +444,16 @@ monitors:
     checkInodes: true
     checkReadonly: true
     checkIOHealth: true
+    # Write probe: create + write + fsync + unlink a file on the host root filesystem every
+    # check. The statfs read-only check cannot see an ext4 that shut down after errors
+    # (Linux >= 6.7 no longer sets SB_RDONLY) or a root device that dropped off the bus;
+    # this probe can. hostPath is a host directory ON the filesystem to test; it is mounted
+    # read-write at mountPath (the rest of the host root stays read-only).
+    writeProbe:
+      enabled: true
+      hostPath: /var/lib/node-doctor/write-probe
+      mountPath: /host-write-probe
+      timeout: 10s
 
   ipForwarding:
     enabled: true

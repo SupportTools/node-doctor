@@ -87,9 +87,11 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
+        # condition_type is what the disk monitor emits: "ReadonlyFilesystem" (lower-case o).
+        # This rule used to match "ReadOnlyFilesystem", which no monitor emits, so it could not fire.
         - alert: NodeDoctorReadOnlyFilesystem
           expr: |
-            node_doctor_monitor_condition_status{condition_type="ReadOnlyFilesystem"} == 1
+            node_doctor_monitor_condition_status{condition_type="ReadonlyFilesystem"} == 1
           for: {{ .Values.prometheusRule.critical.readOnlyFilesystem.for }}
           labels:
             severity: critical
