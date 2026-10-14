@@ -20,11 +20,11 @@ func defaultWriteProbe(dir string) error {
 	name := f.Name()
 	defer os.Remove(name)
 	if _, err := f.Write([]byte(time.Now().UTC().Format(time.RFC3339Nano))); err != nil {
-		f.Close()
+		_ = f.Close() // the write error is the verdict; a close error adds nothing
 		return fmt.Errorf("write: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close() // the fsync error is the verdict; a close error adds nothing
 		return fmt.Errorf("fsync: %w", err)
 	}
 	if err := f.Close(); err != nil {
