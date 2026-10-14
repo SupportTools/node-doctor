@@ -160,6 +160,10 @@ data:
             warningLatency: 200ms
             criticalLatency: 500ms
             failureThreshold: 3
+            # Consecutive checks over warningLatency before a peer counts toward
+            # NetworkDegraded. One lost SYN = a 1s retransmit, enough on its own
+            # to push the 3-probe average past 200ms; 3 checks = 90s sustained.
+            highLatencyThreshold: 3
             minReachablePeers: 80
           cniHealth:
             enabled: true
