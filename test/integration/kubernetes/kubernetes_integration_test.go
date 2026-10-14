@@ -93,7 +93,7 @@ func createTestExporterConfig() *types.KubernetesExporterConfig {
 		Namespace:         "test-namespace",
 		Conditions: []types.ConditionConfig{
 			{
-				Type:           "TestCustomCondition",
+				Type:           "NodeDoctorTestCustomCondition",
 				DefaultStatus:  "True",
 				DefaultReason:  "TestReason",
 				DefaultMessage: "Test custom condition",
