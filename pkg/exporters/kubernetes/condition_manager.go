@@ -162,6 +162,13 @@ func (cm *ConditionManager) UpdateCondition(condition types.Condition) {
 
 	// Check if this condition has actually changed
 	if existing, exists := cm.conditions[conditionType]; exists {
+		// lastTransitionTime marks a STATUS change. Monitors build a fresh Condition on
+		// every check (Transition = now), so carry the previous transition time forward
+		// while the status is unchanged; otherwise every reason/message tweak would make
+		// the condition look like it just flipped.
+		if existing.Status == nodeCondition.Status && !existing.LastTransitionTime.IsZero() {
+			nodeCondition.LastTransitionTime = existing.LastTransitionTime
+		}
 		if conditionsEqual(existing, nodeCondition) {
 			// Still being actively emitted by its monitor even though the value
 			// didn't change, so refresh its staleness timestamp.
@@ -451,13 +458,24 @@ func (cm *ConditionManager) flushPendingUpdates(ctx context.Context) error {
 		// Merge pending updates with existing conditions
 		allConditions := make(map[string]corev1.NodeCondition)
 
-		// Start with existing conditions
+		// Start with existing conditions. OWNERSHIP GUARD: cm.conditions also holds the
+		// kubelet/control-plane built-ins (Ready, MemoryPressure, DiskPressure, ...) loaded
+		// off the node at sync time. Re-sending those cached copies would overwrite the
+		// owner's live values with a stale snapshot (e.g. put Ready=True back over the
+		// node-lifecycle controller's Ready=Unknown on a node whose kubelet died), so only
+		// node-doctor's own NodeDoctor* conditions are ever written.
 		for conditionType, condition := range cm.conditions {
-			allConditions[conditionType] = condition
+			if strings.HasPrefix(conditionType, nodeDoctorConditionPrefix) {
+				allConditions[conditionType] = condition
+			}
 		}
 
-		// Apply pending updates
+		// Apply pending updates (same guard: never write a condition we do not own)
 		for conditionType, condition := range cm.pendingUpdates {
+			if !strings.HasPrefix(conditionType, nodeDoctorConditionPrefix) {
+				log.Printf("[WARN] refusing to write non-node-doctor condition %q", conditionType)
+				continue
+			}
 			allConditions[conditionType] = condition
 		}
 
@@ -662,10 +680,11 @@ func (cm *ConditionManager) ClearManagedConditions() []string {
 
 	// Conditions managed by node-doctor (common patterns)
 	nodeDoctorConditionPrefixes := []string{
-		"NodeDoctor",     // e.g., NodeDoctorHealthy, NodeDoctorCPU
-		"CPUPressure",    // system-cpu monitor
-		"MemoryPressure", // system-memory monitor (may conflict with k8s built-in)
-		"DiskPressure",   // system-disk monitor (may conflict with k8s built-in)
+		"NodeDoctor",  // e.g., NodeDoctorHealthy, NodeDoctorDiskPressure, NodeDoctorMemoryPressure
+		"CPUPressure", // system-cpu monitor
+		// MemoryPressure / DiskPressure are deliberately NOT listed: node-doctor writes
+		// them as NodeDoctorMemoryPressure / NodeDoctorDiskPressure (covered above), and
+		// the bare names are kubelet-owned built-ins that must never be dropped from state.
 		"NetworkUnreachable",
 		"DNSResolutionFailed",
 		"GatewayUnreachable",

@@ -439,6 +439,12 @@ Node Doctor monitors your nodes across four categories:
 - `MemoryHealthy`, `MemoryPressure`, `SwapPressure`, `OOMKilled`
 - `DiskHealthy`, `DiskPressure`, `InodePressure`, `ReadOnlyFilesystem`
 
+On the Node object every condition is written with a `NodeDoctor` prefix
+(`NodeDoctorDiskPressure`, `NodeDoctorMemoryPressure`, ...). node-doctor never writes the
+kubelet-owned `DiskPressure`, `MemoryPressure`, `PIDPressure` or `Ready` conditions, so it
+cannot trigger the scheduler's `node.kubernetes.io/*-pressure` taints. The Prometheus metric
+`node_doctor_monitor_condition_status{condition_type=...}` keeps the unprefixed names.
+
 ### Network Monitors
 
 | Monitor | What It Checks |
