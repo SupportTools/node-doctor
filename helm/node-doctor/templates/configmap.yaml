@@ -75,6 +75,47 @@ data:
           {{- end }}
       {{- end }}
 
+      {{- if and .Values.monitors.kubelet .Values.monitors.kubelet.enabled }}
+      {{- $k := .Values.monitors.kubelet }}
+      # Kubelet Health Monitor - kubelet healthz from the host network
+      - name: kubelet-health
+        type: kubernetes-kubelet-check
+        enabled: true
+        interval: {{ $k.interval }}
+        timeout: {{ $k.timeout }}
+        config:
+          healthzURL: {{ $k.healthzURL | quote }}
+          failureThreshold: {{ $k.failureThreshold }}
+          checkSystemdStatus: {{ $k.checkSystemdStatus }}
+          checkPLEG: {{ $k.checkPLEG }}
+        {{- if and $k.remediation $k.remediation.enabled }}
+        {{- if not $k.remediation.service }}
+        {{- fail "monitors.kubelet.remediation.service is required when monitors.kubelet.remediation.enabled" }}
+        {{- end }}
+        # One restart of the unit that owns kubelet per incident (KubeletUnhealthy=True),
+        # guarded as documented in values.yaml (monitors.kubelet.remediation).
+        remediation:
+          enabled: true
+          strategy: systemd-restart
+          service: {{ $k.remediation.service | quote }}
+          requireServiceEnabled: {{ $k.remediation.requireServiceEnabled }}
+          triggerConditions:
+            - KubeletUnhealthy
+          maxAttemptsPerIncident: {{ $k.remediation.maxAttemptsPerIncident }}
+          cooldown: {{ $k.remediation.cooldown | quote }}
+          {{- if $k.remediation.requireWriteProbeOK }}
+          {{- if not (and .Values.monitors.disk.enabled .Values.monitors.disk.writeProbe .Values.monitors.disk.writeProbe.enabled) }}
+          {{- fail "monitors.kubelet.remediation.requireWriteProbeOK needs monitors.disk.enabled and monitors.disk.writeProbe.enabled" }}
+          {{- end }}
+          preconditions:
+            - type: ReadonlyFilesystem
+              status: "False"
+              monitor: disk-health
+              maxAge: {{ $k.remediation.writeProbeMaxAge | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+
       {{- if .Values.monitors.ipForwarding.enabled }}
       # IP Forwarding Monitor - Detects disabled ip_forward
       - name: ip-forwarding-check

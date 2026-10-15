@@ -70,9 +70,11 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
+        # The kubelet monitor reports a failure as KubeletUnhealthy=True; it never emits
+        # KubeletHealthy=False, so the old KubeletHealthy == 0 expression could not fire.
         - alert: NodeDoctorKubeletUnhealthy
           expr: |
-            node_doctor_monitor_condition_status{condition_type="KubeletHealthy"} == 0
+            node_doctor_monitor_condition_status{condition_type="KubeletUnhealthy"} == 1
           for: {{ .Values.prometheusRule.critical.kubeletUnhealthy.for }}
           labels:
             severity: critical
