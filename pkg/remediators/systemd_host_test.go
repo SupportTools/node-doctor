@@ -126,16 +126,12 @@ func TestIsChrootNoop(t *testing.T) {
 	}
 }
 
-func TestSystemctlArgv(t *testing.T) {
-	got := systemctlArgv(hostNamespace{}, []string{"restart", "rke2-agent"})
-	if want := []string{"systemctl", "restart", "rke2-agent"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("plain argv = %q, want %q", got, want)
-	}
-	got = systemctlArgv(hostNamespace{enter: true, nsenter: "/usr/bin/nsenter"}, []string{"restart", "rke2-agent"})
-	want := []string{"/usr/bin/nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--",
+func TestNsenterSystemctlArgs(t *testing.T) {
+	got := nsenterSystemctlArgs([]string{"restart", "rke2-agent"})
+	want := []string{"--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--",
 		"systemctl", "restart", "rke2-agent"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("nsenter argv = %q, want %q", got, want)
+		t.Errorf("nsenter args = %q, want %q", got, want)
 	}
 }
 
@@ -199,9 +195,6 @@ func TestHostNamespaceProbe(t *testing.T) {
 			got := hostNamespaceProbe()
 			if got.enter != tt.wantEnter {
 				t.Fatalf("enter = %v, want %v", got.enter, tt.wantEnter)
-			}
-			if got.enter && got.nsenter != "/usr/bin/nsenter" {
-				t.Errorf("nsenter path = %q", got.nsenter)
 			}
 		})
 	}

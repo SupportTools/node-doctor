@@ -80,8 +80,17 @@ type defaultSystemdExecutor struct{}
 // PID 1's namespaces with nsenter, and the chroot message is always treated as a
 // failure so a no-op can never be reported as a remediation.
 func (e *defaultSystemdExecutor) ExecuteSystemctl(ctx context.Context, args ...string) (string, error) {
-	argv := systemctlArgv(hostNamespaceProbe(), args)
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// The binary is a constant ("nsenter" or "systemctl") and args is a systemctl verb
+	// plus the unit name from the operator's remediation config, passed as argv with
+	// no shell, so there is nothing to inject into.
+	var cmd *exec.Cmd
+	if hostNamespaceProbe().enter {
+		// #nosec G204 -- constant binary; argv is a fixed nsenter prefix + systemctl verb + configured unit
+		cmd = exec.CommandContext(ctx, "nsenter", nsenterSystemctlArgs(args)...)
+	} else {
+		// #nosec G204 -- constant binary; argv is a systemctl verb + configured unit
+		cmd = exec.CommandContext(ctx, "systemctl", args...)
+	}
 	output, err := cmd.CombinedOutput()
 	out := strings.TrimSpace(string(output))
 	if isChrootNoop(out) {
@@ -102,11 +111,9 @@ func isChrootNoop(output string) bool {
 // hostNamespace describes how to reach the host's systemd from this process.
 type hostNamespace struct {
 	// enter is true when systemctl must run in PID 1's namespaces: PID 1 is systemd
-	// (so the pid namespace is the host's) and this process is in a different mount
-	// namespace (a container).
+	// (so the pid namespace is the host's), this process is in a different mount
+	// namespace (a container), and nsenter is on PATH.
 	enter bool
-	// nsenter is the path to the nsenter binary, set when enter is true.
-	nsenter string
 }
 
 // procRoot and lookPath are test seams for hostNamespaceProbe.
@@ -128,21 +135,18 @@ func hostNamespaceProbe() hostNamespace {
 	if err1 != nil || err2 != nil || selfNS == hostNS {
 		return hostNamespace{}
 	}
-	path, err := lookPath("nsenter")
-	if err != nil {
+	if _, err := lookPath("nsenter"); err != nil {
 		// No nsenter: fall back to plain systemctl. If that cannot reach the host
 		// it prints the chroot notice, which ExecuteSystemctl turns into an error.
 		return hostNamespace{}
 	}
-	return hostNamespace{enter: true, nsenter: path}
+	return hostNamespace{enter: true}
 }
 
-// systemctlArgv builds the argv for a systemctl call.
-func systemctlArgv(ns hostNamespace, args []string) []string {
-	if !ns.enter {
-		return append([]string{"systemctl"}, args...)
-	}
-	argv := []string{ns.nsenter, "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "systemctl"}
+// nsenterSystemctlArgs builds the nsenter arguments that run `systemctl args...` in
+// PID 1's mount, UTS, IPC, network and PID namespaces.
+func nsenterSystemctlArgs(args []string) []string {
+	argv := []string{"--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "systemctl"}
 	return append(argv, args...)
 }
 
