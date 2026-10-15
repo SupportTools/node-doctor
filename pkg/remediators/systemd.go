@@ -2,8 +2,11 @@ package remediators
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,10 +72,78 @@ type SystemdExecutor interface {
 type defaultSystemdExecutor struct{}
 
 // ExecuteSystemctl executes a systemctl command and returns the output.
+//
+// When node-doctor runs in a container on a systemd host (the DaemonSet runs with
+// hostPID), the systemctl in the image cannot reach the host's systemd: it prints
+// "Running in chroot, ignoring command" and exits 0, so a restart silently did
+// nothing and was reported as a success. In that situation the command is run in
+// PID 1's namespaces with nsenter, and the chroot message is always treated as a
+// failure so a no-op can never be reported as a remediation.
 func (e *defaultSystemdExecutor) ExecuteSystemctl(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", args...)
+	argv := systemctlArgv(hostNamespaceProbe(), args)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	output, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(output)), err
+	out := strings.TrimSpace(string(output))
+	if isChrootNoop(out) {
+		return out, fmt.Errorf("%w: %s", errSystemctlChroot, out)
+	}
+	return out, err
+}
+
+// errSystemctlChroot means systemctl ran without access to the host's systemd and
+// ignored the command.
+var errSystemctlChroot = errors.New("systemctl cannot reach the host systemd (chroot), command ignored")
+
+// isChrootNoop reports whether systemctl output is the chroot "ignoring command" notice.
+func isChrootNoop(output string) bool {
+	return strings.Contains(output, "Running in chroot, ignoring")
+}
+
+// hostNamespace describes how to reach the host's systemd from this process.
+type hostNamespace struct {
+	// enter is true when systemctl must run in PID 1's namespaces: PID 1 is systemd
+	// (so the pid namespace is the host's) and this process is in a different mount
+	// namespace (a container).
+	enter bool
+	// nsenter is the path to the nsenter binary, set when enter is true.
+	nsenter string
+}
+
+// procRoot and lookPath are test seams for hostNamespaceProbe.
+var (
+	procRoot = "/proc"
+	lookPath = exec.LookPath
+)
+
+// hostNamespaceProbe decides whether systemctl must be run through nsenter. It is
+// re-evaluated on every call (two readlinks and a small read) so it never caches a
+// stale answer.
+func hostNamespaceProbe() hostNamespace {
+	comm, err := os.ReadFile(filepath.Join(procRoot, "1", "comm"))
+	if err != nil || strings.TrimSpace(string(comm)) != "systemd" {
+		return hostNamespace{}
+	}
+	selfNS, err1 := os.Readlink(filepath.Join(procRoot, "self", "ns", "mnt"))
+	hostNS, err2 := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
+	if err1 != nil || err2 != nil || selfNS == hostNS {
+		return hostNamespace{}
+	}
+	path, err := lookPath("nsenter")
+	if err != nil {
+		// No nsenter: fall back to plain systemctl. If that cannot reach the host
+		// it prints the chroot notice, which ExecuteSystemctl turns into an error.
+		return hostNamespace{}
+	}
+	return hostNamespace{enter: true, nsenter: path}
+}
+
+// systemctlArgv builds the argv for a systemctl call.
+func systemctlArgv(ns hostNamespace, args []string) []string {
+	if !ns.enter {
+		return append([]string{"systemctl"}, args...)
+	}
+	argv := []string{ns.nsenter, "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "systemctl"}
+	return append(argv, args...)
 }
 
 // IsActive checks if a service is active using systemctl is-active.
@@ -176,6 +247,12 @@ func (r *SystemdRemediator) remediate(ctx context.Context, problem types.Problem
 	}
 
 	// Dry-run mode
+	if requireEnabled(problem) {
+		if err := r.checkEnabled(ctx, serviceName); err != nil {
+			return err
+		}
+	}
+
 	if r.config.DryRun {
 		r.logInfof("DRY-RUN: Would execute systemctl %s %s", r.config.Operation, serviceName)
 		return nil
@@ -204,6 +281,27 @@ func (r *SystemdRemediator) remediate(ctx context.Context, problem types.Problem
 	}
 
 	return nil
+}
+
+// metadataKeyRequireEnabled carries MonitorRemediationConfig.RequireServiceEnabled.
+const metadataKeyRequireEnabled = "requireEnabled"
+
+func requireEnabled(problem types.Problem) bool {
+	return problem.Metadata != nil && problem.Metadata[metadataKeyRequireEnabled] == "true"
+}
+
+// checkEnabled refuses to act on a service that is not enabled. Restarting an
+// installed-but-disabled unit starts it, which is not a repair (e.g. rke2-agent on an
+// RKE2 server node, where kubelet belongs to rke2-server).
+func (r *SystemdRemediator) checkEnabled(ctx context.Context, serviceName string) error {
+	out, err := r.systemdExecutor.ExecuteSystemctl(ctx, "is-enabled", serviceName)
+	if strings.TrimSpace(out) == "enabled" && err == nil {
+		return nil
+	}
+	if err != nil && out == "" {
+		return fmt.Errorf("refusing to %s %s: cannot determine whether it is enabled: %w", r.config.Operation, serviceName, err)
+	}
+	return fmt.Errorf("refusing to %s %s: systemctl is-enabled reports %q, not \"enabled\"", r.config.Operation, serviceName, out)
 }
 
 // resolveServiceName returns the systemd service to act on for this remediation.

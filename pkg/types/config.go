@@ -227,6 +227,58 @@ type MonitorRemediationConfig struct {
 
 	// Additional strategies for multi-step remediation
 	Strategies []MonitorRemediationConfig `json:"strategies,omitempty" yaml:"strategies,omitempty"`
+
+	// RequireServiceEnabled (systemd-restart only) makes the remediator refuse to act
+	// unless `systemctl is-enabled <service>` reports "enabled". Restarting a unit that
+	// is installed but disabled STARTS it, which is never a repair: on an RKE2 server
+	// node rke2-agent.service exists but is disabled, and starting it would run a second
+	// kubelet. It is threaded to the remediator via Problem.Metadata["requireEnabled"].
+	RequireServiceEnabled bool `json:"requireServiceEnabled,omitempty" yaml:"requireServiceEnabled,omitempty"`
+
+	// The fields below are the dispatch POLICY. They are read from the top-level
+	// remediation config of a monitor only; they are ignored on nested Strategies.
+
+	// TriggerConditions names the condition types that start an incident when their
+	// status is True (problem polarity, e.g. KubeletUnhealthy). When it is empty the
+	// legacy rule applies: ANY condition with status False triggers. The legacy rule is
+	// wrong for monitors whose conditions are problem-polarity, which report their
+	// healthy state as KubeletDown=False / KubeletUnhealthy=False on every check.
+	TriggerConditions []string `json:"triggerConditions,omitempty" yaml:"triggerConditions,omitempty"`
+
+	// MaxAttemptsPerIncident caps dispatches for one incident (one trigger condition
+	// staying in its problem state). The incident ends, and the count resets, when the
+	// monitor reports the condition out of its problem state. 0 means unlimited.
+	MaxAttemptsPerIncident int `json:"maxAttemptsPerIncident,omitempty" yaml:"maxAttemptsPerIncident,omitempty"`
+
+	// Cooldown is the minimum time between two dispatches for the same monitor and
+	// condition, across incidents. It stops a flapping condition from turning
+	// MaxAttemptsPerIncident into a restart loop. Empty means no cooldown.
+	CooldownString string        `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
+	Cooldown       time.Duration `json:"-" yaml:"-"`
+
+	// Preconditions must ALL hold, against the latest condition reported by any
+	// monitor, or the dispatch is skipped. A skipped dispatch does not use up an
+	// attempt; it is re-evaluated on the next check.
+	Preconditions []RemediationPrecondition `json:"preconditions,omitempty" yaml:"preconditions,omitempty"`
+}
+
+// RemediationPrecondition is one condition that must be observed before a
+// remediation is dispatched, e.g. "the disk write probe passed in the last 3m":
+// {type: ReadonlyFilesystem, status: "False", maxAge: 3m}.
+type RemediationPrecondition struct {
+	// Type is the condition type, as the monitor emits it (e.g. ReadonlyFilesystem).
+	Type string `json:"type" yaml:"type"`
+
+	// Status is the status the condition must have: "True" or "False".
+	Status string `json:"status" yaml:"status"`
+
+	// Monitor optionally restricts the match to the condition reported by this monitor.
+	Monitor string `json:"monitor,omitempty" yaml:"monitor,omitempty"`
+
+	// MaxAge is how old the observation may be. A condition never observed, or
+	// observed longer ago than this, fails the precondition. Required.
+	MaxAgeString string        `json:"maxAge" yaml:"maxAge"`
+	MaxAge       time.Duration `json:"-" yaml:"-"`
 }
 
 // ExporterConfigs contains all exporter configurations.
@@ -663,6 +715,25 @@ func (r *MonitorRemediationConfig) ApplyDefaults() error {
 func (r *MonitorRemediationConfig) applyDefaultsWithDepth(depth int) error {
 	if depth > MaxRecursionDepth {
 		return fmt.Errorf("maximum recursion depth (%d) exceeded in nested strategies", MaxRecursionDepth)
+	}
+
+	if r.CooldownString != "" {
+		d, err := time.ParseDuration(r.CooldownString)
+		if err != nil {
+			return fmt.Errorf("invalid cooldown %q: %w", r.CooldownString, err)
+		}
+		r.Cooldown = d
+	}
+	for i := range r.Preconditions {
+		p := &r.Preconditions[i]
+		if p.MaxAgeString == "" {
+			continue // Validate reports the missing maxAge
+		}
+		d, err := time.ParseDuration(p.MaxAgeString)
+		if err != nil {
+			return fmt.Errorf("invalid maxAge %q in precondition %d: %w", p.MaxAgeString, i, err)
+		}
+		p.MaxAge = d
 	}
 
 	for i := range r.Strategies {
@@ -1240,11 +1311,43 @@ func (r *MonitorRemediationConfig) Validate() error {
 		}
 	}
 
+	if err := r.validatePolicy(); err != nil {
+		return err
+	}
+
 	// Validate nested strategies with recursion protection
 	if err := r.validateWithDepth(0); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+// validatePolicy validates the dispatch policy fields (trigger conditions,
+// per-incident cap, cooldown and preconditions).
+func (r *MonitorRemediationConfig) validatePolicy() error {
+	for i, t := range r.TriggerConditions {
+		if strings.TrimSpace(t) == "" {
+			return fmt.Errorf("triggerConditions[%d] is empty", i)
+		}
+	}
+	if r.MaxAttemptsPerIncident < 0 {
+		return fmt.Errorf("maxAttemptsPerIncident must be non-negative, got %d", r.MaxAttemptsPerIncident)
+	}
+	if r.Cooldown < 0 {
+		return fmt.Errorf("cooldown must be non-negative, got %v", r.Cooldown)
+	}
+	for i, p := range r.Preconditions {
+		if p.Type == "" {
+			return fmt.Errorf("preconditions[%d]: type is required", i)
+		}
+		if p.Status != string(ConditionTrue) && p.Status != string(ConditionFalse) {
+			return fmt.Errorf("preconditions[%d]: status must be %q or %q, got %q", i, ConditionTrue, ConditionFalse, p.Status)
+		}
+		if p.MaxAge <= 0 {
+			return fmt.Errorf("preconditions[%d]: maxAge is required and must be positive", i)
+		}
+	}
 	return nil
 }
 

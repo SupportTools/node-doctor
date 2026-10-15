@@ -455,6 +455,43 @@ monitors:
       mountPath: /host-write-probe
       timeout: 10s
 
+  # Kubelet health (type kubernetes-kubelet-check). Polls the kubelet healthz endpoint
+  # from the host network; failureThreshold consecutive failures set
+  # KubeletUnhealthy=True (node condition NodeDoctorKubeletUnhealthy).
+  kubelet:
+    enabled: false
+    interval: 30s
+    timeout: 10s
+    healthzURL: http://127.0.0.1:10248/healthz
+    failureThreshold: 3
+    # Leave false on RKE2/k3s: kubelet is a child process of rke2/k3s there, not a
+    # systemd unit, so a kubelet.service check reports it down on every healthy node.
+    checkSystemdStatus: false
+    # PLEG needs authenticated access to the kubelet metrics port (10250).
+    checkPLEG: false
+    # Automatic restart of the systemd unit that owns kubelet, when KubeletUnhealthy
+    # is True. Opt-in. Every guard below is on by default and should stay on:
+    #   - maxAttemptsPerIncident: restarts per incident. The incident ends when
+    #     kubelet is healthy again. A failed or hung restart still counts.
+    #   - cooldown: minimum time between two restarts, across incidents.
+    #   - requireWriteProbeOK: restart only if the disk write probe passed within
+    #     writeProbeMaxAge. On a filesystem that stopped taking writes a restart cannot
+    #     help and hangs in "activating" (cluster-services-831). Needs
+    #     monitors.disk.writeProbe.enabled.
+    #   - requireServiceEnabled: restart only if `systemctl is-enabled <service>` says
+    #     "enabled". On an RKE2 server node rke2-agent.service exists but is disabled,
+    #     and restarting it would START a second kubelet; such nodes are left alone.
+    # The global remediation.maxRemediationsPerHour / maxRemediationsPerMinute limits
+    # also apply. Node reboot / power-cycle is never configured by this block.
+    remediation:
+      enabled: false
+      service: rke2-agent
+      requireServiceEnabled: true
+      maxAttemptsPerIncident: 1
+      cooldown: 30m
+      requireWriteProbeOK: true
+      writeProbeMaxAge: 3m
+
   ipForwarding:
     enabled: true
     interval: 30s

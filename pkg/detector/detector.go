@@ -109,6 +109,14 @@ type ProblemDetector struct {
 	monitorConfigIndex map[string]types.MonitorConfig // monitor name -> config (for remediation lookup)
 	handlesMu          sync.Mutex                     // Protects monitorHandles slice (inner lock; never held when acquiring pd.mu or reloadMutex)
 
+	// Remediation dispatch policy state (see MonitorRemediationConfig.TriggerConditions,
+	// MaxAttemptsPerIncident, Cooldown). Keyed by "<monitor>/<condition>". Lazily
+	// initialised; protected by incidentMu.
+	incidentMu sync.Mutex
+	incidents  map[string]*remediationIncident
+	// nowFn is a test seam for the cooldown and precondition clocks. Nil means time.Now.
+	nowFn func() time.Time
+
 	// Dependency scheduling.
 	// lastStatus caches each monitor's most recent *effective* *types.Status for blocked-state
 	// evaluation. It is written on every processStatus call (continuously at runtime) and is
@@ -626,7 +634,20 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 	}
 
 	for _, cond := range status.Conditions {
-		if cond.Status != types.ConditionFalse {
+		triggered, relevant := isRemediationTrigger(remCfg, cond)
+		if !relevant {
+			continue
+		}
+		key := status.Source + "/" + cond.Type
+		if !triggered {
+			// The condition is out of its problem state: the incident (if any) is over.
+			pd.endIncident(key)
+			continue
+		}
+
+		if ok, why := pd.admitRemediation(key, status.Source, remCfg); !ok {
+			slog.Debug("remediation not dispatched",
+				"monitor", status.Source, "condition", cond.Type, "reason", why)
 			continue
 		}
 
@@ -671,6 +692,141 @@ func (pd *ProblemDetector) evaluateRemediation(status *types.Status) {
 	}
 }
 
+// remediationIncident is the dispatch-policy state for one monitor/condition pair.
+type remediationIncident struct {
+	// attempts is the number of dispatches in the current incident. It resets when
+	// the condition leaves its problem state.
+	attempts int
+	// lastAttempt is when the last dispatch happened. It survives the end of an
+	// incident so Cooldown also spaces out dispatches across incidents.
+	lastAttempt time.Time
+	// skipLogged suppresses repeating the same "precondition failed" warning on every
+	// check within one incident.
+	skipLogged bool
+}
+
+// isRemediationTrigger reports whether cond is in its problem state (triggered) and
+// whether the policy cares about this condition at all (relevant).
+//
+// With TriggerConditions set, only the named conditions are relevant and they are in
+// their problem state when True. Without it, the legacy rule applies: every condition
+// is relevant and False is the problem state.
+func isRemediationTrigger(remCfg *types.MonitorRemediationConfig, cond types.Condition) (triggered, relevant bool) {
+	if len(remCfg.TriggerConditions) == 0 {
+		return cond.Status == types.ConditionFalse, true
+	}
+	for _, t := range remCfg.TriggerConditions {
+		if t == cond.Type {
+			return cond.Status == types.ConditionTrue, true
+		}
+	}
+	return false, false
+}
+
+func (pd *ProblemDetector) now() time.Time {
+	if pd.nowFn != nil {
+		return pd.nowFn()
+	}
+	return time.Now()
+}
+
+// endIncident resets the per-incident attempt count for key. lastAttempt is kept for
+// the cross-incident cooldown.
+func (pd *ProblemDetector) endIncident(key string) {
+	pd.incidentMu.Lock()
+	defer pd.incidentMu.Unlock()
+	if inc, ok := pd.incidents[key]; ok {
+		if inc.attempts > 0 {
+			slog.Info("remediation incident ended", "incident", key, "attempts", inc.attempts)
+		}
+		inc.attempts = 0
+		inc.skipLogged = false
+	}
+}
+
+// admitRemediation applies the dispatch policy for one triggered condition and, when
+// the dispatch is admitted, records it as an attempt BEFORE it runs. Recording first
+// is what makes MaxAttemptsPerIncident an upper bound: a remediation that fails, hangs
+// or panics still counts, so it is never retried within the same incident.
+//
+// Order: per-incident cap, then cooldown, then preconditions. A failed precondition
+// does not use up an attempt.
+func (pd *ProblemDetector) admitRemediation(key, source string, remCfg *types.MonitorRemediationConfig) (bool, string) {
+	now := pd.now()
+
+	pd.incidentMu.Lock()
+	defer pd.incidentMu.Unlock()
+	if pd.incidents == nil {
+		pd.incidents = make(map[string]*remediationIncident)
+	}
+	inc, ok := pd.incidents[key]
+	if !ok {
+		inc = &remediationIncident{}
+		pd.incidents[key] = inc
+	}
+
+	if remCfg.MaxAttemptsPerIncident > 0 && inc.attempts >= remCfg.MaxAttemptsPerIncident {
+		return false, fmt.Sprintf("already remediated %d time(s) in this incident (maxAttemptsPerIncident=%d)",
+			inc.attempts, remCfg.MaxAttemptsPerIncident)
+	}
+	if remCfg.Cooldown > 0 && !inc.lastAttempt.IsZero() && now.Sub(inc.lastAttempt) < remCfg.Cooldown {
+		return false, fmt.Sprintf("in cooldown (%s remaining)", (remCfg.Cooldown - now.Sub(inc.lastAttempt)).Round(time.Second))
+	}
+	if why := pd.failedPrecondition(remCfg.Preconditions, now); why != "" {
+		if !inc.skipLogged {
+			slog.Warn("remediation withheld: precondition not met",
+				"monitor", source, "incident", key, "precondition", why)
+			inc.skipLogged = true
+		}
+		return false, "precondition not met: " + why
+	}
+
+	inc.attempts++
+	inc.lastAttempt = now
+	return true, ""
+}
+
+// failedPrecondition returns a description of the first precondition that does not
+// hold against the latest status of every monitor, or "" when all hold.
+func (pd *ProblemDetector) failedPrecondition(preconds []types.RemediationPrecondition, now time.Time) string {
+	if len(preconds) == 0 {
+		return ""
+	}
+	pd.lastStatusMu.RLock()
+	defer pd.lastStatusMu.RUnlock()
+
+	for _, p := range preconds {
+		found := false
+		var latest time.Time
+		var latestStatus types.ConditionStatus
+		for source, st := range pd.lastStatus {
+			if st == nil || (p.Monitor != "" && source != p.Monitor) {
+				continue
+			}
+			for _, c := range st.Conditions {
+				if c.Type != p.Type {
+					continue
+				}
+				if !found || st.Timestamp.After(latest) {
+					latest = st.Timestamp
+					latestStatus = c.Status
+				}
+				found = true
+			}
+		}
+		switch {
+		case !found:
+			return fmt.Sprintf("%s=%s: never observed", p.Type, p.Status)
+		case now.Sub(latest) > p.MaxAge:
+			return fmt.Sprintf("%s=%s: last observed %s ago (maxAge %s)", p.Type, p.Status,
+				now.Sub(latest).Round(time.Second), p.MaxAge)
+		case string(latestStatus) != p.Status:
+			return fmt.Sprintf("%s=%s: observed %s", p.Type, p.Status, latestStatus)
+		}
+	}
+	return ""
+}
+
 // buildProblemMetadata builds the Problem.Metadata carrier for a single
 // remediation strategy attempt. It always includes the source/condition/reason
 // context the detector has always set, and additionally threads the strategy's
@@ -697,6 +853,9 @@ func buildProblemMetadata(source string, cond types.Condition, strat types.Monit
 	}
 	if strat.Interface != "" {
 		meta["interface"] = strat.Interface
+	}
+	if strat.RequireServiceEnabled {
+		meta["requireEnabled"] = "true"
 	}
 	if len(strat.Args) > 0 {
 		// JSON-encode args so values containing commas/spaces survive intact.
@@ -741,6 +900,8 @@ func buildStrategyList(remCfg *types.MonitorRemediationConfig) []types.MonitorRe
 			ScriptPath: remCfg.ScriptPath,
 			Args:       remCfg.Args,
 			Interface:  remCfg.Interface,
+
+			RequireServiceEnabled: remCfg.RequireServiceEnabled,
 		}}
 	}
 
