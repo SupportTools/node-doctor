@@ -538,19 +538,9 @@ jobs:
           echo "4. Update documentation if needed"
           echo "5. Announce release to users"
 
-  # Failure notification.
-  #
-  # Why this job exists: a red release run is not, by itself, a signal anyone receives.
-  # `helm-publish` has hard-failed on "Verify Chart Availability" for six months across
-  # eight repos — the workflow was doing exactly what it was told and going red on purpose
-  # — and nobody noticed, because nothing pushed that failure anywhere a human looks.
-  # Any future fix that makes releases fail correctly is worthless without this job.
-  #
-  # Mechanism is the org's established one: slackapi/slack-github-action posting to the
-  # org secret SLACK_WEBHOOK_URL (visibility: all), same as SupportTools/support-decoder
-  # cd.yml and SupportTools/website cloudflare-workers-notifications.yml.
+  # Writes the per-job results to the run summary. Alerting is not done from CI.
   notify-failure:
-    name: Notify Release Failure
+    name: Summarize Release Failure
     runs-on: self-hosted-linux
     needs: [docker, docker-overlay-test, github-release, helm-publish, grype-scan, release-complete]
     if: failure()
@@ -584,23 +574,3 @@ jobs:
             echo "the GitHub release and the container image can all exist while"
             echo "charts.support.tools still serves the previous version."
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Notify Slack
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "❌ node-doctor release ${{ steps.ctx.outputs.ref }} FAILED",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "❌ *node-doctor* release *${{ steps.ctx.outputs.ref }}* *FAILED*\n\n*Docker images:* `${{ needs.docker.result }}`\n*Overlay test image:* `${{ needs.docker-overlay-test.result }}`\n*GitHub release:* `${{ needs.github-release.result }}`\n*Helm chart publish:* `${{ needs.helm-publish.result }}`\n\nA failed chart publish means charts.support.tools still serves the previous version.\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

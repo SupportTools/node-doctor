@@ -38,7 +38,7 @@ git push origin v1.9.0
      |      github-release        -> GitHub Release + deployment/{rbac,daemonset}.yaml
      |      helm-publish          -> SupportTools/helm-chart repo -> https://charts.support.tools
      |      release-complete      -> fails the run if any of the above failed
-     |      notify-failure        -> Slack, if anything above failed
+     |      notify-failure        -> per-job results in the run summary, if anything above failed
      |
      +--> .github/workflows/ci.yml       (also fires on tags: v*)
             lint / test / build / gosec / helm-chart / docker / ci-success
@@ -46,7 +46,7 @@ git push origin v1.9.0
 
 daily 13:00 UTC
      +--> .github/workflows/release-audit.yml
-            newest git tag vs newest chart on charts.support.tools -> Slack on mismatch
+            newest git tag vs newest chart on charts.support.tools -> red run on mismatch
 ```
 
 **`release.yml` is the sole publisher of container images.** `ci.yml` used to have a
@@ -79,10 +79,10 @@ cache, QEMU arm64). The `helm-publish` job additionally polls `charts.support.to
 | `docker` | — | Resolves the release version once — `github.ref_name` with the `v` stripped, pinned to a safe charset and exported as a job output, so no other job re-derives it from the raw ref. Multi-arch (`linux/amd64,linux/arm64`) build of `Dockerfile`, pushed to `docker.io/supporttools/node-doctor`. Tags from `docker/metadata-action`: `{{version}}`, `{{major}}.{{minor}}`, and `latest` (the last suppressed for `rc`/`beta`/`alpha` tags). Then signs **one** tag with keyless cosign. |
 | `docker-overlay-test` | — | Same, for `Dockerfile.overlay-test` -> `docker.io/supporttools/node-doctor-overlay-test`. **No cosign signing at all.** |
 | `grype-scan` | `docker` | Scans the published image with `anchore/scan-action` and uploads SARIF to GitHub Security. Informational: `fail-build: false`, never gates a release. Lives here rather than in `ci.yml` because it needs a *published* image. |
-| `github-release` | `docker`, `docker-overlay-test` | Creates the GitHub Release from a heredoc template. Attaches exactly two files: `deployment/rbac.yaml` and `deployment/daemonset.yaml`. Marked prerelease for `rc`/`beta`/`alpha` tags. |
+| `github-release` | `docker`, `docker-overlay-test` | Creates the GitHub Release from a heredoc template. Attaches exactly two files: `deployment/rbac.yaml` and `deployment/daemonset.yaml`, after pinning the latter's image to this release. Marked prerelease for `rc`/`beta`/`alpha` tags. |
 | `helm-publish` | `docker`, `docker-overlay-test` | Regenerates `Chart.yaml`/`values.yaml` from templates, lints, packages, **verifies every image the packaged chart references actually exists in the registry**, then commits the `.tgz` into `SupportTools/helm-chart` (using `secrets.BOT_TOKEN`), reindexes, and polls `https://charts.support.tools/` until the version appears (30 tries x 10s). It waits on `docker-overlay-test` so both images exist by the time that verification runs. |
 | `release-complete` | `docker`, `docker-overlay-test`, `github-release`, `helm-publish` | `if: always()`; re-checks each result and fails the run if any job did not succeed. |
-| `notify-failure` | all of the above | `if: failure()`; posts the per-job results and a run link to Slack. See [Release failure is a signal, not a colour](#release-failure-is-a-signal-not-a-colour). |
+| `notify-failure` | all of the above | `if: failure()`; writes the per-job results to the run summary. See [Release failure is a signal, not a colour](#release-failure-is-a-signal-not-a-colour). |
 
 ### Release failure is a signal, not a colour
 
@@ -93,20 +93,18 @@ when the chart never appears. It did exactly that, correctly, on every tag from 
 `v1.8.6` — and across eight repositories for six months nobody noticed, because nothing pushed
 the failure anywhere a human looks. The detection was never missing. The delivery was.
 
-Two things now surface it:
+**No alert is sent from CI.** The Slack notifications were removed; alerting is moving to
+Prometheus. Until that exists, a failed release shows up in two places only:
 
-1. **`notify-failure`** in `release.yml` — `if: failure()`, posts to Slack via the organization
-   `SLACK_WEBHOOK_URL` webhook with the per-job results and a link to the run. It states the
-   consequence explicitly ("charts.support.tools still serves the previous version") so the
-   message is actionable without opening the run.
-2. **`.github/workflows/release-audit.yml`** — a daily scheduled job (13:00 UTC, plus
-   `workflow_dispatch`) comparing the newest `v*` git tag against the chart version actually
-   served by `charts.support.tools`, with a one-hour grace period for an in-flight release.
-   This catches the whole class rather than one cause: a release run that was never started,
-   was cancelled, was re-run into a green state, or whose notification failed to deliver still
-   shows up the next morning.
-
-If you add a new failure mode to the release path, make sure it lands in one of those two.
+1. **The release run itself.** `notify-failure` writes the per-job results to the run summary
+   and states the consequence ("the chart was not published"). Watch the run with
+   `gh run watch` after pushing a tag.
+2. **`.github/workflows/release-audit.yml`**, a daily scheduled job (13:00 UTC, plus
+   `workflow_dispatch`) that compares the newest `v*` git tag against the chart version
+   `charts.support.tools` serves, with a one-hour grace period for an in-flight release. It
+   counts prerelease charts, so an `rc` tag passes once its chart is published. It catches a
+   release run that was never started, was cancelled, or was re-run into a green state, but it
+   only turns its own run red.
 
 ## Release credentials
 
@@ -120,7 +118,6 @@ check first; an expired `BOT_TOKEN` presents as `helm-publish` failing at checko
 |---|---|---|
 | `BOT_TOKEN` | `release.yml` (`helm-publish`) | push the packaged chart to `SupportTools/helm-chart` |
 | `DOCKER_USERNAME` / `DOCKER_PASSWORD` | `release.yml`, `ci.yml` | Docker Hub push (release) and authenticated base-image pulls (CI) |
-| `SLACK_WEBHOOK_URL` | `release.yml`, `release-audit.yml` | failure notifications |
 | `CODECOV_TOKEN` | `ci.yml` | coverage upload (informational) |
 
 ### `HELM_CHART_PAT` is not this repo's credential
@@ -433,7 +430,7 @@ helm show values supporttools/node-doctor --version "$CHART" | grep -E '^\s+tag:
 - [ ] Chart `<X.Y.Z>` visible via `helm search repo supporttools/node-doctor`
 - [ ] Published chart's `image.tag` / `overlayTest.image.tag` default to the **v-stripped**
       version (`helm show values`)
-- [ ] Release run is green — and if it is not, confirm the Slack failure notification arrived
+- [ ] Release run is green; if it is not, read the `notify-failure` run summary
 
 ### Post-release
 
@@ -534,11 +531,10 @@ are not Helm releases and have no `helm history`. Roll those back with:
 kubectl -n node-doctor rollout undo daemonset/node-doctor
 ```
 
-Note that `deployment/daemonset.yaml` in the repo pins a hardcoded image
-(`supporttools/node-doctor:v1.5.4` as of writing) that is **not** bumped by the release
-pipeline. The manifests attached to a GitHub Release therefore do not necessarily reference that
-release's image. Treat them as an example, not as a release artifact, and set the image tag
-yourself.
+The `daemonset.yaml` attached to a GitHub Release pins that release's image: the
+`github-release` job rewrites the image line before attaching it. The copy in the repo is pinned
+to whatever version was current when it was last edited, so use the release asset, not the repo
+file.
 
 ### Retiring a bad release
 
@@ -710,8 +706,8 @@ check `git diff` covers both files.
 - Use `cosign verify` (image), not `cosign verify-blob` — no blobs are signed.
 - Only the `<X.Y.Z>` tag on `node-doctor` is signed. `latest`, `{{major}}.{{minor}}` and the
   entire overlay-test image are unsigned.
-- The workflow signs with `cosign` v2.2.2 and `COSIGN_EXPERIMENTAL=1`; the signature lives in the
-  registry as a `sha256-<digest>.sig` tag.
+- The runner's pre-baked cosign stores the signature as an OCI referrer of the image, not as a
+  `sha256-<digest>.sig` tag, so looking for that tag finds nothing. Use `cosign verify`.
 
 ### Retagging an existing version
 
