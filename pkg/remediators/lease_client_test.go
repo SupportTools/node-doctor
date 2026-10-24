@@ -31,8 +31,6 @@ func newTestCoordinationConfig(controllerURL string, fallback bool) *types.Remed
 // and approves the lease, RequestLease returns Approved=true with no error.
 func TestRequestLease_ReachableGrants(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Respond with an approved lease, mirroring the controller's
-		// LeaseResponse JSON shape (see pkg/controller/types.go).
 		resp := controller.LeaseResponse{
 			LeaseID:   "lease-123",
 			Approved:  true,
@@ -41,7 +39,7 @@ func TestRequestLease_ReachableGrants(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(controller.APIResponse{Success: true, Data: resp})
 	}))
 	defer server.Close()
 
@@ -74,7 +72,7 @@ func TestRequestLease_ReachableDenies(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		// 429 is mapped by sendLeaseRequest to a denied (non-error) response.
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(controller.APIResponse{Success: true, Data: resp})
 	}))
 	defer server.Close()
 

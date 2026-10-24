@@ -301,17 +301,15 @@ func (lc *LeaseClient) sendLeaseRequest(ctx context.Context, request controller.
 	// Handle response based on status code
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
-		// Lease approved
-		var leaseResp controller.LeaseResponse
-		if err := json.Unmarshal(respBody, &leaseResp); err != nil {
+		leaseResp, err := decodeLeaseResponse(respBody)
+		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 		}
 		return &leaseResp, nil
 
 	case http.StatusTooManyRequests:
-		// Lease denied due to concurrency limit
-		var leaseResp controller.LeaseResponse
-		if err := json.Unmarshal(respBody, &leaseResp); err != nil {
+		leaseResp, err := decodeLeaseResponse(respBody)
+		if err != nil {
 			// Create a default denied response
 			leaseResp = controller.LeaseResponse{
 				Approved: false,
@@ -321,9 +319,8 @@ func (lc *LeaseClient) sendLeaseRequest(ctx context.Context, request controller.
 		return &leaseResp, nil
 
 	case http.StatusConflict:
-		// Lease denied due to existing lease
-		var leaseResp controller.LeaseResponse
-		if err := json.Unmarshal(respBody, &leaseResp); err != nil {
+		leaseResp, err := decodeLeaseResponse(respBody)
+		if err != nil {
 			leaseResp = controller.LeaseResponse{
 				Approved: false,
 				Message:  "Node already has an active lease",
@@ -340,6 +337,15 @@ func (lc *LeaseClient) sendLeaseRequest(ctx context.Context, request controller.
 	default:
 		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
 	}
+}
+
+// decodeLeaseResponse unwraps the controller's {success, data} envelope.
+func decodeLeaseResponse(body []byte) (controller.LeaseResponse, error) {
+	var envelope struct {
+		Data controller.LeaseResponse `json:"data"`
+	}
+	err := json.Unmarshal(body, &envelope)
+	return envelope.Data, err
 }
 
 // setActiveLease sets the active lease.
