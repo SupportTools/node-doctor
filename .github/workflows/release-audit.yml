@@ -1,14 +1,8 @@
 name: Release Audit
 
-# Catches the whole class of "a release silently did not ship", not just the one cause.
-#
-# release.yml already hard-fails when a chart does not appear on charts.support.tools, and
-# notify-failure now pushes that failure to Slack. Both only fire while a release run is
-# in flight. This audit is the standing check: it compares the newest git tag against what
-# charts.support.tools actually serves, so a gap is caught even if the release run was
-# never started, was cancelled, was re-run into a green state, or the notification itself
-# failed to deliver. The six-month outage this repo just came out of would have been
-# caught the next morning.
+# Compares the newest git tag against the chart charts.support.tools serves. release.yml
+# only fails while a release runs; this also catches a release that never started, was
+# cancelled, or was re-run into a green state.
 #
 # Scope note: this audits node-doctor only, using the default GITHUB_TOKEN and the public
 # chart index. Extending it across the other SupportTools chart-publishing repos needs a
@@ -114,29 +108,3 @@ jobs:
           echo "detail=tag ${SAFE_TAG} expects chart ${CHART_VERSION}, repo serves ${LATEST_CHART}" >> "$GITHUB_OUTPUT"
           echo "::error::Chart ${CHART_VERSION} for tag ${SAFE_TAG} is not published (repo serves ${LATEST_CHART})"
           exit 1
-
-  notify-failure:
-    name: Notify Audit Failure
-    runs-on: self-hosted-linux
-    needs: [tag-vs-chart]
-    if: failure()
-    steps:
-      - name: Notify Slack
-        uses: slackapi/slack-github-action@v1.26.0
-        with:
-          payload: |
-            {
-              "text": "❌ node-doctor release audit failed",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "❌ *node-doctor* release audit *FAILED*\n\nThe newest git tag has no matching chart on charts.support.tools.\n\n`${{ needs.tag-vs-chart.outputs.detail }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow Run>"
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

@@ -7,7 +7,7 @@ This directory contains every GitHub Actions workflow for Node Doctor. There are
 | `ci.yml` | PR to `main`, push to `main`, push of a `v*` tag | Lint, test, chart verification, build, gosec, and a Docker build that **never pushes** |
 | `ci-ipv6.yml` | Same, but path-filtered to network/exporter/integration code | IPv6 and dual-stack tests needing a kind cluster and `CAP_NET_RAW`. Deliberately separate so its flakes do not block `ci-success` |
 | `release.yml` | Push of a `v*` tag **only** | The actual release: multi-arch images, GitHub Release, Helm chart publish. **The only workflow that publishes anything** |
-| `release-audit.yml` | Daily at 13:00 UTC, plus `workflow_dispatch` | Compares the newest `v*` tag against the chart version served by charts.support.tools; Slack on mismatch |
+| `release-audit.yml` | Daily at 13:00 UTC, plus `workflow_dispatch` | Compares the newest `v*` tag against the chart version served by charts.support.tools; fails its own run on mismatch |
 
 For the full release story — what gets published where, what is signed, how to roll back — see
 [docs/release-process.md](../../docs/release-process.md). That document is the source of truth;
@@ -73,15 +73,15 @@ Two things worth knowing before you touch it:
 - `helm-publish` refuses to publish a chart whose default image tags do not resolve in the
   registry (`Verify packaged chart references images that exist`). Image tags are **`v`-stripped**;
   only `Chart.yaml` `appVersion` keeps the `v`.
-- `notify-failure` (`if: failure()`) posts to Slack via `SLACK_WEBHOOK_URL`. Without it a broken
-  release is just a red square nobody is subscribed to — which is exactly how chart publishing
-  stayed broken from `v1.8.0` to `v1.8.6`.
+- `notify-failure` (`if: failure()`) writes the per-job results to the run summary. CI sends no
+  alerts; alerting is moving to Prometheus. Watch the run after pushing a tag.
 
 ## `release-audit.yml`
 
 Daily standing check that the newest `v*` tag has a matching chart on charts.support.tools,
 with a one-hour grace period for an in-flight release. Catches releases that were never started,
-were cancelled, or whose failure notification did not arrive. Notifies Slack on mismatch.
+or were cancelled. Counts prerelease charts, so `rc` tags pass once published. A mismatch only
+turns this run red.
 
 ## Required GitHub Secrets
 
@@ -90,7 +90,6 @@ were cancelled, or whose failure notification did not arrive. Notifies Slack on 
 | `DOCKER_USERNAME` | `release.yml` docker + docker-overlay-test + helm-publish jobs; `ci.yml` docker job (base-image pulls only) | Yes for releases; in CI only to dodge anonymous pull rate limits |
 | `DOCKER_PASSWORD` | same | same |
 | `BOT_TOKEN` | `release.yml` `helm-publish` — checkout of and push to `SupportTools/helm-chart` | Yes, or the chart is never published |
-| `SLACK_WEBHOOK_URL` | `release.yml` `notify-failure`, `release-audit.yml` | Yes, or release failures go unnoticed |
 | `CODECOV_TOKEN` | `ci.yml` Test job | Optional; upload is non-blocking |
 | `GITHUB_TOKEN` | `release.yml` `github-release`, `release-audit.yml` | Provided automatically |
 
@@ -167,7 +166,7 @@ Dockerfile is what `release.yml` builds from.
 [docs/release-process.md](../../docs/release-process.md#docker-pull-supporttoolsnode-doctorv190-says-not-found).
 
 **A release published images but no chart** — check `helm-publish` in that `release.yml` run,
-and check Slack for the `notify-failure` message. See
+and read the `notify-failure` run summary. See
 [docs/release-process.md](../../docs/release-process.md#releaseyml-succeeded-but-the-chart-is-not-on-chartssupporttools).
 
 **Secret errors** — check names against the table above; the most common cause is a workflow
