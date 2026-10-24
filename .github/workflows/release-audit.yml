@@ -89,7 +89,8 @@ jobs:
 
           # `helm search repo` matches on substring, so `charts/node-doctor` would also
           # return e.g. `charts/node-doctor-overlay-test`. Match the name exactly.
-          if helm search repo charts/node-doctor --versions -o json \
+          # --devel includes prerelease charts, which helm search hides by default.
+          if helm search repo charts/node-doctor --versions --devel -o json \
               | jq -e --arg v "$CHART_VERSION" \
                   'any(.[]; .name == "charts/node-doctor" and .version == $v)' >/dev/null; then
             echo "✅ Chart node-doctor ${CHART_VERSION} is published."
@@ -97,7 +98,7 @@ jobs:
             exit 0
           fi
 
-          LATEST_CHART="$(helm search repo charts/node-doctor --versions -o json 2>/dev/null \
+          LATEST_CHART="$(helm search repo charts/node-doctor --versions --devel -o json 2>/dev/null \
             | jq -r '[.[] | select(.name == "charts/node-doctor")][0].version // "none"' \
             || echo "unknown")"
           {
