@@ -1,978 +1,189 @@
-# Node Doctor Architecture
+# Architecture
 
-## Overview
+Node Doctor is a per-node agent that runs health checks, publishes the results to Kubernetes, Prometheus and HTTP endpoints, and can run repair actions. An optional cluster controller collects reports from every agent and hands out remediation leases.
 
-Node Doctor is a Kubernetes node health monitoring and auto-remediation system built in Go. It is based on the proven architecture of Node Problem Detector (NPD) but extends it with comprehensive health checks, automated remediation capabilities, HTTP health endpoints, and multiple reporting mechanisms.
+## Binaries
 
-## Design Principles
+| Binary | Runs as | Job |
+|---|---|---|
+| `node-doctor` | DaemonSet, one pod per node | Monitors, detector, exporters, health server, remediation |
+| `node-doctor-controller` | Deployment | Aggregates agent reports, correlates problems across nodes, grants remediation leases. See [controller-deployment.md](controller-deployment.md). |
+| `overlay-test-server` | DaemonSet | Answers HTTP probes on the pod network so the CNI monitor can test overlay connectivity |
 
-1. **Plugin Architecture**: Extensible system where monitors, exporters, and remediators are pluggable components
-2. **Channel-Based Communication**: Decoupled components communicating via Go channels for clean separation and testability
-3. **Configuration-Driven**: Declarative YAML/JSON configuration for all health checks and remediation actions
-4. **Safety-First**: Multiple safety mechanisms (cooldowns, rate limits, circuit breakers) to prevent remediation storms
-5. **Kubernetes-Native**: Deep integration with Kubernetes API, following k8s patterns and conventions
-6. **Observability**: Comprehensive metrics, events, and status reporting for full visibility
+## Agent data flow
 
-## System Architecture
-
-### High-Level Component Diagram
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Node Doctor                           │
-│                                                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   System     │  │   Network    │  │ Kubernetes   │      │
-│  │   Monitors   │  │   Monitors   │  │   Monitors   │ ...  │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
-│         │                  │                  │               │
-│         └──────────────────┼──────────────────┘              │
-│                            ▼                                  │
-│                  ┌─────────────────┐                         │
-│                  │     Problem     │                         │
-│                  │    Detector     │                         │
-│                  │  (Orchestrator) │                         │
-│                  └─────────┬───────┘                         │
-│                            │                                  │
-│         ┌──────────────────┼──────────────────┐             │
-│         ▼                  ▼                   ▼             │
-│  ┌──────────┐      ┌─────────────┐    ┌─────────────┐      │
-│  │    K8s   │      │    HTTP     │    │ Prometheus  │      │
-│  │ Exporter │      │  Exporter   │    │  Exporter   │      │
-│  └──────────┘      └─────────────┘    └─────────────┘      │
-│         │                  │                   │             │
-│         ▼                  ▼                   ▼             │
-│  ┌──────────┐      ┌─────────────┐    ┌─────────────┐      │
-│  │Conditions│      │hostPort:8080│    │   Metrics   │      │
-│  │  Events  │      │  /health    │    │    :9100    │      │
-│  │Annotations│     │  /metrics   │    │             │      │
-│  └──────────┘      └─────────────┘    └─────────────┘      │
-│         │                                                     │
-│         └─────────────────┐                                  │
-│                           ▼                                  │
-│                  ┌─────────────────┐                         │
-│                  │   Remediator    │                         │
-│                  │    Registry     │                         │
-│                  └─────────┬───────┘                         │
-│                            │                                  │
-│         ┌──────────────────┼──────────────────┐             │
-│         ▼                  ▼                   ▼             │
-│  ┌──────────┐      ┌─────────────┐    ┌─────────────┐      │
-│  │ Systemd  │      │   Network   │    │    Disk     │      │
-│  │Remediator│      │ Remediator  │    │ Remediator  │      │
-│  └──────────┘      └─────────────┘    └─────────────┘      │
-└─────────────────────────────────────────────────────────────┘
+```text
+ monitor ─┐
+ monitor ─┼─► fan-in ─► status channel ─► detector (one goroutine, per status):
+ monitor ─┘   (one per    (buffer 1000)      1. replace with MonitorBlocked if a dependency is unhealthy
+               monitor)                      2. cache as the monitor's latest status
+                                             3. ExportStatus to every exporter, in order
+                                             4. evaluate remediation ─► remediator registry
+                                                   │
+             exporters: health server, Kubernetes, HTTP, Prometheus
 ```
 
-### Data Flow
+Each monitor runs its own goroutine and sends a `Status` on its own channel. A fan-in goroutine per monitor copies statuses into one shared channel. If the shared channel stays full for 5 seconds, the fan-in logs a warning and drops that status.
 
-1. **Detection Phase**:
-   - Multiple monitors run concurrently in separate goroutines
-   - Each monitor performs health checks at configured intervals
-   - Problems detected are sent to Problem Detector via channels
+One goroutine processes the shared channel. Export and remediation run inline, so a slow exporter call or a long remediation delays every later status. Exporters see every status, healthy or not. The detector only calls `ExportStatus`; it never calls `ExportProblem`.
 
-2. **Orchestration Phase**:
-   - Problem Detector fan-ins from all monitor channels
-   - Aggregates and deduplicates problems
-   - Fan-outs to exporters and remediators
+Monitor types and their conditions are in [monitors.md](monitors.md). Configuration is in [configuration.md](configuration.md). Metric names are in [metrics.md](metrics.md). Remediation is in [remediation.md](remediation.md).
 
-3. **Export Phase**:
-   - Kubernetes Exporter: Updates node conditions, creates events, updates annotations
-   - HTTP Exporter: Exposes health status via HTTP endpoints
-   - Prometheus Exporter: Exports metrics for scraping
+## Interfaces
 
-4. **Remediation Phase**:
-   - Remediator Registry matches problems to remediation strategies
-   - Safety checks (cooldown, rate limits, circuit breaker)
-   - Execute remediation actions
-   - Report remediation results via events
-
-## Core Components
-
-### 1. Monitor Interface
-
-The foundation of the plugin architecture:
+These are the contracts in `pkg/types`.
 
 ```go
 type Monitor interface {
-    // Start starts the monitor and returns a channel for status updates
     Start() (<-chan *Status, error)
-
-    // Stop gracefully stops the monitor
     Stop()
 }
-```
 
-Key characteristics:
-- Each monitor runs in its own goroutine
-- Non-blocking status reporting via channels
-- Graceful shutdown via context cancellation
-
-### 2. Status Types
-
-```go
-// Status represents the health status from a monitor
-type Status struct {
-    Source     string      // Monitor identifier
-    Events     []Event     // Temporary problems
-    Conditions []Condition // Permanent problems affecting node conditions
-    Timestamp  time.Time   // When the status was generated
-}
-
-// Event represents a temporary problem
-type Event struct {
-    Severity string    // info, warning, error
-    Reason   string    // Machine-readable reason
-    Message  string    // Human-readable message
-}
-
-// Condition represents a permanent problem affecting node availability
-type Condition struct {
-    Type    string    // NodeCondition type (e.g., KubeletUnhealthy)
-    Status  string    // True, False, Unknown
-    Reason  string    // Machine-readable reason
-    Message string    // Human-readable message
-}
-```
-
-Design decisions:
-- **Events vs Conditions**: Events are transient, conditions affect node scheduling
-- **Source tracking**: Each status identifies its source monitor
-- **Immutable**: Status objects are created once and never modified
-
-### 3. Problem Detector (Orchestrator)
-
-Central component that coordinates all operations:
-
-```go
-type ProblemDetector struct {
-    monitors    []Monitor
-    exporters   []Exporter
-    remediators RemediatorRegistry
-    statusChan  chan *Status
-}
-```
-
-Responsibilities:
-- Start/stop all monitors
-- Fan-in status from all monitors
-- Aggregate and deduplicate problems
-- Fan-out to exporters
-- Trigger remediation actions
-- Handle graceful shutdown
-
-### 4. Exporter Interface
-
-```go
 type Exporter interface {
-    // ExportProblems exports the detected problems
-    ExportProblems(status *Status) error
+    ExportStatus(ctx context.Context, status *Status) error
+    ExportProblem(ctx context.Context, problem *Problem) error
 }
-```
 
-Implementations:
-- **KubernetesExporter**: Node conditions, events, annotations
-- **HTTPExporter**: Health endpoints on hostPort
-- **PrometheusExporter**: Metrics in Prometheus format
+type ReloadableExporter interface {
+    Exporter
+    Reload(config interface{}) error
+    IsReloadable() bool
+}
 
-### 5. Remediator Interface
-
-```go
 type Remediator interface {
-    // CanRemediate checks if this remediator can handle the problem
     CanRemediate(problem Problem) bool
-
-    // Remediate attempts to fix the problem
     Remediate(ctx context.Context, problem Problem) error
-
-    // GetCooldown returns the cooldown period for this remediator
     GetCooldown() time.Duration
 }
-```
 
-Implementations:
-- **SystemdRemediator**: Restart systemd services
-- **NetworkRemediator**: Reset network interfaces, flush DNS cache
-- **DiskRemediator**: Clean up logs, docker images, temp files
-- **ContainerRuntimeRemediator**: Restart container runtime
-- **CustomScriptRemediator**: Execute custom remediation scripts
+type Status struct {
+    Source     string
+    Events     []Event
+    Conditions []Condition
+    Timestamp  time.Time
+    Metadata   map[string]interface{}
+}
 
-### 6. Remediator Registry
-
-Manages remediation execution with safety mechanisms:
-
-```go
-type RemediatorRegistry struct {
-    remediators      []Remediator
-    cooldownTracker  map[string]time.Time
-    attemptTracker   map[string]int
-    circuitBreaker   map[string]*CircuitBreaker
-    maxAttempts      int
-    remediationBudget RateLimiter
+type Condition struct {
+    Type       string
+    Status     ConditionStatus // "True", "False", "Unknown"
+    Transition time.Time
+    Reason     string
+    Message    string
 }
 ```
 
-Safety features:
-- **Cooldown tracking**: Prevents rapid re-remediation
-- **Attempt limiting**: Max attempts before giving up
-- **Circuit breaker**: Opens after N consecutive failures
-- **Rate limiting**: Max remediations per time window
-- **Dry-run mode**: Test remediation logic without execution
+`Source` is the monitor name from the config. The CNI monitor attaches peer latency data to `Status.Metadata`, which the Prometheus exporter reads.
 
-## Configuration System
+## Startup order
 
-### Configuration Format
+1. Load the config file. Normalize it: add default monitors for registered types the file omits, apply command-line overrides (`-debug`, `-dry-run`, `-log-level`, `-log-format`, `-enable-profiling`), apply defaults. Validate.
+2. Initialize logging.
+3. If `remediation.enabled`, build the remediator registry, register strategies, and wire the controller lease client.
+4. Start the health server (TCP and unix socket).
+5. Create and start the Kubernetes, HTTP and Prometheus exporters that are enabled. An exporter that fails to start is logged and skipped. With no exporter at all, a no-op exporter is used.
+6. Create the detector and start it: start the config watcher (unless `reload.enabled: false`), then start monitors in dependency order (`dependsOn`), then start the status loop.
+7. Exit with an error if no configured monitor started.
 
-YAML (primary) with JSON support for NPD compatibility:
+On SIGINT or SIGTERM the agent cancels its context and stops the exporters.
 
-```yaml
-apiVersion: node-doctor.io/v1alpha1
-kind: NodeDoctorConfig
-metadata:
-  name: default-config
+## Monitor dependencies
 
-# Global settings
-settings:
-  nodeName: "${NODE_NAME}"  # From downward API
-  updateInterval: 10s
-  enableRemediation: true
-  dryRunMode: false
+A monitor can list other monitor names in `dependsOn`. Monitors start in dependency order, and a cycle fails startup.
 
-# Monitor configurations
-monitors:
-  - name: kubelet-health
-    type: http-health-check
-    enabled: true
-    interval: 30s
-    timeout: 10s
-    config:
-      url: "http://127.0.0.1:10248/healthz"
-      expectedStatusCode: 200
-    remediation:
-      enabled: true
-      strategy: systemd-restart
-      service: kubelet
-      cooldown: 5m
-      maxAttempts: 3
+When a dependency's latest status has any condition with status `False`, or a `MonitorBlocked` condition, the detector replaces the dependent's status with a single condition `MonitorBlocked=Unknown` (reason `DependencyUnhealthy`). Blocking is transitive. A dependency that has not reported yet does not block.
 
-  - name: disk-space
-    type: disk-health-check
-    enabled: true
-    interval: 5m
-    config:
-      paths:
-        - path: "/"
-          warningThreshold: 85
-          criticalThreshold: 95
-        - path: "/var/lib/docker"
-          warningThreshold: 80
-          criticalThreshold: 90
-    remediation:
-      enabled: true
-      strategy: disk-cleanup
-      cooldown: 10m
+## Exporters
 
-# Exporter configurations
-exporters:
-  kubernetes:
-    enabled: true
-    updateInterval: 10s
-    resyncInterval: 60s
-    heartbeatInterval: 5m
+| Exporter | Enabled by | Output |
+|---|---|---|
+| Health server | always | `/healthz`, `/ready`, `/status`, `/remediation/history` on TCP 8080 and the unix socket |
+| Kubernetes | `exporters.kubernetes.enabled` | Node conditions, Kubernetes Events, node annotations |
+| HTTP | `exporters.http.enabled` | Webhook POSTs, and periodic reports to the controller (`exporters.http.controller`) |
+| Prometheus | `exporters.prometheus.enabled` | `node_doctor_*` metrics on port 9100 by default (the Helm chart uses 9101) |
 
-  http:
-    enabled: true
-    hostPort: 8080
-    bindAddress: "0.0.0.0"
-    tlsEnabled: false
-    endpoints:
-      - path: /health
-        handler: overall-health
-      - path: /ready
-        handler: readiness
-      - path: /metrics
-        handler: prometheus-metrics
-      - path: /status
-        handler: detailed-status
-      - path: /remediation/history
-        handler: remediation-history
+The health server is an exporter too. It keeps the last status it received for `/status`.
 
-  prometheus:
-    enabled: true
-    port: 9100
-    namespace: node_doctor
+## Node condition ownership
 
-# Remediation settings
-remediation:
-  enabled: true
-  dryRun: false
-  maxRetriesPerHour: 10
-  cooldownPeriod: 5m
-  circuitBreakerThreshold: 5
-  circuitBreakerTimeout: 30m
+The Kubernetes exporter writes only conditions whose type starts with `NodeDoctor`. It adds the prefix to every condition a monitor reports: `KubeletUnhealthy` becomes `NodeDoctorKubeletUnhealthy`. It never writes kubelet or control-plane conditions such as `Ready`, `MemoryPressure` or `DiskPressure`, even though it loads them from the node at startup. A custom condition in `exporters.kubernetes.conditions` whose type lacks the prefix is refused with a warning.
+
+The exporter batches condition changes and patches the node every `updateInterval` (default 10s). It re-reads the node every `resyncInterval` (default 60s) and writes a `NodeDoctorHealthy` heartbeat every `heartbeatInterval` (default 5m).
+
+A `NodeDoctor*` condition that no monitor refreshes for `conditionStaleTTL` (default 6m, at least 3 times `resyncInterval`) is removed from the node. A condition loaded at startup gets the full TTL from process start before it expires. `NodeDoctorHealthy` never expires.
+
+When a reload removes a monitor, the detector removes the node conditions of that monitor type, for the types it has a mapping for.
+
+## Config hot reload
+
+The agent watches its config file and applies changes without a restart where it can. Reload is on unless `reload.enabled: false`.
+
+```text
+fsnotify write/create on the file or the ConfigMap ..data symlink
+  └─ debounce (reload.debounceInterval, default 500ms)
+       └─ load → normalize (same as startup) → validate
+            └─ ComputeConfigDiff + ClassifyReload
+                 ├─ restart-required changes → ConfigReloadRestartRequired event
+                 ├─ no diff → stop here (adopt the new file as the baseline)
+                 └─ apply: stop removed monitors → restart modified monitors
+                           → start added monitors → Reload() exporters
+                           → registry.ApplyConfig() → commit config, re-apply log level/format
 ```
 
-### Configuration Loading
+`ClassifyReload` sorts each change into what the running process can apply and what it cannot.
 
-1. **Default configuration**: Embedded in binary
-2. **ConfigMap mount**: Primary configuration source
-3. **Environment variables**: Override specific values
-4. **Command-line flags**: Highest precedence
+| Change | Applied how |
+|---|---|
+| Monitor added, removed, or `type`, `enabled`, `interval`, `timeout`, `config` changed | Monitor stopped and recreated |
+| Kubernetes `enabled`/`updateInterval`, Prometheus `enabled`/`port`/`path`, HTTP `enabled`/`workers`/`queueSize`/`timeout`/webhooks | `Reload()` on the running exporter |
+| `remediation.dryRun`, `maxRemediationsPerHour`, `circuitBreaker` | `ApplyConfig()` on the registry |
+| `settings.logLevel`, `settings.logFormat` | Re-applied, but only when another change in this table triggers the apply step |
+| `settings.nodeName`, `logOutput`, `logFile` | Restart required |
+| `features.enableProfiling`, `profilingPort` | Restart required |
+| An exporter going from disabled to enabled | Restart required |
+| `remediation.enabled` false to true | Restart required |
+| `remediation.coordination.enabled` or `controllerURL` | Restart required |
 
-### Configuration Validation
+Restart-required changes produce a `ConfigReloadRestartRequired` event listing each one. Changes in no row of the table are not detected: for example a monitor's `remediation` or `dependsOn` block, `remediation.maxRemediationsPerMinute`, or `settings.dryRunMode` on its own.
 
-Validation webhook ensures:
-- Required fields are present
-- Intervals are valid durations
-- Thresholds are within valid ranges
-- Remediation strategies exist
-- No circular dependencies
+The apply step commits the new config only when it has no critical error. Critical errors are a monitor that fails to stop, build or start, an exporter whose `Reload()` fails, and a failed `ApplyConfig()`. On a critical error, changes made before the failure stay in effect and the agent emits `ReloadPartialFailure`.
 
-## Deployment Architecture
+Reload events go through the status channel with source `config-reload`, so the Kubernetes exporter turns them into Events. The coordinator emits `ConfigReloadStarted`, `ConfigValidationSucceeded` or `ConfigValidationFailed`, `ConfigReloadRestartRequired`, `ConfigReloadNoChanges`, `ConfigReloadFailed` and `ConfigReloadSucceeded`. The Prometheus exporter records each reload in `node_doctor_config_reloads_total` and related metrics.
 
-### DaemonSet Deployment
+## Health server and probes
 
-```yaml
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: node-doctor
-  namespace: kube-system
-spec:
-  selector:
-    matchLabels:
-      app: node-doctor
-  template:
-    metadata:
-      labels:
-        app: node-doctor
-    spec:
-      hostNetwork: true
-      hostPID: true
-      dnsPolicy: ClusterFirstWithHostNet
-      serviceAccountName: node-doctor
-      priorityClassName: system-node-critical
+The health server listens on two addresses with the same handlers:
 
-      tolerations:
-      - effect: NoSchedule
-        operator: Exists
-      - effect: NoExecute
-        operator: Exists
+- TCP `[::]:8080`, falling back to `0.0.0.0:8080` if the dual-stack bind fails
+- the unix socket `/var/run/node-doctor/health.sock` (flag `-health-socket`)
 
-      containers:
-      - name: node-doctor
-        image: node-doctor:latest
-        imagePullPolicy: IfNotPresent
+It starts before the networked exporters, so probes do not wait on the API server. If one listener fails to bind, the server keeps the other. Startup fails only if both fail. The TCP port is fixed at 8080.
 
-        securityContext:
-          privileged: true
-          capabilities:
-            add:
-            - NET_ADMIN
-            - SYS_ADMIN
+| Endpoint | Probe | Returns 503 when |
+|---|---|---|
+| `/healthz` | liveness | The server was marked unhealthy or a liveness check failed. The agent registers no liveness checks, so this returns 200 while the process serves HTTP. |
+| `/ready` | readiness | No status has arrived yet, or any exporter failed 3 export attempts in a row. One successful export clears it. |
+| `/status` | none | Never. Returns the last status received and uptime. |
+| `/remediation/history` | none | Remediation is disabled. See [remediation.md](remediation.md#remediation-history). |
 
-        env:
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
+A failing exporter, for example one that cannot reach the API server, makes the pod NotReady but never fails liveness. The kubelet therefore does not restart the agent on the degraded nodes it is meant to observe.
 
-        ports:
-        - name: health
-          containerPort: 8080
-          hostPort: 8080
-          protocol: TCP
-        - name: metrics
-          containerPort: 9100
-          hostPort: 9100
-          protocol: TCP
+The Helm chart uses exec probes. `node-doctor -healthcheck` and `node-doctor -healthcheck-ready` dial the unix socket, request `/healthz` or `/ready` with a 3s timeout, and exit 0 on a 2xx reply. On a `hostNetwork` node a foreign host process can own port 8080; the socket lives on a pod-local volume and cannot collide. The chart's Service sets `publishNotReadyAddresses` so Prometheus keeps scraping NotReady pods.
 
-        resources:
-          requests:
-            cpu: 50m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 256Mi
+## CNI peer discovery and pruning
 
-        volumeMounts:
-        - name: config
-          mountPath: /etc/node-doctor
-        - name: log
-          mountPath: /var/log
-          readOnly: true
-        - name: kmsg
-          mountPath: /dev/kmsg
-          readOnly: true
-        - name: docker-sock
-          mountPath: /var/run/docker.sock
-        - name: containerd-sock
-          mountPath: /run/containerd/containerd.sock
-        - name: kubernetes
-          mountPath: /etc/kubernetes
-          readOnly: true
+The CNI monitor (`network-cni-check`) probes other nodes to test cross-node networking.
 
-      volumes:
-      - name: config
-        configMap:
-          name: node-doctor-config
-      - name: log
-        hostPath:
-          path: /var/log
-      - name: kmsg
-        hostPath:
-          path: /dev/kmsg
-      - name: docker-sock
-        hostPath:
-          path: /var/run/docker.sock
-      - name: containerd-sock
-        hostPath:
-          path: /run/containerd/containerd.sock
-      - name: kubernetes
-        hostPath:
-          path: /etc/kubernetes
-```
+**Discovery.** Every `refreshInterval` (default 5m) the monitor lists running pods in its namespace (default `node-doctor`) by label and skips pods on its own node. With `overlayTestEnabled` (default true) it lists the overlay-test pods (`app=node-doctor-overlay-test`) and probes their pod IPs over HTTP on port 8023. Otherwise it lists node-doctor pods (`app=node-doctor`) and probes their node IPs with ICMP. It also reads node zone labels, so peers in another zone can use looser latency thresholds. A `static` discovery method takes a fixed IP list instead.
 
-### RBAC Configuration
+**Failure handling.** If a pod list fails, discovery keeps serving the previous peer set. If no peers are known, the check reports `NoPeersFound` and leaves the previous peer state alone.
 
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: node-doctor
-  namespace: kube-system
+**Pruning.** The peer set from discovery is authoritative for each check. The monitor builds a fresh per-peer state map each cycle, so a removed, renamed or re-addressed peer disappears on the next check. The Prometheus exporter does the same for metrics: it deletes peer series that are not in the current set and counts additions and removals in `node_doctor_peer_set_churn_total`.
 
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: node-doctor
-rules:
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get", "patch"]
-- apiGroups: [""]
-  resources: ["nodes/status"]
-  verbs: ["patch"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "patch"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["list"]
+**Debounce.** A peer counts as high latency only after `highLatencyThreshold` consecutive slow checks (default 3). A peer counts as unreachable for alerting after `failureThreshold` consecutive failures (default 3).
 
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: node-doctor
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: node-doctor
-subjects:
-- kind: ServiceAccount
-  name: node-doctor
-  namespace: kube-system
-```
+## Controller
 
-## Package Structure
+Agents send reports to the controller with the HTTP exporter: `exporters.http.controller.url` receives a POST every `interval` (default 30s). The controller stores reports in SQLite, correlates problems that appear on many nodes, and serves its API under `/api/v1/` (reports, cluster status and problems, nodes, correlations, leases), plus `/healthz`, `/readyz` and `/metrics`.
 
-```
-node-doctor/
-├── cmd/
-│   ├── node-doctor/              # DaemonSet entry point
-│   │   ├── main.go               # Application bootstrap
-│   │   └── options/              # CLI flag definitions
-│   │       └── options.go
-│   └── node-doctor-controller/   # Controller entry point
-│       └── main.go               # Controller bootstrap
-│
-├── pkg/
-│   ├── types/                    # Core type definitions
-│   │   ├── types.go              # Monitor, Status, Event, Condition
-│   │   └── config.go             # Configuration types
-│   │
-│   ├── detector/                 # Problem Detector orchestrator
-│   │   ├── detector.go           # Main orchestration logic
-│   │   └── aggregator.go         # Problem aggregation/deduplication
-│   │
-│   ├── monitors/                 # Health check monitors
-│   │   ├── registry.go           # Monitor registration
-│   │   ├── base.go               # Base monitor implementation
-│   │   │
-│   │   ├── system/               # System health monitors
-│   │   │   ├── cpu.go
-│   │   │   ├── memory.go
-│   │   │   └── disk.go
-│   │   │
-│   │   ├── network/              # Network health monitors
-│   │   │   ├── dns.go
-│   │   │   ├── gateway.go
-│   │   │   └── connectivity.go
-│   │   │
-│   │   ├── kubernetes/           # Kubernetes component monitors
-│   │   │   ├── kubelet.go
-│   │   │   ├── apiserver.go
-│   │   │   └── runtime.go
-│   │   │
-│   │   └── custom/               # Custom plugin execution
-│   │       └── plugin.go
-│   │
-│   ├── remediators/              # Remediation implementations
-│   │   ├── registry.go           # Remediator registry with safety
-│   │   ├── interface.go          # Remediator interface
-│   │   ├── systemd.go            # Service management
-│   │   ├── network.go            # Network remediation
-│   │   ├── disk.go               # Disk cleanup
-│   │   ├── runtime.go            # Container runtime
-│   │   └── custom.go             # Custom scripts
-│   │
-│   ├── exporters/                # Problem exporters
-│   │   ├── interface.go          # Exporter interface
-│   │   │
-│   │   ├── k8s/                  # Kubernetes exporter
-│   │   │   ├── exporter.go
-│   │   │   ├── conditions.go     # Condition manager
-│   │   │   ├── events.go         # Event reporter
-│   │   │   └── annotations.go    # Annotation updater
-│   │   │
-│   │   ├── http/                 # HTTP health endpoint
-│   │   │   ├── server.go
-│   │   │   ├── handlers.go
-│   │   │   └── status.go
-│   │   │
-│   │   └── prometheus/           # Prometheus metrics
-│   │       ├── exporter.go
-│   │       └── metrics.go
-│   │
-│   ├── controller/               # Controller component
-│   │   ├── server.go             # HTTP server and routes
-│   │   ├── storage.go            # SQLite storage layer
-│   │   ├── correlator.go         # Pattern correlation engine
-│   │   ├── metrics.go            # Prometheus metrics
-│   │   └── types.go              # API types
-│   │
-│   └── util/                     # Utility functions
-│       ├── config.go             # Configuration loading
-│       ├── kube.go               # Kubernetes client helpers
-│       ├── log.go                # Logging utilities
-│       └── system.go             # System command helpers
-│
-├── config/                       # Example configurations
-│   ├── node-doctor.yaml          # Default configuration
-│   └── examples/
-│       ├── minimal.yaml
-│       ├── full-featured.yaml
-│       └── custom-plugins.yaml
-│
-├── deployment/                   # DaemonSet manifests
-│   ├── daemonset.yaml
-│   ├── rbac.yaml
-│   ├── configmap.yaml
-│   └── service.yaml
-│
-├── deploy/controller/            # Controller manifests
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── pvc.yaml
-│   ├── rbac.yaml
-│   ├── configmap.yaml
-│   └── kustomization.yaml
-│
-├── test/                         # Tests
-│   ├── e2e/                      # End-to-end tests
-│   ├── integration/              # Integration tests
-│   └── testdata/                 # Test fixtures
-│
-└── docs/                         # Documentation
-    ├── architecture.md           # This document
-    ├── monitors.md               # Monitor implementation guide
-    ├── remediation.md            # Remediation guide
-    ├── configuration.md          # Configuration reference
-    ├── controller-deployment.md  # Controller deployment guide
-    ├── testing-guide.md          # Developer testing guide
-    └── testing.md                # Operational testing guide
-```
-
-## Threading Model
-
-### Concurrency Architecture
-
-```
-Main Goroutine
-    ├─> Monitor 1 (goroutine)
-    │       └─> Periodic health checks
-    │       └─> Send Status -> Channel
-    │
-    ├─> Monitor 2 (goroutine)
-    │       └─> Periodic health checks
-    │       └─> Send Status -> Channel
-    │
-    ├─> Monitor N (goroutine)
-    │       └─> Periodic health checks
-    │       └─> Send Status -> Channel
-    │
-    └─> Problem Detector (goroutine)
-            ├─> Fan-in: Receive from all monitors
-            │
-            ├─> Process Status
-            │       ├─> Aggregate/Deduplicate
-            │       └─> Update internal state
-            │
-            ├─> Export (concurrent)
-            │       ├─> K8s Exporter (goroutine)
-            │       ├─> HTTP Exporter (main goroutine, HTTP handlers)
-            │       └─> Prometheus Exporter (goroutine)
-            │
-            └─> Remediate (sequential, safety-critical)
-                    └─> Remediator Registry
-                            ├─> Check cooldown
-                            ├─> Check circuit breaker
-                            ├─> Execute remediation
-                            └─> Update tracking
-```
-
-### Synchronization Primitives
-
-- **Channels**: Primary communication mechanism (buffered, size 1000)
-- **Mutexes**: Protect shared state in condition manager and remediation registry
-- **Context**: Graceful shutdown and timeout management
-- **WaitGroups**: Coordinated goroutine shutdown
-
-### Shutdown Sequence
-
-1. Cancel root context
-2. Stop all monitors (via context cancellation)
-3. Wait for all monitors to finish
-4. Drain status channel
-5. Stop exporters
-6. Final state sync to Kubernetes API
-7. Exit
-
-## Error Handling
-
-### Error Propagation
-
-- Monitors: Log errors, continue operation (resilient)
-- Exporters: Retry with exponential backoff, eventual consistency
-- Remediators: Circuit breaker pattern, fail-safe behavior
-
-### Failure Modes
-
-1. **Monitor Failure**: Other monitors continue, problem logged
-2. **API Server Unavailable**: Queue updates, retry on reconnection
-3. **Remediation Failure**: Circuit breaker opens, alerts generated
-4. **Configuration Error**: Fail-fast on startup
-5. **Resource Exhaustion**: Graceful degradation, shed load
-
-## Performance Considerations
-
-### Resource Usage
-
-- **CPU**: Minimal (50m request), spikes during health checks
-- **Memory**: ~128Mi baseline, scales with monitor count
-- **Network**: Low (periodic API updates), scales with problem frequency
-- **Disk**: Minimal (configuration, logs)
-
-### Optimization Strategies
-
-1. **Batch API Updates**: Aggregate multiple changes into single API call
-2. **Caching**: Cache node conditions to minimize API reads
-3. **Rate Limiting**: Prevent API server overload
-4. **Configurable Intervals**: Tune health check frequency
-5. **Channel Buffering**: Prevent goroutine blocking
-
-## Security Considerations
-
-### Privilege Requirements
-
-- **Privileged container**: Required for system-level operations
-- **hostNetwork**: Required for hostPort and network diagnostics
-- **hostPID**: Required for process management
-- **CAP_NET_ADMIN**: Required for network remediation
-- **CAP_SYS_ADMIN**: Required for system-level operations
-
-### Attack Surface
-
-- **HTTP Endpoints**: No authentication (internal only, hostPort)
-- **Configuration**: Read-only ConfigMap, validated on load
-- **Remediation**: Limited to predefined actions, no arbitrary code execution
-- **API Access**: Restricted by RBAC, minimal permissions
-
-### Mitigation Strategies
-
-1. **Input Validation**: Strict validation of configuration and runtime inputs
-2. **Least Privilege**: Minimal RBAC permissions
-3. **Audit Logging**: All remediation actions logged as events
-4. **Rate Limiting**: Prevent abuse of remediation
-5. **Network Policies**: Restrict outbound connections (optional)
-
-## Observability
-
-### Metrics
-
-Prometheus metrics exposed on `:9100/metrics`:
-
-- `node_doctor_monitor_checks_total`: Counter of health checks by monitor and result
-- `node_doctor_monitor_duration_seconds`: Histogram of check duration
-- `node_doctor_problems_detected_total`: Counter of problems detected
-- `node_doctor_remediations_attempted_total`: Counter of remediation attempts
-- `node_doctor_remediations_succeeded_total`: Counter of successful remediations
-- `node_doctor_circuit_breaker_state`: Gauge of circuit breaker states
-- `node_doctor_api_requests_total`: Counter of API requests by operation and result
-- `node_doctor_status_channel_size`: Gauge of status channel depth
-
-### Kubernetes Events
-
-Events created for:
-- Problem detection (temporary and permanent)
-- Remediation attempts (started, succeeded, failed)
-- Circuit breaker state changes
-- Configuration changes
-
-### Logs
-
-Structured JSON logging with fields:
-- `timestamp`: RFC3339 timestamp
-- `level`: debug, info, warn, error
-- `component`: Which component generated the log
-- `monitor`: Monitor name (if applicable)
-- `problem`: Problem type (if applicable)
-- `action`: Remediation action (if applicable)
-- `message`: Human-readable message
-
-## Testing Strategy
-
-### Unit Tests
-
-- All interfaces mocked
-- Test individual components in isolation
-- Table-driven tests for monitors
-- Coverage target: 80%+
-
-### Integration Tests
-
-- Test monitor + exporter combinations
-- Test remediation workflows
-- Mock Kubernetes API server
-- Test configuration loading and validation
-
-### End-to-End Tests
-
-- Deploy to kind/minikube cluster
-- Inject real problems
-- Verify detection and remediation
-- Test all HTTP endpoints
-- Verify Kubernetes API updates
-
-### Chaos Testing
-
-- Kill monitors randomly
-- Disconnect from API server
-- Inject rapid problem flapping
-- Resource exhaustion scenarios
-
-## Controller Component
-
-The Node Doctor Controller is an optional central component that provides cluster-wide aggregation, pattern correlation, and remediation coordination.
-
-### Controller Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Node 1 (DaemonSet)          Node 2              Node N         │
-│  ┌──────────────────┐   ┌──────────────┐   ┌──────────────┐    │
-│  │ Monitors         │   │ Monitors     │   │ Monitors     │    │
-│  │ ↓                │   │ ↓            │   │ ↓            │    │
-│  │ HTTP Exporter    │   │ HTTP Export  │   │ HTTP Export  │    │
-│  │ (webhook push)   │   │ (webhook)    │   │ (webhook)    │    │
-│  └────────┬─────────┘   └──────┬───────┘   └──────┬───────┘    │
-│           │                    │                   │            │
-│           │    POST /api/v1/reports (every 30s)   │            │
-│           └────────────────────┼──────────────────┘            │
-│                                ↓                               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │           Node Doctor Controller (Deployment)           │   │
-│  │                                                         │   │
-│  │  ┌─────────────┐   ┌─────────────┐   ┌───────────────┐ │   │
-│  │  │ Aggregator  │ → │ Correlator  │ → │ Lease Manager │ │   │
-│  │  │ (receive)   │   │ (patterns)  │   │ (coordination)│ │   │
-│  │  └─────────────┘   └─────────────┘   └───────────────┘ │   │
-│  │         ↓                 ↓                  ↓          │   │
-│  │  ┌─────────────────────────────────────────────────┐   │   │
-│  │  │           SQLite Storage (PVC)                  │   │   │
-│  │  │  - Node reports (30 day retention)              │   │   │
-│  │  │  - Correlation events                           │   │   │
-│  │  │  - Active leases                                │   │   │
-│  │  └─────────────────────────────────────────────────┘   │   │
-│  │         ↓                 ↓                  ↓          │   │
-│  │  ┌───────────┐   ┌───────────┐   ┌─────────────────┐   │   │
-│  │  │ REST API  │   │ Prometheus│   │ K8s Events      │   │   │
-│  │  │ /api/v1/* │   │ /metrics  │   │ (cluster-level) │   │   │
-│  │  └───────────┘   └───────────┘   └─────────────────┘   │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Controller Components
-
-#### 1. Aggregator
-
-Receives health reports from all node-doctor agents:
-
-- **Report Ingestion**: `POST /api/v1/reports` endpoint receives node reports
-- **Storage**: SQLite database with configurable retention (default 30 days)
-- **Deduplication**: Handles repeated reports from the same node
-- **State Tracking**: Maintains current state of all nodes
-
-#### 2. Correlation Engine
-
-Detects patterns across multiple nodes:
-
-**Infrastructure Correlation**:
-- Triggers when ≥30% of nodes report the same problem type
-- Indicates cluster-wide infrastructure issues (DNS, network, storage)
-
-**Common-Cause Correlation**:
-- Detects related problems occurring together (e.g., memory + disk pressure)
-- Identifies root cause vs symptoms
-
-**Cascade Correlation**:
-- Detects sequential problem chains (e.g., kubelet → pods → node)
-- Identifies failure propagation patterns
-
-```go
-// Correlation detection thresholds
-type CorrelationConfig struct {
-    ClusterWideThreshold     float64       // Fraction of nodes (default: 0.3)
-    MinNodesForCorrelation   int           // Minimum nodes (default: 2)
-    EvaluationInterval       time.Duration // How often to evaluate (default: 30s)
-}
-```
-
-#### 3. Lease Manager
-
-Coordinates remediation across the cluster:
-
-**Lease Flow**:
-```
-Node requests remediation:
-  1. POST /api/v1/leases {node, remediationType, reason}
-  2. Controller checks:
-     - Active leases < maxConcurrent?
-     - Node doesn't have active lease?
-     - Cooldown period passed?
-  3. Response: 200 OK (approved) or 429 (denied)
-  4. Node proceeds with remediation
-  5. DELETE /api/v1/leases/{id} (release)
-```
-
-**Safety Features**:
-- **Max Concurrent**: Limits simultaneous remediations cluster-wide
-- **Cooldown Period**: Prevents repeated remediations on same node
-- **Lease Expiration**: Auto-releases leases after timeout
-- **Fallback Mode**: Configurable behavior when controller unreachable
-
-### Controller API
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/healthz` | GET | Liveness probe |
-| `/readyz` | GET | Readiness probe |
-| `/api/v1/reports` | POST | Receive node health report |
-| `/api/v1/cluster/status` | GET | Cluster health summary |
-| `/api/v1/cluster/problems` | GET | Active cluster problems |
-| `/api/v1/nodes` | GET | List all nodes |
-| `/api/v1/nodes/{name}` | GET | Node details |
-| `/api/v1/nodes/{name}/history` | GET | Node report history |
-| `/api/v1/correlations` | GET | Active correlations |
-| `/api/v1/leases` | POST/GET | Request/list leases |
-| `/api/v1/leases/{id}` | DELETE | Release lease |
-| `/metrics` | GET | Prometheus metrics |
-
-### Controller Metrics
-
-```prometheus
-# Cluster health
-node_doctor_cluster_nodes_total
-node_doctor_cluster_nodes_healthy
-node_doctor_cluster_nodes_unhealthy
-node_doctor_cluster_nodes_unknown
-
-# Problem aggregation
-node_doctor_cluster_problem_nodes{problem_type, severity}
-node_doctor_cluster_problem_active{problem_type}
-
-# Correlations
-node_doctor_correlation_active_total
-node_doctor_correlation_detected_total{type}
-
-# Remediation coordination
-node_doctor_leases_active_total
-node_doctor_leases_granted_total
-node_doctor_leases_denied_total{reason}
-```
-
-### Node-to-Controller Communication
-
-Nodes communicate with the controller via HTTP webhooks:
-
-```yaml
-# Node DaemonSet configuration
-exporters:
-  http:
-    webhooks:
-      - name: controller
-        url: "http://node-doctor-controller.node-doctor:8080/api/v1/reports"
-        interval: 30s
-        timeout: 10s
-
-remediation:
-  coordination:
-    enabled: true
-    controllerURL: "http://node-doctor-controller.node-doctor:8080"
-    leaseTimeout: 5m
-    fallbackOnUnreachable: false  # Block if controller unreachable
-```
-
-### Controller Deployment
-
-The controller runs as a single-replica Deployment with PVC storage:
-
-- **Deployment**: Single replica (SQLite requires single writer)
-- **Storage**: PersistentVolumeClaim for SQLite database
-- **Service**: ClusterIP for node-to-controller communication
-- **RBAC**: ClusterRole for node read, event creation
-
-See [Controller Deployment Guide](controller-deployment.md) for detailed setup.
-
----
-
-## Future Enhancements
-
-### Planned Features
-
-1. **Dynamic Configuration Reload**: Watch ConfigMap, reload without restart
-2. **Custom Metrics**: Allow monitors to export custom metrics
-3. **Notification Webhooks**: Alert external systems on problems
-4. **Multi-Cluster Controller**: Aggregate status across clusters
-5. **ML-Based Anomaly Detection**: Learn normal patterns, detect deviations
-6. **Advanced Remediation**: Node drain, cordon, reboot
-7. **Health Check Profiles**: Pre-defined configurations for common use cases
-8. **Web UI**: Dashboard for cluster health visualization
-
-### Extension Points
-
-- Custom monitor plugins (dynamic loading)
-- Custom remediator plugins
-- Custom exporters
-- Webhook integrations
-- Custom health check scripts
-
-## References
-
-- [Node Problem Detector](https://github.com/kubernetes/node-problem-detector)
-- [Kubernetes Node Conditions](https://kubernetes.io/docs/concepts/architecture/nodes/#condition)
-- [Kubernetes Events](https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/event-v1/)
-- [Prometheus Exposition Format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+Agents with `remediation.coordination.enabled` ask the controller for a lease before each remediation attempt. The lease rules are in [remediation.md](remediation.md#controller-coordination). Deployment is in [controller-deployment.md](controller-deployment.md).
