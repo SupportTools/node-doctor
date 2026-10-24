@@ -34,6 +34,11 @@ data:
         config:
           warningLoadFactor: {{ .Values.monitors.cpu.warningLoadFactor }}
           criticalLoadFactor: {{ .Values.monitors.cpu.criticalLoadFactor }}
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: cpu-health
+        type: system-cpu
+        enabled: false
       {{- end }}
 
       {{- if .Values.monitors.memory.enabled }}
@@ -52,6 +57,11 @@ data:
           checkSwapUsage: true
           checkOOMKills: {{ .Values.monitors.memory.checkOOMKills }}
           kmsgPath: /dev/kmsg
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: memory-health
+        type: system-memory
+        enabled: false
       {{- end }}
 
       {{- if .Values.monitors.disk.enabled }}
@@ -73,6 +83,11 @@ data:
             - {{ .Values.monitors.disk.writeProbe.mountPath | quote }}
           writeProbeTimeout: {{ .Values.monitors.disk.writeProbe.timeout | quote }}
           {{- end }}
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: disk-health
+        type: system-disk
+        enabled: false
       {{- end }}
 
       {{- if and .Values.monitors.kubelet .Values.monitors.kubelet.enabled }}
@@ -128,6 +143,11 @@ data:
           checkIPv6: {{ .Values.monitors.ipForwarding.checkIPv6 }}
           checkPerInterface: {{ .Values.monitors.ipForwarding.checkPerInterface }}
           procPath: /host/proc
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: ip-forwarding-check
+        type: network-ip-forwarding
+        enabled: false
       {{- end }}
 
       {{- if .Values.monitors.ipv6Sysctl.enabled }}
@@ -141,6 +161,11 @@ data:
           expectIPv6Enabled: {{ .Values.monitors.ipv6Sysctl.expectIPv6Enabled }}
           checkPerInterface: {{ .Values.monitors.ipv6Sysctl.checkPerInterface }}
           procPath: {{ .Values.monitors.ipv6Sysctl.procPath }}
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: ipv6-sysctl-check
+        type: network-ipv6-sysctl
+        enabled: false
       {{- end }}
 
       {{- if .Values.monitors.ipv6Route.enabled }}
@@ -153,6 +178,11 @@ data:
         config:
           expectDefaultRoute: {{ .Values.monitors.ipv6Route.expectDefaultRoute }}
           procPath: {{ .Values.monitors.ipv6Route.procPath }}
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: ipv6-route-check
+        type: network-ipv6-route
+        enabled: false
       {{- end }}
 
       {{- if .Values.monitors.ipv6Neighbor.enabled }}
@@ -167,6 +197,11 @@ data:
           checkPerInterface: {{ .Values.monitors.ipv6Neighbor.checkPerInterface }}
           requireGlobalAddress: {{ .Values.monitors.ipv6Neighbor.requireGlobalAddress }}
           procPath: {{ .Values.monitors.ipv6Neighbor.procPath }}
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: ipv6-neighbor-check
+        type: network-ipv6-neighbor
+        enabled: false
       {{- end }}
 
       {{- if .Values.monitors.ipv6Firewall.enabled }}
@@ -179,6 +214,11 @@ data:
         config:
           expectIPv6Enabled: {{ .Values.monitors.ipv6Firewall.expectIPv6Enabled }}
           backend: {{ .Values.monitors.ipv6Firewall.backend }}
+      {{- else }}
+      # The agent adds a default monitor for this type when none is listed.
+      - name: ipv6-firewall-check
+        type: network-ipv6-firewall
+        enabled: false
       {{- end }}
 
       {{- if .Values.overlayTest.enabled }}
