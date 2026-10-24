@@ -1,489 +1,197 @@
-# DNS Monitor — Advanced Features Guide
+# DNS monitor: advanced features
 
-This guide covers the five opt-in analytical layers built on top of Node Doctor's core DNS monitor.
-Each layer is independently toggled via its own `enabled` flag; none are required for basic DNS
-health checking.
+The `network-dns-check` monitor has seven opt-in blocks that add analysis on top of the basic pass/fail checks. Each block is off until you set `enabled: true` in it. The core keys and core conditions are in [monitors.md](../monitors.md#network-dns-check).
 
-## Table of Contents
+| Block | Detects | Conditions | Needs |
+|---|---|---|---|
+| [`successRateTracking`](#successratetracking) | Failure rate over a sliding window | `ClusterDNSDegraded`, `ClusterDNSIntermittent`, `ExternalDNSDegraded`, `ExternalDNSIntermittent` | |
+| [`consistencyChecking`](#consistencychecking) | Flaky or varying answers to rapid repeated queries | `DNSResolutionDown`, `DNSResolutionIntermittent`, `DNSResolutionInconsistent` | `customQueries` with `consistencyCheck: true` |
+| [`healthScoring`](#healthscoring) | A 0-100 score per nameserver | `DNSNameserverDegraded`, `DNSNameserverUnhealthy` | |
+| [`correlation`](#correlation) | Failures shared across nameservers or domains | `DNSNameserverCorrelation`, `DNSDomainPatternCorrelation`, `DNSTemporalCorrelation` | `healthScoring`, or `testEachNameserver` queries |
+| [`predictiveAlerting`](#predictivealerting) | A failure-rate breach before it happens | `DNSPredictedDegradation` | |
+| [`trendDetection`](#trenddetection) | Slow decline, outliers, flapping | `DNSDegrading`, `DNSAnomalous`, `DNSFlapping` | |
+| [`historicalMetrics`](#historicalmetrics) | Nothing. Stores samples on disk. | | `nameserverCheckEnabled` or `healthScoring` |
 
-- [Overview](#overview)
-- [1. DNS Health Scoring](#1-dns-health-scoring)
-- [2. Correlation Analysis](#2-correlation-analysis)
-- [3. Predictive Alerting](#3-predictive-alerting)
-- [4. Statistical Trend Detection](#4-statistical-trend-detection)
-- [5. Enabling All Layers Together](#5-enabling-all-layers-together)
-- [Conditions Reference](#conditions-reference)
-- [Prometheus Metrics](#prometheus-metrics)
-- [Configuration Reference](#configuration-reference)
+Node conditions carry the `NodeDoctor` prefix, for example `NodeDoctorDNSFlapping`. Metrics for these blocks are in [metrics.md](../metrics.md).
 
----
+Some decimal keys are read only when YAML parses them as decimals. Write `60.0`, not `60`, for `healthScoring.degradedThreshold`, `healthScoring.unhealthyThreshold`, the four `healthScoring` weights, `correlation.minConfidence`, `correlation.nameserverFailureThreshold`, `predictiveAlerting.confidenceThreshold`, `trendDetection.degradationThreshold` and `trendDetection.anomalyZScore`. A whole number is ignored and the default applies.
 
-## Overview
+[examples/dns-monitoring/](../../examples/dns-monitoring/) has a basic and an advanced monitor block. They are snippets: copy the monitor entry into the `monitors` list of a full config.
 
-The DNS monitor emits conditions to the node's status on every check cycle. Basic monitoring
-detects binary pass/fail and failure-rate thresholds. The advanced layers add:
+## successRateTracking
 
-| Layer | What it detects | Condition names emitted |
-|-------|----------------|------------------------|
-| Health Scoring | Per-nameserver composite score (success rate, latency, error diversity, consistency) | `DNSNameserverUnhealthy`, `DNSNameserverDegraded` |
-| Correlation Analysis | Shared failure patterns across nameservers and domains | `DNSNameserverCorrelation`, `DNSDomainPatternCorrelation`, `DNSTemporalCorrelation` |
-| Predictive Alerting | Projected breach of failure threshold within a configurable window | `DNSPredictedDegradation` |
-| Trend Detection | Gradual decline (slope), statistical anomaly (z-score), and intermittent flapping | `DNSDegrading`, `DNSAnomalous`, `DNSFlapping` |
+Keeps the last `windowSize` results for cluster DNS and for external DNS, and compares the failure rate with a threshold. `predictiveAlerting` and `trendDetection` read these same windows, whether or not this block is enabled.
 
-All layers operate on the same check cycle and write into the same `Status` object, so their
-conditions naturally aggregate in Kubernetes node events, Prometheus, and alert routing.
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `windowSize` | `10` | 1 to 10000 |
+| `failureRateThreshold` | `0.3` | A decimal, or a percent above 1 (`30` means 0.3) |
+| `minSamplesRequired` | `5` | No conditions until the window holds this many results. At most `windowSize`. |
 
----
+| Condition | True (reason) | False (reason) |
+|---|---|---|
+| `ClusterDNSDegraded` | `HighClusterDNSFailureRate`, failure rate at or above the threshold | `ClusterDNSDegradedClear` |
+| `ClusterDNSIntermittent` | `IntermittentClusterDNSFailures`, some failures but below the threshold | `ClusterDNSIntermittentClear` |
+| `ExternalDNSDegraded` | `HighExternalDNSFailureRate` | `ExternalDNSDegradedClear` |
+| `ExternalDNSIntermittent` | `IntermittentExternalDNSFailures` | `ExternalDNSIntermittentClear` |
 
-## 1. DNS Health Scoring
+At most one of each Degraded/Intermittent pair is True.
 
-### What It Does
+## consistencyChecking
 
-Instead of a binary healthy/unhealthy verdict per nameserver, health scoring computes a composite
-score from 0–100 using four weighted dimensions:
+For each `customQueries` entry with `consistencyCheck: true` and `recordType: A`, sends several queries in a row and compares the results.
 
-| Dimension | Default Weight | What It Captures |
-|-----------|---------------|-----------------|
-| Success rate | 40% | Percentage of checks that resolved successfully |
-| Latency | 25% | p95 latency vs. configured baseline and maximum |
-| Error diversity | 15% | Spread across error types (NXDOMAIN, SERVFAIL, Timeout…) |
-| Consistency | 20% | Variance in success rate (low variance = high consistency) |
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `queriesPerCheck` | `5` | 2 to 20 |
+| `intervalBetweenQueries` | `200ms` | 10ms to 5s. A number means milliseconds. |
 
-Scores below the `degradedThreshold` (default 70) emit `DNSNameserverDegraded`.
-Scores below the `unhealthyThreshold` (default 40) emit `DNSNameserverUnhealthy`.
+| Condition | True (reason) | False (reason) |
+|---|---|---|
+| `DNSResolutionDown` | `AllConsistencyQueriesFailed` | `DNSResolutionDownClear` |
+| `DNSResolutionIntermittent` | `IntermittentConsistencyFailures`, some queries failed | `DNSResolutionIntermittentClear` |
+| `DNSResolutionInconsistent` | `InconsistentIPAddresses`, the answers had different IPs | `DNSResolutionInconsistentClear` |
 
-### Scoring Algorithm
+At most one of the three is True. A CDN or load-balanced name returns different IPs on purpose, so `DNSResolutionInconsistent` on such a name is expected.
 
-**Latency component** — clamped linear interpolation between baseline and maximum:
+Events: `ConsistencyCheckAllFailed`, `ConsistencyCheckIntermittent`, `ConsistencyCheckIPVariation`, `ConsistencyCheckHighLatency`, `ConsistencyCheckCancelled`.
 
-```
-latencyScore = 100 × clamp((latencyMax - p95) / (latencyMax - latencyBaseline), 0, 1)
-```
+## healthScoring
 
-- At or below `latencyBaseline` (default 50 ms) → score 100
-- At or above `latencyMax` (default 2 s) → score 0
+Scores each nameserver in the resolver file from 0 to 100 on every check. Enabling it also turns on the per-nameserver queries (`google.com`, 2s timeout) that feed the score.
 
-**Error diversity component** — penalises spreading failures across multiple error types:
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `degradedThreshold` | `70.0` | A score below this is degraded |
+| `unhealthyThreshold` | `40.0` | A score below this is unhealthy. Must be below `degradedThreshold`. |
+| `windowSize` | `20` | Results kept per nameserver, 3 to 1000. Scoring starts at 3 results. |
+| `latencyBaseline` | `50ms` | p95 at or below this scores 100 |
+| `latencyMax` | `2s` | p95 at or above this scores 0 |
+| `successRateWeight` | `0.40` | The four weights must sum to 1.0. If all four are unset, the defaults apply. |
+| `latencyWeight` | `0.25` | |
+| `errorDiversityWeight` | `0.15` | |
+| `consistencyWeight` | `0.20` | |
 
-```
-diversityScore = 100 × (1 - (uniqueErrorTypes / maxErrorTypes))
-```
+The four parts of the score:
 
-**Composite score** — weighted sum of the four components:
+| Part | Scores 100 when | Scores 0 when |
+|---|---|---|
+| Success rate | Every query succeeded | Every query failed |
+| Latency | p95 of successful queries is at or below `latencyBaseline` (linear in between) | p95 is at or above `latencyMax`, or fewer than 2 queries succeeded |
+| Errors | No errors. Each failure costs by type: Timeout 3, SERVFAIL/Refused/NXDOMAIN 2, other 1. | Every query timed out |
+| Consistency | Latency coefficient of variation at or below 0.1 | Coefficient of variation at or above 2.0, or no successful queries |
 
-```
-score = successWeight×successScore + latencyWeight×latencyScore
-      + diversityWeight×diversityScore + consistencyWeight×consistencyScore
-```
+| Condition | True (reason) | False (reason) |
+|---|---|---|
+| `DNSNameserverUnhealthy` | `LowHealthScore`. The message lists `nameserver(score)`. | `NoUnhealthyNameservers` |
+| `DNSNameserverDegraded` | `DegradedHealthScore` | `NoDegradedNameservers` |
 
-### Configuration
+The two conditions are independent: an unhealthy nameserver does not also count as degraded.
 
-```yaml
-monitors:
-  - name: dns-health
-    type: network-dns-check
-    config:
-      healthScoring:
-        enabled: true
-        degradedThreshold: 70       # Score below this → DNSNameserverDegraded
-        unhealthyThreshold: 40      # Score below this → DNSNameserverUnhealthy
-        windowSize: 20              # Number of checks to retain per nameserver
-        latencyBaseline: 50ms       # Healthy p95 latency target
-        latencyMax: 2s              # Latency at which latency score = 0
-        successRateWeight: 0.40     # Must sum to 1.0 across all four weights
-        latencyWeight: 0.25
-        errorDiversityWeight: 0.15
-        consistencyWeight: 0.20
-```
+## correlation
 
-### Prometheus Metrics
+Looks for failure patterns across nameservers and domains on every check. A pattern is reported when its confidence is at least `minConfidence`.
 
-When health scoring is enabled, per-nameserver scores are exported as Prometheus gauges via the
-`latencyMetrics.NameserverHealthScores` field that the DNS monitor attaches to each status update.
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `minConfidence` | `0.7` | 0 to 1 |
+| `windowMinutes` | `5` | Look-back for the temporal detector |
+| `nameserverFailureThreshold` | `0.5` | A nameserver with a success rate below this is failing |
+| `minNameserversForDomainCorrelation` | `2` | Nameservers that must fail a domain before it is reported |
 
-The score can be used in Grafana dashboards and alerting rules:
+| Detector | Data it uses | Reports when |
+|---|---|---|
+| Nameserver | `healthScoring` results | A nameserver's success rate is below `nameserverFailureThreshold` |
+| Domain pattern | `testEachNameserver` results | A domain fails on enough nameservers, or several domains under one TLD fail |
+| Temporal | `healthScoring` results | Two or more nameservers have 30% or more failures within `windowMinutes` |
 
-```promql
-# Alert when any nameserver score drops below 50
-node_doctor_dns_nameserver_health_score{node=~".*"} < 50
-```
+| Condition | True (reason) |
+|---|---|
+| `DNSNameserverCorrelation` | `CorrelatedDNSFailure` |
+| `DNSDomainPatternCorrelation` | `CorrelatedDNSFailure` |
+| `DNSTemporalCorrelation` | `CorrelatedDNSFailure` |
 
----
+The message holds the root-cause guess, for example "Domain example.com is failing on 2 of 3 nameservers". These conditions are only set True. They clear when the exporter's `conditionStaleTTL` expires.
 
-## 2. Correlation Analysis
+## predictiveAlerting
 
-### What It Does
+Fits a straight line to the cluster and external success-rate windows from `successRateTracking` and estimates when the rate will cross `1 - failureRateThreshold`.
 
-The correlation engine examines all nameservers and domains collectively each check cycle to detect
-shared failure patterns. It runs three independent detectors:
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `predictionWindow` | `30m` | Breaches further out are ignored |
+| `warningLeadTime` | `15m` | The condition goes True only when the breach is this close |
+| `minDataPoints` | `10` | Results needed before predicting. Keep it at or below `successRateTracking.windowSize`, or it never predicts. |
+| `confidenceThreshold` | `0.8` | Minimum R² of the fit |
 
-| Detector | Hypothesis | Confidence basis |
-|----------|-----------|-----------------|
-| **Nameserver correlation** | Multiple nameservers failing simultaneously → shared upstream infrastructure issue | Fraction of nameservers below failure threshold |
-| **Domain-pattern correlation** | Same domain failing across multiple nameservers → DNS record issue (NXDOMAIN, stale TTL) | Number of nameservers that failed the domain |
-| **Temporal correlation** | Failures cluster within a short time window → transient infrastructure event | Ratio of failures within the window vs. total |
+The monitor does not predict when the rate is flat or rising, or is already below the threshold.
 
-Results above the configured `minConfidence` threshold are emitted as status conditions with a
-human-readable `RootCause` hypothesis and supporting `Evidence`.
+| Condition | True (reason) | False (reason) |
+|---|---|---|
+| `DNSPredictedDegradation` | `ClusterDNSBreachPredicted`, `ExternalDNSBreachPredicted` | `NoDNSBreachPredicted` |
 
-### Configuration
+When no prediction can be made, the monitor leaves the condition as it was.
 
-```yaml
-monitors:
-  - name: dns-health
-    type: network-dns-check
-    config:
-      correlation:
-        enabled: true
-        minConfidence: 0.7          # 0.0–1.0; only report correlations above this
-        windowMinutes: 5            # Temporal detector look-back window
-        nameserverFailureThreshold: 0.5   # Below this success rate → nameserver "failing"
-        minNameserversForDomainCorrelation: 2  # Minimum nameservers that must fail a domain
-```
+## trendDetection
 
-### Interpreting Results
+Watches the success rates from the `successRateTracking` windows over time.
 
-| Condition | Reason | Meaning |
-|-----------|--------|---------|
-| `DNSNameserverCorrelation` | `NameserverCorrelation` | Multiple nameservers failing; likely shared upstream |
-| `DNSDomainPatternCorrelation` | `DomainPatternCorrelation` | Same domain failing on many nameservers; record issue |
-| `DNSTemporalCorrelation` | `TemporalCorrelation` | Burst of failures in a short window; transient event |
-| `DNSCorrelation` | (fallback) | Unclassified correlation type |
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `windowSize` | `20` | Samples used for the slope and flap count |
+| `degradationThreshold` | `-0.05` | Slope per sample. A steeper drop is `DNSDegrading`. |
+| `anomalyZScore` | `2.5` | Distance from the long-term mean in standard deviations. The check uses the absolute value, so a sudden improvement also counts. |
+| `flapDetection.enabled` | `true` | Any `flapDetection` block turns it on, even with `enabled: false` |
+| `flapDetection.minOscillations` | `3` | Crossings of the 50% success line needed for `DNSFlapping` |
+| `flapDetection.windowMinutes` | `10` | |
 
-The condition message includes the affected items and confidence score:
+| Condition | True (reason) |
+|---|---|
+| `DNSDegrading` | `ClusterDNSDegrading`, `ExternalDNSDegrading` |
+| `DNSAnomalous` | `ClusterDNSAnomalous`, `ExternalDNSAnomalous` |
+| `DNSFlapping` | `ClusterDNSFlapping`, `ExternalDNSFlapping` |
 
-```
-Correlated DNS failures detected (confidence=0.85): nameservers [10.96.0.10, 10.96.0.11]
-— RootCause: Multiple nameservers failing simultaneously. Possible upstream infrastructure issue.
-```
+These conditions are only set True. They clear when the exporter's `conditionStaleTTL` expires.
 
-### Tuning Tips
+## historicalMetrics
 
-- **Lower `minConfidence`** to catch weaker correlations (more noise, earlier detection).
-- **Raise `windowMinutes`** to correlate failures that span longer intervals (e.g., rolling restarts).
-- **Raise `minNameserversForDomainCorrelation`** in large clusters where some nameserver failures are normal.
+Writes every per-nameserver query result to a local SQLite file. The per-nameserver queries run only when `nameserverCheckEnabled` or `healthScoring.enabled` is true.
 
----
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `storagePath` | `/var/lib/node-doctor/dns-metrics.db` | Must be on a writable volume |
+| `retentionDays` | `7` | |
 
-## 3. Predictive Alerting
+## Reading the conditions
 
-### What It Does
+List the DNS conditions on a node:
 
-Predictive alerting fits a linear regression line to the recent DNS success-rate ring buffer and
-extrapolates when the rate will breach the configured failure threshold. If the projected breach
-falls within the `predictionWindow`, a `DNSPredictedDegradation` condition is emitted **before**
-the failure threshold is actually crossed.
-
-The alert distinguishes two urgency levels:
-
-| Urgency | Condition message contains | Breach timing |
-|---------|--------------------------|--------------|
-| Warning | "within lead time" | Breach predicted within `warningLeadTime` |
-| Watch | "within prediction window" | Breach predicted within `predictionWindow` but outside `warningLeadTime` |
-
-### Configuration
-
-```yaml
-monitors:
-  - name: dns-health
-    type: network-dns-check
-    config:
-      predictiveAlerting:
-        enabled: true
-        predictionWindow: 30m       # Look this far ahead for a predicted breach
-        warningLeadTime: 15m        # Escalate urgency if breach is within this window
-        minDataPoints: 10           # Minimum ring-buffer samples before predicting
-        confidenceThreshold: 0.8    # Minimum R² required to trust the regression
+```bash
+kubectl get node <node> -o json \
+  | jq '.status.conditions[] | select(.type | test("^NodeDoctor.*DNS")) | {type, status, reason, message}'
 ```
 
-### How the Prediction Works
+The agent image has no `dig` or `nslookup`. Run DNS tests from a debug pod or from the node itself.
 
-1. All success-rate samples in the ring buffer are fitted with ordinary least-squares regression,
-   using Unix timestamp as the x-axis (seconds since epoch) and success rate (0.0–1.0) as y.
-2. R² (coefficient of determination) is computed. If R² < `confidenceThreshold`, no alert is
-   generated — the trend is too noisy to act on.
-3. The regression line is extrapolated to find when it crosses the `failureRateThreshold`
-   configured in `successRateTracking`.
-4. If the projected breach time falls within `predictionWindow`, the condition is emitted.
+## Troubleshooting by condition
 
-### Interpreting Results
+| Condition | Likely cause | Check first |
+|---|---|---|
+| `DNSNameserverUnhealthy`, `DNSNameserverDegraded` | One CoreDNS pod or upstream resolver is failing | `kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide`, then the logs of the pod behind the listed IP |
+| `DNSNameserverCorrelation`, `DNSTemporalCorrelation` | Several nameservers fail together: a shared upstream, or a cluster-wide outage | `kubectl -n kube-system get endpoints kube-dns`, recent CNI or kube-proxy changes |
+| `DNSDomainPatternCorrelation` | One record or zone is broken | The record itself, the CoreDNS ConfigMap |
+| `DNSDegrading` with reason `Cluster...` | CoreDNS under load, conntrack or iptables problems on the node | `kubectl top pods -n kube-system -l k8s-app=kube-dns`, `nf_conntrack_count` against `nf_conntrack_max` |
+| `DNSDegrading` with reason `External...` | Upstream resolver or egress firewall | Port 53 egress, the CoreDNS `forward` target |
+| `DNSFlapping` | CoreDNS restart loop, conntrack exhaustion | CoreDNS restart count and memory limits, conntrack usage |
+| `DNSAnomalous` | A sudden change from the long-term rate | Recent config changes, traffic bursts |
+| `DNSPredictedDegradation` | A steady decline that will cross the threshold | Same as `DNSDegrading` |
+| `ClusterDNSDegraded` only, `ExternalDNSDegraded` clear (or the reverse) | Cluster and external paths fail separately | CoreDNS for cluster names, upstream and egress for external names |
 
-A condition message looks like:
-
-```
-Cluster DNS success rate predicted to breach failure threshold in 12m30s
-(R²=0.94, current rate=87.3%, slope=-0.28%/min, projected breach at 14:32:15)
-```
-
-**False positives** occur when DNS has a brief dip but quickly recovers. Raise
-`confidenceThreshold` (e.g., 0.9) and `minDataPoints` (e.g., 20) to require a more sustained
-trend before alerting.
-
----
-
-## 4. Statistical Trend Detection
-
-### What It Does
-
-Trend detection analyses the stream of per-cycle DNS success rates using two independent
-statistical models:
-
-1. **Welford's online algorithm** — computes a running mean and variance over *all* observations
-   ever seen (unbounded history). This gives a stable long-term baseline for detecting short-term
-   anomalies via z-score, even after thousands of check cycles.
-
-2. **OLS linear regression** — fits a slope to the most recent `windowSize` observations (circular
-   buffer). The slope (success-rate change per sample) detects gradual degradation trends.
-
-3. **Flap detection** — counts healthy↔unhealthy transitions within a rolling time window to catch
-   intermittent failures that have high average success rates but erratic behaviour.
-
-### Conditions Emitted
-
-| Condition type | Triggered when | Reason field (in Kubernetes node condition) |
-|----------------|---------------|---------------------------------------------|
-| `DNSDegrading` | OLS slope more negative than `degradationThreshold` | `ClusterDNSDegrading` or `ExternalDNSDegrading` |
-| `DNSAnomalous` | \|z-score\| exceeds `anomalyZScore` | `ClusterDNSAnomalous` or `ExternalDNSAnomalous` |
-| `DNSFlapping` | Oscillation count ≥ `minOscillations` in the time window | `ClusterDNSFlapping` or `ExternalDNSFlapping` |
-
-### Configuration
-
-```yaml
-monitors:
-  - name: dns-health
-    type: network-dns-check
-    config:
-      trendDetection:
-        enabled: true
-        windowSize: 20              # Circular buffer size for slope/flap calculations
-        degradationThreshold: -0.05 # Slope more negative than this → DNSDegrading
-                                    # Units: success-rate change per sample (negative = declining)
-        anomalyZScore: 2.5          # |z-score| above this → DNSAnomalous
-        flapDetection:
-          enabled: true
-          minOscillations: 3        # Transitions needed to trigger DNSFlapping
-          windowMinutes: 10         # Rolling window for counting transitions
-```
-
-### Understanding the Metrics
-
-**Slope (degradation)** — A slope of `-0.05` means the success rate drops 5 percentage points per
-check cycle. With a 30-second interval that is approximately -10%/minute. The default threshold
-`-0.05` flags trends that would reach 0% success in ~20 cycles from a healthy 100% baseline.
-
-**Z-score (anomaly)** — Measures how far the current sample is from the long-term mean in standard
-deviations. A z-score of -2.5 means the current rate is 2.5σ below normal. Negative z-scores
-indicate the current rate is *worse* than historical average (bad). Positive z-scores indicate the
-current rate is *better* than average (typically not alarming).
-
-**Oscillations (flapping)** — Each healthy→unhealthy or unhealthy→healthy transition within the
-flap window increments the counter. Three or more transitions in 10 minutes indicates an
-intermittent DNS failure that may not trigger the sustained failure-rate threshold.
-
-### Tuning Tips
-
-| Scenario | Recommendation |
-|---------|---------------|
-| Too many `DNSDegrading` alerts during legitimate load | Increase `windowSize` (more samples → smoother slope) |
-| Missing slow gradual degradation | Decrease `degradationThreshold` (e.g., `-0.02`) |
-| High z-score alerts on noisy environments | Increase `anomalyZScore` (e.g., 3.0) |
-| Flapping alerts on expected periodic restarts | Increase `windowMinutes` or `minOscillations` |
-
----
-
-## 5. Enabling All Layers Together
-
-The following configuration enables all four advanced layers with recommended production defaults:
-
-```yaml
-monitors:
-  - name: dns-health
-    type: network-dns-check
-    interval: 30s
-    timeout: 10s
-    config:
-      clusterDomains:
-        - kubernetes.default.svc.cluster.local
-        - kube-dns.kube-system.svc.cluster.local
-      externalDomains:
-        - google.com
-        - cloudflare.com
-
-      successRateTracking:
-        enabled: true
-        windowSize: 50
-        failureRateThreshold: 0.1   # Alert at 10% failure rate
-        minSamplesRequired: 20
-
-      # Layer 1: Per-nameserver composite scoring
-      healthScoring:
-        enabled: true
-        degradedThreshold: 70
-        unhealthyThreshold: 40
-        latencyBaseline: 50ms
-        latencyMax: 2s
-
-      # Layer 2: Cross-domain and cross-nameserver correlation
-      correlation:
-        enabled: true
-        minConfidence: 0.75
-        windowMinutes: 5
-        nameserverFailureThreshold: 0.5
-
-      # Layer 3: Predictive breach alerting
-      predictiveAlerting:
-        enabled: true
-        predictionWindow: 30m
-        warningLeadTime: 15m
-        minDataPoints: 15
-        confidenceThreshold: 0.85
-
-      # Layer 4: Statistical trend detection
-      trendDetection:
-        enabled: true
-        windowSize: 20
-        degradationThreshold: -0.05
-        anomalyZScore: 2.5
-        flapDetection:
-          enabled: true
-          minOscillations: 3
-          windowMinutes: 10
-```
-
----
-
-## Conditions Reference
-
-| Condition Name | Layer | Severity | Description |
-|----------------|-------|----------|-------------|
-| `DNSNameserverUnhealthy` | Health Scoring | Critical | Nameserver composite score < unhealthyThreshold |
-| `DNSNameserverDegraded` | Health Scoring | Warning | Nameserver composite score < degradedThreshold |
-| `DNSNameserverCorrelation` | Correlation | Warning | Multiple nameservers failing simultaneously |
-| `DNSDomainPatternCorrelation` | Correlation | Warning | Same domain failing across multiple nameservers |
-| `DNSTemporalCorrelation` | Correlation | Warning | Failures clustered within the temporal detection window |
-| `DNSCorrelation` | Correlation | Warning | Fallback for unclassified correlation types |
-| `DNSPredictedDegradation` | Predictive | Warning | Projected breach of failure threshold |
-| `DNSDegrading` | Trend Detection | Warning | Success rate trending downward (Reason: `ClusterDNSDegrading` or `ExternalDNSDegrading`) |
-| `DNSAnomalous` | Trend Detection | Warning | Success rate is a statistical anomaly (Reason: `ClusterDNSAnomalous` or `ExternalDNSAnomalous`) |
-| `DNSFlapping` | Trend Detection | Warning | Intermittent healthy/unhealthy transitions (Reason: `ClusterDNSFlapping` or `ExternalDNSFlapping`) |
-
----
-
-## Prometheus Metrics
-
-Node Doctor exports DNS health metrics for use in Grafana dashboards and recording rules.
-
-### Key Metrics
-
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `node_doctor_dns_health_score` | `node`, `nameserver` | Composite health score (0–100) |
-| `node_doctor_dns_success_rate` | `node`, `type` (cluster/external) | Rolling success rate |
-| `node_doctor_dns_latency_p95_seconds` | `node`, `nameserver` | p95 resolution latency |
-
-### Example Grafana Queries
-
-```promql
-# DNS health score heatmap across all nodes
-node_doctor_dns_health_score
-
-# Nodes with degraded cluster DNS
-node_doctor_dns_success_rate{type="cluster"} < 0.9
-
-# Predict DNS issues before they breach threshold (predictive alerting complement)
-predict_linear(node_doctor_dns_success_rate{type="cluster"}[10m], 1800) < 0.9
-```
-
-### Example AlertManager Rules
-
-```yaml
-groups:
-  - name: node-doctor-dns
-    rules:
-      - alert: DNSNameserverUnhealthy
-        expr: |
-          kube_node_status_condition{
-            condition=~"DNSNameserverUnhealthy",
-            status="True"
-          } == 1
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "DNS nameserver health score critically low on {{ $labels.node }}"
-
-      - alert: DNSPredictedDegradation
-        expr: |
-          kube_node_status_condition{
-            condition="DNSPredictedDegradation",
-            status="True"
-          } == 1
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "DNS degradation predicted on {{ $labels.node }}"
-
-      - alert: DNSFlapping
-        expr: |
-          kube_node_status_condition{
-            condition="DNSFlapping",
-            status="True"
-          } == 1
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "DNS flapping detected on {{ $labels.node }}"
-```
-
----
-
-## Configuration Reference
-
-### `healthScoring`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Activate health scoring |
-| `degradedThreshold` | float | `70` | Score below which a nameserver is degraded |
-| `unhealthyThreshold` | float | `40` | Score below which a nameserver is unhealthy |
-| `windowSize` | int | `20` | Sliding window size (number of checks) |
-| `latencyBaseline` | duration | `50ms` | p95 latency for a score of 100 |
-| `latencyMax` | duration | `2s` | p95 latency for a score of 0 |
-| `successRateWeight` | float | `0.40` | Weight for success rate component |
-| `latencyWeight` | float | `0.25` | Weight for latency component |
-| `errorDiversityWeight` | float | `0.15` | Weight for error diversity component |
-| `consistencyWeight` | float | `0.20` | Weight for consistency component |
-
-### `correlation`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Activate correlation analysis |
-| `minConfidence` | float | `0.7` | Minimum confidence (0–1) to emit a condition |
-| `windowMinutes` | int | `5` | Temporal detector look-back window |
-| `nameserverFailureThreshold` | float | `0.5` | Success rate below which a nameserver is "failing" |
-| `minNameserversForDomainCorrelation` | int | `2` | Min nameservers that must fail a domain |
-
-### `predictiveAlerting`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Activate predictive alerting |
-| `predictionWindow` | duration | `30m` | How far ahead to look for a predicted breach |
-| `warningLeadTime` | duration | `15m` | Breach within this window → escalate urgency |
-| `minDataPoints` | int | `10` | Minimum samples before predicting |
-| `confidenceThreshold` | float | `0.8` | Minimum R² to trust the regression |
-
-### `trendDetection`
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Activate statistical trend detection |
-| `windowSize` | int | `20` | Circular buffer size for slope and flap calculations |
-| `degradationThreshold` | float | `-0.05` | OLS slope more negative than this → Degrading |
-| `anomalyZScore` | float | `2.5` | Absolute z-score above this → Anomalous |
-| `flapDetection.enabled` | bool | `true` (when block present) | Activate flap detection |
-| `flapDetection.minOscillations` | int | `3` | Transitions needed to trigger Flapping |
-| `flapDetection.windowMinutes` | int | `10` | Rolling window for counting transitions |
+To make the trend and prediction conditions less sensitive, raise `anomalyZScore`, `windowSize`, `minOscillations` or `confidenceThreshold`, or move `degradationThreshold` closer to 0. Lower them to catch problems earlier.
