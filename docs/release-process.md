@@ -393,7 +393,7 @@ docker buildx imagetools inspect docker.io/supporttools/node-doctor-overlay-test
 
 # 4. Cosign signature (only on the exact X.Y.Z node-doctor tag)
 cosign verify docker.io/supporttools/node-doctor:$CHART \
-  --certificate-identity-regexp="https://github.com/supporttools/node-doctor" \
+  --certificate-identity-regexp='^https://github.com/SupportTools/node-doctor/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 
 # 5. Helm chart published
@@ -440,14 +440,13 @@ helm show values supporttools/node-doctor --version "$CHART" | grep -E '^\s+tag:
 
 ## Signing and Verification
 
-**What is signed:** exactly one thing — the `docker.io/supporttools/node-doctor:<X.Y.Z>` image
-tag (`v` stripped), with keyless cosign via GitHub OIDC (the `Sign Docker image` step of the
-`docker` job).
+**What is signed:** the `docker.io/supporttools/node-doctor` image, with keyless cosign via
+GitHub OIDC (the `Sign Docker image` step of the `docker` job). The step signs the digest that
+`<X.Y.Z>` points to, so the `{{major}}.{{minor}}` and `latest` tags of the same release verify
+too.
 
 **What is not signed:**
 
-- the `{{major}}.{{minor}}` tag (e.g. `1.9`)
-- the `latest` tag
 - the `node-doctor-overlay-test` image, on any tag
 - the GitHub Release assets (`rbac.yaml`, `daemonset.yaml`)
 - the packaged Helm chart
@@ -464,11 +463,14 @@ GoReleaser, so it produces no binaries, no archives, and no `checksums.txt`.
 
 ```bash
 cosign verify docker.io/supporttools/node-doctor:1.9.0 \
-  --certificate-identity-regexp="https://github.com/supporttools/node-doctor" \
+  --certificate-identity-regexp='^https://github.com/SupportTools/node-doctor/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
-Note this is `cosign verify` (image), not `cosign verify-blob` — there are no signed blobs.
+Use cosign v3 or newer. The signature is a Sigstore bundle stored as an OCI referrer, and cosign
+v2 reports `no signatures found`. Keep `SupportTools` capitalized: the identity match is
+case-sensitive. This is `cosign verify` (image), not `cosign verify-blob`; there are no signed
+blobs.
 
 ## Rollback Procedures
 
@@ -704,10 +706,12 @@ check `git diff` covers both files.
 ### Cosign verification fails
 
 - Use `cosign verify` (image), not `cosign verify-blob` — no blobs are signed.
-- Only the `<X.Y.Z>` tag on `node-doctor` is signed. `latest`, `{{major}}.{{minor}}` and the
-  entire overlay-test image are unsigned.
-- The runner's pre-baked cosign stores the signature as an OCI referrer of the image, not as a
-  `sha256-<digest>.sig` tag, so looking for that tag finds nothing. Use `cosign verify`.
+- `no signatures found`: you are on cosign v2. The signature is an OCI referrer, not a
+  `sha256-<digest>.sig` tag, and only cosign v3 reads it.
+- `no matching CertificateIdentity`: the identity regexp is wrong. It must match
+  `https://github.com/SupportTools/node-doctor/.github/workflows/release.yml@refs/tags/v...`,
+  with that capitalization.
+- The overlay-test image is unsigned on every tag.
 
 ### Retagging an existing version
 
