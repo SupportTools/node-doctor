@@ -231,7 +231,7 @@ Each block becomes one monitor in the agent config. [Monitors](../../docs/monito
 
 Leave `checkSystemdStatus` false on RKE2 and k3s, where kubelet is not its own systemd unit. `checkPLEG` needs authenticated access to the kubelet port 10250.
 
-`enabled: false` does not turn off the cpu, memory, disk, ipForwarding or ipv6 monitors. The chart leaves the block out of the config, and the agent then adds that monitor type back with its built-in defaults. To quiet a check, tune its thresholds instead.
+`enabled: false` renders the monitor with `enabled: false`, so the agent does not add its built-in default for that type.
 
 The IPv6 monitors run every 60s with a 5s timeout, read `/host/proc`, and never change host settings. On IPv4-only nodes they report warnings. To quiet them, set `expectIPv6Enabled: false` on `ipv6Sysctl`, `ipv6Neighbor` and `ipv6Firewall`, and `expectDefaultRoute: false` on `ipv6Route`.
 
