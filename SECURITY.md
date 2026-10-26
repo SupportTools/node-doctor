@@ -107,6 +107,7 @@ The following host paths are mounted into the container:
 | `/etc/machine-id` | Read-only | Machine identification |
 | `/etc/os-release` | Read-only | OS information |
 | Container runtime sockets | Read-only | Container health monitoring |
+| `/var/lib/node-doctor/write-probe` | Read-write | Disk monitor write probe |
 
 > **Note**: While mounts are configured as read-only, the privileged container mode means these restrictions can be bypassed. The read-only flags provide defense-in-depth, not absolute protection.
 
@@ -138,7 +139,7 @@ For custom remediation scripts:
 
 ### For Operators
 
-1. **Start with dry-run mode**: Enable `dryRunMode: true` before production deployment to validate behavior without taking action.
+1. **Start with dry-run mode**: Set `settings.dryRunMode: true` before production deployment to validate behavior without taking action.
 
 2. **Use conservative rate limits**: Start with low values and increase based on observed behavior.
 
@@ -154,24 +155,21 @@ For custom remediation scripts:
 
 ### For Contributors
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for security guidelines when contributing code, including:
-- Input validation requirements
-- Safety-first principles for remediators
-- Security review process for changes
+See [CONTRIBUTING.md](CONTRIBUTING.md#writing-code) for the rules on remediator input validation and safety controls.
 
 ## Artifact Verification
 
-Releases are signed with Cosign using GitHub OIDC (keyless signing).
-
-### Verify with Cosign
+The release workflow signs the `docker.io/supporttools/node-doctor` image with cosign keyless signing (GitHub OIDC). It signs the image digest that the version tag points to, so the `X.Y` and `latest` tags of the same release verify too. The signature is a Sigstore bundle stored as an OCI referrer, not a `.sig` tag, so verify with cosign v3 or newer.
 
 ```bash
 cosign verify docker.io/supporttools/node-doctor:<version> \
-  --certificate-identity-regexp="https://github.com/supporttools/node-doctor" \
-  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+  --certificate-identity-regexp='^https://github.com/SupportTools/node-doctor/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
-Replace `<version>` with the specific release tag (e.g., `v1.0.0`).
+Image tags have no `v` prefix, for example `1.10.0`. The identity match is case-sensitive, so keep `SupportTools` capitalized.
+
+The `node-doctor-overlay-test` image, the Helm chart and the release manifests (`rbac.yaml`, `daemonset.yaml`) are not signed. Releases ship no binaries and no GPG signatures.
 
 ## Scope
 
@@ -192,5 +190,4 @@ This security policy covers:
 ## Contact
 
 - **Security issues**: security@supporttools.com or [GitHub Security Advisory](https://github.com/supporttools/node-doctor/security/advisories/new)
-- **General questions**: [GitHub Discussions](https://github.com/supporttools/node-doctor/discussions)
 - **Bug reports**: [GitHub Issues](https://github.com/supporttools/node-doctor/issues)

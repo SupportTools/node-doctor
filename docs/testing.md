@@ -142,7 +142,7 @@ export TEST_TIMEOUT="60"              # Event detection timeout
 |------|---------|----------------|
 | Healthy | (no action) | `RuntimeHealthy: True` |
 | Socket blocked | `chmod 000 /run/containerd/containerd.sock` | `RuntimeSocketUnreachable` |
-| Stop runtime | `systemctl stop containerd` | `RuntimeServiceInactive` |
+| Stop runtime | `systemctl stop containerd` | `RuntimeSystemdInactive` |
 
 **Cleanup:** `systemctl start containerd; chmod 660 /run/containerd/containerd.sock`
 
@@ -153,8 +153,8 @@ export TEST_TIMEOUT="60"              # Event detection timeout
 
 | Test | Command | Expected Event |
 |------|---------|----------------|
-| Healthy | (no action) | `NetworkReachable: True` |
-| Block DNS | `iptables -A OUTPUT -p udp --dport 53 -j DROP` | `ClusterDNSFailed` |
+| Healthy | (no action) | `ClusterDNSDown: False` |
+| Block DNS | `iptables -A OUTPUT -p udp --dport 53 -j DROP` | `ClusterDNSResolutionFailed`, then `ClusterDNSDown: True` |
 
 **Cleanup:** `iptables -F`
 
@@ -165,7 +165,7 @@ export TEST_TIMEOUT="60"              # Event detection timeout
 |------|---------|----------------|
 | Healthy | (no action) | `GatewayReachable` |
 | Block ICMP | `iptables -A OUTPUT -p icmp -j DROP` | `GatewayUnreachable` |
-| High latency | `tc qdisc add dev eth0 root netem delay 200ms` | `GatewayLatencyHigh` |
+| High latency | `tc qdisc add dev eth0 root netem delay 200ms` | `HighGatewayLatency` |
 
 **Cleanup:** `iptables -F; tc qdisc del dev eth0 root`
 
@@ -175,7 +175,7 @@ export TEST_TIMEOUT="60"              # Event detection timeout
 | Test | Command | Expected Event |
 |------|---------|----------------|
 | Healthy | (no action) | `CNIHealthy` |
-| Block peers | `iptables -A INPUT -s 10.42.0.0/16 -j DROP` | `PeerUnreachable` |
+| Block peers | `iptables -A INPUT -s 10.42.0.0/16 -j DROP` | `PeersUnreachableSummary`, then `NetworkDegraded` or `NetworkPartitioned` |
 
 **Cleanup:** `iptables -F`
 

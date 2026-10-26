@@ -257,12 +257,12 @@ test-all:
 	@go tool cover -func=coverage/coverage.out | grep total | awk '{print "Total coverage: " $$3}'
 	@$(call print_success,"All tests passed - coverage report: coverage/coverage.html")
 
-# Check coverage meets minimum threshold (80%)
-COVERAGE_THRESHOLD := 80
+# Same packages and threshold as the coverage gate in .github/workflows/ci.yml
+COVERAGE_THRESHOLD := 70
 coverage-check:
 	@$(call print_status,"Checking coverage threshold (minimum $(COVERAGE_THRESHOLD)%)...")
 	@mkdir -p coverage
-	@go test ./... -covermode=atomic -coverprofile=coverage/coverage.out -short > /dev/null 2>&1
+	@go test ./pkg/... ./cmd/... -covermode=atomic -coverprofile=coverage/coverage.out -short > /dev/null 2>&1
 	@COVERAGE=$$(go tool cover -func=coverage/coverage.out | grep total | awk '{print $$3}' | sed 's/%//'); \
 	echo "Current coverage: $${COVERAGE}%"; \
 	if [ $$(echo "$${COVERAGE} < $(COVERAGE_THRESHOLD)" | bc -l) -eq 1 ]; then \
@@ -620,7 +620,7 @@ help:
 	@echo "  make test-integration      Run integration tests"
 	@echo "  make test-e2e              Run end-to-end tests"
 	@echo "  make test-all              Run all tests with coverage report"
-	@echo "  make coverage-check        Verify coverage >= 80% threshold"
+	@echo "  make coverage-check        Verify coverage >= 70% threshold"
 	@echo "  make lint                  Run golangci-lint"
 	@echo "  make fmt                   Format code with gofmt and goimports"
 	@echo ""
