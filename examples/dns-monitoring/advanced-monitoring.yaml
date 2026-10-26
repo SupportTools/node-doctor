@@ -2,11 +2,8 @@
 # Enables all four analytical layers on top of basic DNS health tracking.
 # Each layer is independently opt-in; remove any block to disable that layer.
 #
-# For a full description of each layer, see:
+# Each layer and its troubleshooting steps are described in:
 #   docs/monitors/dns-advanced.md
-#
-# For troubleshooting guidance, see:
-#   docs/monitors/dns-troubleshooting.md
 
 apiVersion: v1
 kind: NodeDoctorConfig

@@ -18,7 +18,6 @@
 | [Configuration](configuration.md) | Look up config fields and defaults |
 | [Monitors](monitors.md) | See what each monitor checks and how to tune it |
 | [DNS monitoring](monitors/dns-advanced.md) | Tune DNS health scoring, trends and correlation |
-| [DNS troubleshooting](monitors/dns-troubleshooting.md) | Act on DNS conditions |
 | [Remediation](remediation.md) | Turn on automatic fixes safely |
 | [Example configs](../config/examples/README.md) | Start from a working config |
 
