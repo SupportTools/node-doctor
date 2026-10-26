@@ -390,8 +390,8 @@ affinity: {}
 # maxUnavailable is a PERCENTAGE, not 1, on purpose. With maxUnavailable: 1 a single
 # already-crashlooping pod consumes the entire unavailable budget and no other pod can
 # ever be rolled - `kubectl rollout restart` then stalls at 0/N forever and the only
-# recovery is manually deleting healthy pods (see "DaemonSet rollout is stuck" in
-# README.md). 25% matches overlayTest.updateStrategy below and leaves room for the roll
+# recovery is manually deleting healthy pods (see "The DaemonSet rollout is stuck" in
+# docs/troubleshooting.md). 25% matches overlayTest.updateStrategy below and leaves room for the roll
 # to make progress past a stuck node.
 # Do NOT add maxSurge here: the agent runs hostNetwork with a hostPort, so a surge pod
 # would collide with the pod it is replacing on the same node and never become ready.

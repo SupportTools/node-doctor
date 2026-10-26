@@ -1,413 +1,77 @@
-# Node Doctor Grafana Dashboards
+# Grafana dashboards
 
-This directory contains Grafana dashboard JSON files for visualizing Node Doctor metrics.
+This directory has five Grafana dashboards for the metrics node-doctor exports. They link to each other from the top-right corner.
 
-## Available Dashboards
+| File | UID | Shows |
+|---|---|---|
+| `node-doctor-overview.json` | `node-doctor-overview` | Node count, active problems and condition changes across the cluster, with links to the other dashboards |
+| `node-doctor-system-health.json` | `node-doctor-system` | CPU, memory and disk conditions per node |
+| `node-doctor-kubernetes-health.json` | `node-doctor-k8s` | Kubelet and API server conditions, and the agent's own uptime and version |
+| `node-doctor-cni-network-health.json` | `node-doctor-cni` | Network partition, CNI and DNS conditions, peer reachability and latency |
+| `node-doctor-ipv6.json` | `node-doctor-ipv6` | IPv6 monitor conditions, IPv6 peer and gateway latency, AAAA DNS latency, IPv4 vs IPv6 comparison |
 
-| Dashboard | File | UID | Description |
-|-----------|------|-----|-------------|
-| Overview | `node-doctor-overview.json` | `node-doctor-overview` | Executive summary with drill-down links to detailed dashboards |
-| System Health | `node-doctor-system-health.json` | `node-doctor-system` | CPU, Memory, and Disk health monitoring |
-| Kubernetes Health | `node-doctor-kubernetes-health.json` | `node-doctor-k8s` | Kubelet, API Server connectivity, and Node Doctor agent status |
-| CNI & Network Health | `node-doctor-cni-network-health.json` | `node-doctor-cni` | Network partition detection, CNI health, DNS health, peer connectivity |
+Every dashboard has a `datasource` and a `node` variable. The CNI and IPv6 dashboards also have `address_family` (`ipv4`, `ipv6`).
 
-## Quick Start
+## Import
 
-### Deploy All Dashboards (Rancher Monitoring / kube-prometheus-stack)
+### Grafana sidecar (kube-prometheus-stack, Rancher Monitoring)
+
+The Grafana sidecar loads every ConfigMap labeled `grafana_dashboard=1` in the namespace it watches. Rancher Monitoring watches `cattle-dashboards`; kube-prometheus-stack usually watches its own release namespace. Run these from the repository root with `NS` set to that namespace.
 
 ```bash
-# Create ConfigMaps for all dashboards
-kubectl create configmap node-doctor-dashboard-overview \
-  --namespace=cattle-dashboards \
-  --from-file=node-doctor-overview.json=dashboards/node-doctor-overview.json
-
-kubectl create configmap node-doctor-dashboard-system \
-  --namespace=cattle-dashboards \
-  --from-file=node-doctor-system-health.json=dashboards/node-doctor-system-health.json
-
-kubectl create configmap node-doctor-dashboard-k8s \
-  --namespace=cattle-dashboards \
-  --from-file=node-doctor-kubernetes-health.json=dashboards/node-doctor-kubernetes-health.json
-
-kubectl create configmap node-doctor-dashboard-cni \
-  --namespace=cattle-dashboards \
-  --from-file=node-doctor-cni-network-health.json=dashboards/node-doctor-cni-network-health.json
-
-# Add sidecar labels to all ConfigMaps
-kubectl label configmap node-doctor-dashboard-overview -n cattle-dashboards grafana_dashboard=1
-kubectl label configmap node-doctor-dashboard-system -n cattle-dashboards grafana_dashboard=1
-kubectl label configmap node-doctor-dashboard-k8s -n cattle-dashboards grafana_dashboard=1
-kubectl label configmap node-doctor-dashboard-cni -n cattle-dashboards grafana_dashboard=1
+for f in dashboards/*.json; do kubectl create configmap "$(basename "$f" .json)" --namespace "$NS" --from-file="$f"; done
 ```
 
-For kube-prometheus-stack, use the appropriate namespace (often `monitoring` or the release namespace).
+```bash
+for f in dashboards/*.json; do kubectl label configmap "$(basename "$f" .json)" --namespace "$NS" grafana_dashboard=1; done
+```
 
-### Option 2: Grafana UI Import
+### Grafana UI
 
-1. Open Grafana
-2. Navigate to Dashboards > Import
-3. Upload the JSON file or paste its contents
-4. Select your Prometheus datasource
-5. Click Import
+In Grafana, open Dashboards > New > Import, upload a JSON file, and pick your Prometheus data source.
 
-### Option 3: Grafana Provisioning
+### Grafana provisioning
 
-Copy dashboards to Grafana's provisioning directory:
+Copy the JSON files to a directory on the Grafana host and point a file provider at it:
 
 ```yaml
-# /etc/grafana/provisioning/dashboards/node-doctor.yaml
 apiVersion: 1
 providers:
-  - name: 'node-doctor'
-    folder: 'Node Doctor'
+  - name: node-doctor
+    folder: Node Doctor
     type: file
     options:
       path: /var/lib/grafana/dashboards/node-doctor
 ```
 
-## Required Metrics
+## Metrics used
 
-These dashboards require the following Prometheus metrics exported by Node Doctor:
+The panels query these metrics. All of them exist in the agent today. [Metrics](../docs/metrics.md) describes each one.
 
-### Core Metrics
+| Dashboard | Metrics (`node_doctor_monitor_` prefix left out) |
+|---|---|
+| Overview | `info`, `uptime_seconds`, `conditions_total`, `problems_active`, `events_total`, `status_updates_total` |
+| System Health | `info`, `conditions_total`, `problems_active`, `events_total`, `status_updates_total` |
+| Kubernetes Health | `info`, `uptime_seconds`, `conditions_total`, `problems_active`, `events_total`, `status_updates_total` |
+| CNI & Network | `info`, `conditions_total`, `problems_active`, `events_total`, `status_updates_total`, `peer_latency_seconds`, `peer_latency_histogram_seconds`, `peer_reachable`, `peers_total`, `peers_reachable_total` |
+| IPv6 | `info`, `monitor_up`, `condition_status`, `conditions_total`, `events_total`, `peer_latency_seconds`, `peer_reachable`, `gateway_latency_seconds`, `dns_latency_seconds` |
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `node_doctor_monitor_info` | Gauge | Node information (version, go_version, build_time) |
-| `node_doctor_monitor_conditions_total` | Counter | Condition state changes by condition_type and status |
-| `node_doctor_monitor_problems_active` | Gauge | Currently active problems by problem_type and severity |
-| `node_doctor_monitor_events_total` | Counter | Events by source and severity |
-| `node_doctor_monitor_status_updates_total` | Counter | Status update count by source |
-| `node_doctor_monitor_uptime_seconds` | Gauge | Monitor uptime per node |
+The dashboards expect the `node_doctor_monitor_` prefix. If you change `exporters.prometheus.namespace` or `exporters.prometheus.subsystem`, they show no data.
 
-### Network Latency Metrics
+Some condition panels filter on condition types the agent does not emit, so they stay empty: `ThermalPressure`, `SwapPressure`, `KubeletReady`, `KubeletServiceRunning`, `APIServerAuthenticated`, `DNSLatencyHigh` and `ReadOnlyFilesystem` (the agent emits `ReadonlyFilesystem`).
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `node_doctor_monitor_peer_latency_seconds` | Gauge | node, peer_node, peer_ip | Current latency to each peer in seconds |
-| `node_doctor_monitor_peer_latency_avg_seconds` | Gauge | node | Average latency across all peers |
-| `node_doctor_monitor_peer_reachable` | Gauge | node, peer_node, peer_ip | Peer reachability (1=reachable, 0=unreachable) |
-| `node_doctor_monitor_peers_total` | Gauge | node | Total number of discovered peers |
-| `node_doctor_monitor_peers_reachable_total` | Gauge | node | Number of reachable peers |
-| `node_doctor_monitor_peer_set_size` | Gauge | node | Size of the current authoritative discovered peer set. Should equal (nodes - 1) on every node regardless of agent uptime; a node reporting more than its neighbours is holding stale peers |
-| `node_doctor_monitor_peer_set_churn_total` | Counter | node, change | Peer identities entering (`change="added"`) or leaving (`change="removed"`) the exported peer set. A rename or re-address is one removal plus one addition |
-| `node_doctor_monitor_peer_latency_histogram_seconds` | Histogram | node | Histogram of peer latency for percentile calculations |
-| `node_doctor_monitor_gateway_latency_seconds` | Gauge | node | Latency to default gateway |
-| `node_doctor_monitor_gateway_latency_histogram_seconds` | Histogram | node | Histogram of gateway latency |
+## No data
 
-## Dashboard Variables
+Check that the agent exports metrics. Use any agent pod name:
 
-All dashboards support the following template variables:
-
-- **datasource**: Prometheus datasource selector
-- **node**: Multi-select node filter (defaults to all nodes)
-
-## Dashboard Navigation
-
-All dashboards include navigation links to related dashboards in the top-right corner, allowing quick switching between:
-- Overview
-- System Health
-- Kubernetes Health
-- CNI & Network Health
-
----
-
-## Node Doctor Overview Dashboard
-
-**UID:** `node-doctor-overview`
-
-An executive summary dashboard providing a high-level view of all monitored nodes with drill-down links.
-
-### Panels
-
-1. **Cluster Overview Row**
-   - Total Nodes (stat)
-   - Healthy Nodes (stat)
-   - Warning Nodes (stat)
-   - Critical Nodes (stat)
-   - Total Active Problems (stat)
-   - Average Uptime (stat)
-
-2. **Health by Category Row**
-   - System Health Score (gauge)
-   - Kubernetes Health Score (gauge)
-   - Network Health Score (gauge)
-
-3. **Problems Summary**
-   - Active Problems by Severity (bar chart)
-   - Recent Events (time series)
-
-4. **Node Status Table**
-   - Node name, status, uptime, active problems, last event
-
-### Use Cases
-- Quick health check across all nodes
-- Identify which subsystem has issues
-- Drill down to detailed dashboards
-
----
-
-## Node Doctor System Health Dashboard
-
-**UID:** `node-doctor-system`
-
-Detailed monitoring of CPU, Memory, and Disk health across all nodes.
-
-### Panels
-
-1. **CPU Health Row**
-   - CPUHealthy Nodes (stat) - Green/Red
-   - CPU Pressure Nodes (stat)
-   - Thermal Pressure Nodes (stat)
-   - CPU Conditions by Node (table)
-
-2. **Memory Health Row**
-   - MemoryHealthy Nodes (stat)
-   - Memory Pressure Nodes (stat)
-   - Swap Pressure Nodes (stat)
-   - OOM Events (stat)
-   - Memory Conditions by Node (table)
-
-3. **Disk Health Row**
-   - DiskHealthy Nodes (stat)
-   - Disk Pressure Nodes (stat)
-   - Inode Pressure Nodes (stat)
-   - Read-Only Filesystems (stat)
-   - Disk Conditions by Node (table)
-
-4. **System Health Trends**
-   - System Events Rate (time series)
-   - System Conditions Over Time (time series)
-
-5. **Active System Problems**
-   - Problems table filtered to system-related issues
-
-### Key Condition Types
-
-| Condition | Description |
-|-----------|-------------|
-| `CPUHealthy` | Overall CPU health status |
-| `CPUPressure` | High CPU utilization detected |
-| `ThermalPressure` | CPU thermal throttling detected |
-| `MemoryHealthy` | Overall memory health status |
-| `MemoryPressure` | High memory utilization detected |
-| `SwapPressure` | High swap utilization detected |
-| `OOMKilled` | Out-of-memory events detected |
-| `DiskHealthy` | Overall disk health status |
-| `DiskPressure` | Low disk space detected |
-| `InodePressure` | Low inode count detected |
-| `ReadOnlyFilesystem` | Filesystem mounted read-only |
-
----
-
-## Node Doctor Kubernetes Health Dashboard
-
-**UID:** `node-doctor-k8s`
-
-Monitoring of Kubelet health, API Server connectivity, and Node Doctor agent status.
-
-### Panels
-
-1. **Kubelet Health Row**
-   - KubeletHealthy Nodes (stat)
-   - Kubelet Service Running (stat)
-   - Kubelet Ready (stat)
-   - Kubelet Conditions by Node (table)
-
-2. **API Server Connectivity Row**
-   - API Server Reachable (stat)
-   - API Server Latency High (stat)
-   - API Server Conditions by Node (table)
-
-3. **Node Doctor Agent Status Row**
-   - Monitored Nodes (stat)
-   - Min Agent Uptime (stat)
-   - Max Agent Uptime (stat)
-   - Status Updates Rate (stat)
-   - Agent Status by Node (table with version info)
-
-4. **Kubernetes Health Trends**
-   - Kubernetes Events Rate (time series)
-   - Kubernetes Conditions Over Time (time series)
-
-5. **Active Kubernetes Problems**
-   - Problems table filtered to Kubernetes-related issues
-
-### Key Condition Types
-
-| Condition | Description |
-|-----------|-------------|
-| `KubeletHealthy` | Overall kubelet health status |
-| `KubeletServiceRunning` | Kubelet systemd service is running |
-| `KubeletReady` | Kubelet /healthz endpoint returns healthy |
-| `APIServerReachable` | Node can reach the Kubernetes API server |
-| `APIServerLatencyHigh` | High latency communicating with API server |
-| `NodeDoctorHealthy` | Node Doctor agent is healthy |
-
----
-
-## Node Doctor CNI & Network Health Dashboard
-
-**UID:** `node-doctor-cni`
-
-Network partition detection, CNI health, DNS resolution, peer connectivity, and network latency monitoring.
-
-### Panels
-
-1. **Overview Row**
-   - Monitored Nodes (stat)
-   - Partitioned Nodes (stat) - Red when > 0
-   - Degraded Nodes (stat) - Yellow when > 0
-   - Active Problems (stat)
-   - Min Uptime (stat)
-   - Unreachable Peers (stat)
-
-2. **Node Health Status**
-   - Network Partition Status by Node (table)
-   - CNI Health Status by Node (table)
-
-3. **Peer Latency Overview Row** *(New in v1.5.4)*
-   - Avg Cluster Latency (stat) - Average latency across all peers in ms
-   - Max Latency (stat) - Maximum latency to any peer in ms
-   - P95 Latency (stat) - 95th percentile latency from histogram
-   - Peer Connectivity % (stat) - Percentage of reachable peers
-   - Total Peers (stat) - Total discovered peer count
-   - Reachable Peers (stat) - Currently reachable peer count
-
-4. **Peer Latency Details Row** *(New in v1.5.4)*
-   - Average Latency by Node (time series) - Per-node average latency over time
-   - Latency Percentiles Over Time (time series) - P50, P90, P95, P99 trends
-   - Node-to-Peer Latency Matrix (table) - Detailed breakdown of latency from each node to each peer with reachability status
-
-5. **DNS Health Row**
-   - DNS Healthy Nodes (stat)
-   - DNS Resolution Failed (stat)
-   - DNS Latency High (stat)
-   - DNS Conditions by Node (table)
-
-6. **Events & Trends**
-   - CNI Events Rate (time series)
-   - DNS Events Rate (time series)
-   - CNI Status Updates (time series)
-
-7. **All Conditions**
-   - Network Conditions by Type (stacked bar chart)
-   - DNS Conditions by Type (stacked bar chart)
-
-8. **Problems & Alerts**
-   - Active Network Problems (table)
-
-### Key Condition Types
-
-| Condition | Description |
-|-----------|-------------|
-| `NetworkPartitioned` | Node cannot reach minimum required peers |
-| `NetworkDegraded` | High latency or partial peer connectivity |
-| `CNIHealthy` | Overall CNI health status |
-| `CNIConfigValid` | CNI configuration files are valid |
-| `CNIInterfacesHealthy` | CNI network interfaces are up |
-| `DNSHealthy` | Overall DNS resolution health |
-| `DNSResolutionFailed` | DNS queries are failing |
-| `DNSLatencyHigh` | DNS resolution latency is high |
-
----
-
-## Alerting
-
-You can create alerts based on these PromQL expressions:
-
-### Critical Alerts
-
-```promql
-# Network partition detected
-node_doctor_monitor_conditions_total{condition_type="NetworkPartitioned", status="True"} > 0
-
-# Any active critical problems
-node_doctor_monitor_problems_active{severity="Critical"} > 0
-
-# Node down (no metrics for 5 minutes)
-absent(node_doctor_monitor_uptime_seconds{node="<node-name>"})
-
-# Kubelet unhealthy
-node_doctor_monitor_conditions_total{condition_type="KubeletHealthy", status="False"} > 0
-
-# Read-only filesystem
-node_doctor_monitor_conditions_total{condition_type="ReadOnlyFilesystem", status="True"} > 0
+```bash
+kubectl get --raw /api/v1/namespaces/node-doctor/pods/<pod>:9101/proxy/metrics | grep -c '^node_doctor_monitor_'
 ```
 
-### Warning Alerts
+Check that Prometheus finds the agents. With the Prometheus Operator, the ServiceMonitor must exist and match your Prometheus selectors:
 
-```promql
-# Memory pressure
-node_doctor_monitor_conditions_total{condition_type="MemoryPressure", status="True"} > 0
-
-# Disk pressure
-node_doctor_monitor_conditions_total{condition_type="DiskPressure", status="True"} > 0
-
-# DNS resolution issues
-node_doctor_monitor_conditions_total{condition_type="DNSResolutionFailed", status="True"} > 0
-
-# API server latency high
-node_doctor_monitor_conditions_total{condition_type="APIServerLatencyHigh", status="True"} > 0
-
-# High peer latency (P95 > 100ms)
-histogram_quantile(0.95, sum(rate(node_doctor_monitor_peer_latency_histogram_seconds_bucket[5m])) by (le, node)) * 1000 > 100
-
-# Low peer connectivity (< 90%)
-(sum by (node) (node_doctor_monitor_peers_reachable_total) / sum by (node) (node_doctor_monitor_peers_total)) * 100 < 90
+```bash
+kubectl get servicemonitor --all-namespaces | grep node-doctor
 ```
 
-### Informational
-
-```promql
-# Node Doctor restart (uptime reset)
-changes(node_doctor_monitor_uptime_seconds[5m]) > 0
-
-# High event rate (potential issue)
-rate(node_doctor_monitor_events_total[5m]) > 10
-```
-
-## Troubleshooting
-
-### Dashboards Not Loading
-
-1. Verify ConfigMaps have the correct label:
-   ```bash
-   kubectl get configmaps -n cattle-dashboards -l grafana_dashboard=1
-   ```
-
-2. Check Grafana sidecar logs:
-   ```bash
-   kubectl logs -n cattle-monitoring-system -l app.kubernetes.io/name=grafana -c grafana-sc-dashboard
-   ```
-
-3. Verify the dashboard JSON is valid:
-   ```bash
-   cat dashboards/node-doctor-overview.json | jq .
-   ```
-
-### No Data in Dashboards
-
-1. Verify Node Doctor is exporting metrics:
-   ```bash
-   kubectl port-forward -n node-doctor svc/node-doctor 9101:9101
-   curl http://localhost:9101/metrics | grep node_doctor
-   ```
-
-2. Check Prometheus is scraping Node Doctor:
-   ```bash
-   kubectl port-forward -n cattle-monitoring-system svc/rancher-monitoring-prometheus 9090:9090
-   # Visit http://localhost:9090/targets and look for node-doctor
-   ```
-
-3. Verify ServiceMonitor exists:
-   ```bash
-   kubectl get servicemonitor -A | grep node-doctor
-   ```
-
-### Wrong Datasource
-
-If dashboards show "No data" but metrics exist:
-1. Open dashboard settings
-2. Go to Variables
-3. Verify `datasource` variable points to your Prometheus instance
+If metrics exist but panels are empty, open the dashboard settings and check that the `datasource` variable points at the Prometheus that scrapes node-doctor.

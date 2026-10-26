@@ -1,519 +1,134 @@
-# Node Doctor Controller Deployment Guide
+# Controller
 
-This guide covers deploying the Node Doctor Controller, which provides cluster-wide health aggregation, pattern correlation, and remediation coordination.
+The controller is an optional single-replica Deployment. Agents send it a report every 30 seconds. It stores the reports in SQLite, looks for problems that affect many nodes at once, and hands out remediation leases so only a few nodes remediate at the same time.
 
-## Overview
+**No controller image is published.** `supporttools/node-doctor-controller` does not exist on Docker Hub, and nothing in this repository builds it yet. Enabling the controller with the default image ends in ImagePullBackOff. To use it, build and push your own image first.
 
-The Node Doctor Controller is an optional central component that:
+## Build an image
 
-- **Aggregates** health reports from all node-doctor agents across the cluster
-- **Correlates** patterns to detect cluster-wide issues (e.g., 30% of nodes have DNS problems)
-- **Coordinates** remediation actions to prevent remediation storms
-- **Exposes** cluster-level metrics and a REST API for observability
+The controller is a static Go binary in `cmd/node-doctor-controller`. Its SQLite driver is pure Go, so `CGO_ENABLED=0` works. Save this as `Dockerfile.controller` in the repository root:
 
-## Architecture
+```dockerfile
+FROM golang:1.25 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /node-doctor-controller ./cmd/node-doctor-controller
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Node 1 (DaemonSet)          Node 2              Node N         │
-│  ┌──────────────────┐   ┌──────────────┐   ┌──────────────┐    │
-│  │ Monitors         │   │ Monitors     │   │ Monitors     │    │
-│  │ ↓                │   │ ↓            │   │ ↓            │    │
-│  │ HTTP Exporter    │   │ HTTP Export  │   │ HTTP Export  │    │
-│  │ (webhook push)   │   │ (webhook)    │   │ (webhook)    │    │
-│  └────────┬─────────┘   └──────┬───────┘   └──────┬───────┘    │
-│           │                    │                   │            │
-│           │    POST /api/v1/reports (every 30s)   │            │
-│           └────────────────────┼──────────────────┘            │
-│                                ↓                               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │           Node Doctor Controller (Deployment)           │   │
-│  │                                                         │   │
-│  │  ┌─────────────┐   ┌─────────────┐   ┌───────────────┐ │   │
-│  │  │ Aggregator  │ → │ Correlator  │ → │ Lease Manager │ │   │
-│  │  └─────────────┘   └─────────────┘   └───────────────┘ │   │
-│  │         ↓                                               │   │
-│  │  ┌─────────────────────────────────────────────────┐   │   │
-│  │  │           SQLite Storage (PVC)                  │   │   │
-│  │  └─────────────────────────────────────────────────┘   │   │
-│  │         ↓                 ↓                  ↓          │   │
-│  │  ┌───────────┐   ┌───────────┐   ┌─────────────────┐   │   │
-│  │  │ REST API  │   │ Prometheus│   │ K8s Events      │   │   │
-│  │  │ /api/v1/* │   │ /metrics  │   │ (cluster-level) │   │   │
-│  │  └───────────┘   └───────────┘   └─────────────────┘   │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /node-doctor-controller /node-doctor-controller
+ENTRYPOINT ["/node-doctor-controller"]
 ```
 
-## Prerequisites
-
-- Kubernetes cluster 1.19+
-- Persistent storage class for SQLite database (1Gi minimum)
-- Cluster admin privileges for RBAC resources
-- Node Doctor DaemonSet already deployed (or will be deployed)
-
-## Deployment Options
-
-| Method | Recommended For | Description |
-|--------|----------------|-------------|
-| **Kustomize** | Production | Apply manifests with optional overlays |
-| **Helm** | Production | Coming soon - configurable Helm chart |
-| **Manual** | Development | Step-by-step manifest application |
-
----
-
-## Option 1: Kustomize Deployment (Recommended)
-
-### Deploy All Resources
+Build it and push it to a registry your cluster can pull from:
 
 ```bash
-kubectl apply -k deploy/controller/
+docker build -f Dockerfile.controller -t registry.example.com/node-doctor-controller:1.10.0 .
 ```
-
-This deploys:
-- Namespace (if not exists)
-- ServiceAccount
-- ClusterRole and ClusterRoleBinding
-- PersistentVolumeClaim (1Gi)
-- ConfigMap with controller configuration
-- Deployment (single replica)
-- Service (ClusterIP on port 8080)
-
-### Verify Deployment
 
 ```bash
-# Check all resources
-kubectl get all -n node-doctor -l app.kubernetes.io/component=controller
-
-# Check deployment status
-kubectl rollout status deployment/node-doctor-controller -n node-doctor
-
-# Verify pod is running
-kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor-controller
+docker push registry.example.com/node-doctor-controller:1.10.0
 ```
 
----
+## Install with Helm
 
-## Option 2: Manual Deployment
-
-### Step 1: Create Namespace
+Set the image explicitly. When `controller.image.tag` is empty the chart uses `appVersion`, which has a `v` prefix.
 
 ```bash
-kubectl apply -f deploy/controller/namespace.yaml
+helm upgrade --install node-doctor supporttools/node-doctor --namespace node-doctor --create-namespace --set controller.enabled=true --set controller.image.repository=registry.example.com/node-doctor-controller --set controller.image.tag=1.10.0
 ```
 
-### Step 2: Apply RBAC Resources
+`controller.enabled: true` creates:
+
+- Deployment and Service `node-doctor-controller` on port 8080. The Deployment uses the `Recreate` strategy because the PVC is ReadWriteOnce.
+- ConfigMap `node-doctor-controller-config`, with the controller config file
+- PVC `node-doctor-controller-data`, 1Gi, mounted at `/data`
+- a ServiceAccount, plus a ClusterRole, a Role and their bindings
+
+It also changes every agent's config:
+
+- the report webhook is turned on and posts to `http://node-doctor-controller.node-doctor:8080/api/v1/reports`
+- remediation coordination is turned on, so agents ask the controller for a lease before they remediate
+
+With the default `controller.config.coordination.fallbackOnUnreachable: false`, agents do not remediate while the controller is unreachable. That includes the time it spends in ImagePullBackOff or Pending on an unbound PVC.
+
+All controller values are in the [Helm chart reference](../helm/node-doctor/README.md#controller).
+
+## Install with Kustomize
+
+`deploy/controller` holds plain manifests for the controller alone. They set the image to `supporttools/node-doctor-controller:latest`, which does not exist, so override it:
 
 ```bash
-kubectl apply -f deploy/controller/rbac.yaml
-
-# Verify
-kubectl get serviceaccount -n node-doctor node-doctor-controller
-kubectl get clusterrole node-doctor-controller
-kubectl get clusterrolebinding node-doctor-controller
+cd deploy/controller && kustomize edit set image supporttools/node-doctor-controller=registry.example.com/node-doctor-controller:1.10.0
 ```
-
-### Step 3: Create Persistent Storage
 
 ```bash
-# Edit storageClassName if needed for your cluster
-kubectl apply -f deploy/controller/pvc.yaml
-
-# Wait for PVC to be bound
-kubectl get pvc -n node-doctor node-doctor-controller-data -w
+kubectl apply -k deploy/controller
 ```
 
-### Step 4: Deploy ConfigMap
-
-```bash
-kubectl apply -f deploy/controller/configmap.yaml
-
-# Review configuration
-kubectl get configmap -n node-doctor node-doctor-controller-config -o yaml
-```
-
-### Step 5: Deploy Controller and Service
-
-```bash
-kubectl apply -f deploy/controller/deployment.yaml
-kubectl apply -f deploy/controller/service.yaml
-
-# Watch rollout
-kubectl rollout status deployment/node-doctor-controller -n node-doctor
-```
-
----
+These manifests do not change the agents. Without the Helm chart you must add the report webhook and the coordination block to the agent config yourself; see [Configuration](configuration.md).
 
 ## Configuration
 
-The controller is configured via the ConfigMap `node-doctor-controller-config`:
+The controller reads `/etc/node-doctor/controller.yaml`. In Helm it comes from `controller.config.*`. These environment variables override the file; the chart sets none of them.
 
-```yaml
-# Server settings
-server:
-  bindAddress: "0.0.0.0"
-  port: 8080
-  readTimeout: 30s
-  writeTimeout: 30s
-  enableCORS: false
+| Variable | Overrides |
+|---|---|
+| `CONTROLLER_BIND_ADDRESS` | `server.bindAddress` |
+| `CONTROLLER_PORT` | `server.port` |
+| `CONTROLLER_STORAGE_PATH` | `storage.path` |
+| `CONTROLLER_STORAGE_RETENTION` | `storage.retention` |
+| `CONTROLLER_MAX_CONCURRENT_REMEDIATIONS` | `coordination.maxConcurrentRemediations` |
+| `CONTROLLER_NAMESPACE` | `kubernetes.namespace` |
 
-# SQLite storage
-storage:
-  path: /data/node-doctor.db
-  retention: 720h  # 30 days
+## Endpoints
 
-# Correlation engine
-correlation:
-  enabled: true
-  clusterWideThreshold: 0.3  # 30% of nodes = cluster issue
-  evaluationInterval: 30s
-  minNodesForCorrelation: 2
+Everything is served on the main port, 8080 by default. `prometheus.port` in the config file is not used: `/metrics` is always on the main port.
 
-# Remediation coordination
-coordination:
-  enabled: true
-  maxConcurrentRemediations: 3
-  defaultLeaseDuration: 5m
-  cooldownPeriod: 10m
+| Path | Purpose |
+|---|---|
+| `/healthz` | Liveness |
+| `/readyz` | Readiness |
+| `/metrics` | Prometheus metrics |
+| `/api/v1/reports` | Agents post reports here |
+| `/api/v1/cluster/status` | Node counts by health |
+| `/api/v1/cluster/problems` | Active problems across the cluster |
+| `/api/v1/nodes`, `/api/v1/nodes/<node>`, `/api/v1/nodes/<node>/history` | Per-node state and report history |
+| `/api/v1/correlations`, `/api/v1/correlations/<id>` | Detected cluster-wide patterns |
+| `/api/v1/leases`, `/api/v1/leases/<id>` | Remediation leases |
 
-# Prometheus metrics
-prometheus:
-  enabled: true
-  port: 9090
-  path: /metrics
-
-# Kubernetes integration
-kubernetes:
-  enabled: true
-  inCluster: true
-  namespace: node-doctor
-  createEvents: true
-```
-
-### Key Configuration Options
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `storage.retention` | 720h (30 days) | How long to retain node reports |
-| `correlation.clusterWideThreshold` | 0.3 | Fraction of nodes with same problem to trigger cluster correlation |
-| `coordination.maxConcurrentRemediations` | 3 | Max simultaneous remediations cluster-wide |
-| `coordination.defaultLeaseDuration` | 5m | Default lease duration for remediation |
-| `coordination.cooldownPeriod` | 10m | Time between repeated remediations on same node |
-
-### Updating Configuration
+Reach them through the API server proxy:
 
 ```bash
-# Edit the ConfigMap
-kubectl edit configmap -n node-doctor node-doctor-controller-config
-
-# Restart controller to pick up changes
-kubectl rollout restart deployment/node-doctor-controller -n node-doctor
+kubectl get --raw /api/v1/namespaces/node-doctor/services/node-doctor-controller:8080/proxy/api/v1/cluster/status
 ```
 
----
+## Metrics
 
-## Configuring Node-Doctor DaemonSet
+The pod has `prometheus.io/*` annotations for port 8080. There is no ServiceMonitor for the controller.
 
-To send reports to the controller, configure the HTTP exporter in your DaemonSet ConfigMap:
-
-```yaml
-exporters:
-  http:
-    webhooks:
-      - name: controller
-        url: "http://node-doctor-controller.node-doctor:8080/api/v1/reports"
-        interval: 30s
-        timeout: 10s
-```
-
-### Enable Remediation Coordination
-
-For coordinated remediations, configure the lease client:
-
-```yaml
-remediation:
-  coordination:
-    enabled: true
-    controllerURL: "http://node-doctor-controller.node-doctor:8080"
-    leaseTimeout: 5m
-    fallbackOnUnreachable: false  # Block if controller down
-
-  actions:
-    restart-kubelet:
-      requiresApproval: true    # Must get lease from controller
-    flush-dns-cache:
-      requiresApproval: false   # Can proceed without lease
-```
-
----
-
-## API Endpoints
-
-### Health Checks
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /healthz` | Liveness probe |
-| `GET /readyz` | Readiness probe |
-
-### Report Ingestion
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/v1/reports` | Receive node health report |
-
-### Cluster Status
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/v1/cluster/status` | Overall cluster health summary |
-| `GET /api/v1/cluster/problems` | Active cluster-wide problems |
-| `GET /api/v1/nodes` | List all nodes with status |
-| `GET /api/v1/nodes/{name}` | Single node details |
-| `GET /api/v1/nodes/{name}/history` | Historical reports for a node |
-
-### Correlation
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/v1/correlations` | Active correlations |
-| `GET /api/v1/correlations/{id}` | Correlation details |
-
-### Remediation Coordination
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/v1/leases` | Request remediation lease |
-| `GET /api/v1/leases` | List active leases |
-| `DELETE /api/v1/leases/{id}` | Release lease early |
-
-### Metrics
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /metrics` | Prometheus metrics |
-
----
-
-## Prometheus Integration
-
-The controller exposes cluster-level metrics at `/metrics`:
-
-```
-# Cluster-level node counts
-node_doctor_cluster_nodes_total
-node_doctor_cluster_nodes_healthy
-node_doctor_cluster_nodes_unhealthy
-node_doctor_cluster_nodes_unknown
-
-# Problem aggregation
-node_doctor_cluster_problem_nodes{problem_type="dns", severity="warning"}
-node_doctor_cluster_problem_active{problem_type="dns"}
-
-# Correlation tracking
-node_doctor_correlation_active_total
-node_doctor_correlation_detected_total{type="infrastructure"}
-
-# Remediation coordination
-node_doctor_leases_active_total
-node_doctor_leases_granted_total
-node_doctor_leases_denied_total{reason="max_concurrent"}
-node_doctor_remediation_coordinated_total{type="restart-kubelet"}
-```
-
-### Prometheus ServiceMonitor
-
-Create a ServiceMonitor to scrape controller metrics:
-
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: node-doctor-controller
-  namespace: node-doctor
-  labels:
-    app.kubernetes.io/name: node-doctor-controller
-spec:
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: node-doctor-controller
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
-```
-
-### Alerting Rules
-
-Example Prometheus alerting rules:
-
-```yaml
-groups:
-  - name: node-doctor-controller
-    rules:
-      - alert: NodeDoctorClusterUnhealthyNodes
-        expr: node_doctor_cluster_nodes_unhealthy > 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "{{ $value }} unhealthy nodes in cluster"
-
-      - alert: NodeDoctorInfrastructureCorrelation
-        expr: node_doctor_correlation_active_total{type="infrastructure"} > 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Infrastructure-wide issue detected affecting multiple nodes"
-
-      - alert: NodeDoctorControllerDown
-        expr: up{job="node-doctor-controller"} == 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Node Doctor Controller is down"
-```
-
----
-
-## Verifying Deployment
-
-### Check Controller Health
-
-```bash
-# Test health endpoints
-kubectl exec -n node-doctor \
-  $(kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor-controller -o jsonpath='{.items[0].metadata.name}') \
-  -- curl -s localhost:8080/healthz
-
-# Check readiness
-kubectl exec -n node-doctor \
-  $(kubectl get pods -n node-doctor -l app.kubernetes.io/name=node-doctor-controller -o jsonpath='{.items[0].metadata.name}') \
-  -- curl -s localhost:8080/readyz
-```
-
-### Check Cluster Status
-
-```bash
-# Port-forward to controller
-kubectl port-forward -n node-doctor svc/node-doctor-controller 8080:8080 &
-
-# Get cluster status
-curl -s http://localhost:8080/api/v1/cluster/status | jq .
-
-# List nodes
-curl -s http://localhost:8080/api/v1/nodes | jq .
-
-# Check active correlations
-curl -s http://localhost:8080/api/v1/correlations | jq .
-
-# View metrics
-curl -s http://localhost:8080/metrics | grep node_doctor
-```
-
-### Check Logs
-
-```bash
-# View controller logs
-kubectl logs -n node-doctor -l app.kubernetes.io/name=node-doctor-controller -f
-
-# Check for correlation events
-kubectl get events -n node-doctor --field-selector reason=InfrastructureCorrelation
-```
-
----
+| Area | Metrics |
+|---|---|
+| Nodes | `node_doctor_cluster_nodes_total`, `node_doctor_cluster_nodes_healthy`, `node_doctor_cluster_nodes_degraded`, `node_doctor_cluster_nodes_critical`, `node_doctor_cluster_nodes_unknown` |
+| Problems | `node_doctor_cluster_problems_active`, `node_doctor_cluster_problem_nodes`, `node_doctor_cluster_problem_active` |
+| Correlation | `node_doctor_correlation_active_total`, `node_doctor_correlation_detected_total` |
+| Leases | `node_doctor_leases_active_total`, `node_doctor_leases_granted_total`, `node_doctor_leases_denied_total` |
+| Reports | `node_doctor_reports_received_total`, `node_doctor_reports_errors_total` |
+| Storage | `node_doctor_storage_operations_total`, `node_doctor_storage_errors_total` |
+| HTTP | `node_doctor_http_requests_total`, `node_doctor_http_request_duration_seconds` |
 
 ## Troubleshooting
 
-### Controller Not Starting
+| Symptom | Check |
+|---|---|
+| ImagePullBackOff | The image is not published; build your own and set `controller.image.repository` and `controller.image.tag` |
+| Pending | The PVC is not bound. Check `kubectl get pvc --namespace node-doctor` and set `controller.persistence.storageClassName` |
+| `node_doctor_reports_received_total` stays at 0 | Agents are not reporting. Look for webhook errors in the agent logs |
+| Remediation stopped on all nodes | The controller is down and `fallbackOnUnreachable` is false |
 
 ```bash
-# Check pod status
-kubectl describe pod -n node-doctor -l app.kubernetes.io/name=node-doctor-controller
-
-# Common issues:
-# - Pending: Check PVC is bound
-# - CrashLoopBackOff: Check logs for errors
-# - ImagePullBackOff: Verify image name and registry access
+kubectl logs --namespace node-doctor deployment/node-doctor-controller
 ```
 
-### PVC Not Binding
+## Uninstall
 
-```bash
-# Check PVC status
-kubectl get pvc -n node-doctor node-doctor-controller-data
-
-# Check storage class availability
-kubectl get sc
-
-# Edit PVC to specify storageClassName if needed
-kubectl edit pvc -n node-doctor node-doctor-controller-data
-```
-
-### Nodes Not Reporting
-
-```bash
-# Verify DaemonSet webhook configuration
-kubectl get configmap -n node-doctor node-doctor-config -o yaml | grep -A10 webhooks
-
-# Check agent logs for webhook errors
-kubectl logs -n node-doctor -l app=node-doctor --tail=100 | grep webhook
-
-# Test connectivity from agent to controller
-kubectl exec -n node-doctor \
-  $(kubectl get pods -n node-doctor -l app=node-doctor -o jsonpath='{.items[0].metadata.name}') \
-  -- curl -s http://node-doctor-controller.node-doctor:8080/healthz
-```
-
-### Correlations Not Detecting
-
-```bash
-# Check correlation config
-kubectl get configmap -n node-doctor node-doctor-controller-config -o yaml | grep -A10 correlation
-
-# Verify enough nodes reporting (minNodesForCorrelation)
-curl -s http://localhost:8080/api/v1/nodes | jq 'length'
-
-# Check correlation evaluation in logs
-kubectl logs -n node-doctor -l app.kubernetes.io/name=node-doctor-controller | grep correlation
-```
-
----
-
-## Uninstalling
-
-### Remove Controller Only
-
-```bash
-kubectl delete -k deploy/controller/
-```
-
-### Remove with Data
-
-```bash
-# Delete all resources including PVC
-kubectl delete -k deploy/controller/
-kubectl delete pvc -n node-doctor node-doctor-controller-data
-```
-
----
-
-## Production Considerations
-
-1. **Storage Class**: Use a reliable storage class with backup support for the SQLite database
-2. **Resource Limits**: Adjust CPU/memory based on cluster size (more nodes = more data)
-3. **Retention**: Configure appropriate data retention based on storage capacity
-4. **High Availability**: Single replica design - ensure PVC can reattach on node failure
-5. **Network Policies**: Consider network policies if running in restricted environments
-6. **Backup**: Regularly backup the SQLite database PVC
-7. **Monitoring**: Set up alerts for controller health and correlation events
-
----
-
-## Support
-
-- GitHub: https://github.com/supporttools/node-doctor
-- Documentation: See `/docs` directory
-- Issues: Report at GitHub issues
+Set `controller.enabled=false` and upgrade. Helm deletes the PVC and its data along with the other controller objects.
