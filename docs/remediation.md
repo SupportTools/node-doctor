@@ -295,7 +295,6 @@ Strategies copy the dry-run flag when they are registered at startup. If the age
 | Limitation | Effect |
 |---|---|
 | No config field sets the `pod-delete` target, and the detector does not add `namespace` or `pod` to the dispatch metadata. | Every `pod-delete` dispatch fails with missing metadata. |
-| The controller wraps its lease reply in `{"success", "data", "timestamp"}`. The agent reads `approved` from the top level. | Against the shipped controller every lease reads as denied, and the granted lease is held until it expires. |
 | `node-reboot` runs `systemctl reboot` without `nsenter`. | It may not reach the host's systemd from inside the container. |
 | The built-in 3-attempt cap never resets. | A strategy stops acting on a condition type after 3 real attempts, until the pod restarts. |
 
