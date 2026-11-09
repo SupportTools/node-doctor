@@ -82,7 +82,7 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             BUILD_TIME=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
 
       # cosign is pre-baked into the self-hosted runner image (SupportTools/ci-runners
       # Dockerfile.arc2). sigstore/cosign-installer downloaded it at job time, a flake
@@ -169,7 +169,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=overlay-test
-          cache-to: type=gha,mode=max,scope=overlay-test
+          cache-to: type=gha,mode=max,scope=overlay-test,ignore-error=true
 
   # Create GitHub Release
   github-release:

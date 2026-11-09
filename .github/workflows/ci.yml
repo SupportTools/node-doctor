@@ -291,7 +291,7 @@ jobs:
             GIT_COMMIT=${{ steps.meta.outputs.GIT_COMMIT }}
             BUILD_TIME=${{ steps.meta.outputs.BUILD_TIME }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
 
   # Summary job - provides overall status
   #
